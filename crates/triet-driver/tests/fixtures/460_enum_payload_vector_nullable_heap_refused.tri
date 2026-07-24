@@ -1,0 +1,9 @@
+// ERROR: heap-nullable T? not yet lowered
+// WO-SPOF-1 (2026-07-25) — same SPOF as 459 but at the enum-payload
+// position: `enum Box { Full(Vector<Leaf?>) }`. The enum-payload verify
+// loop also ran only `find_refused_nullable_field`; now runs the
+// container-scan too.
+struct Leaf { s: String }
+enum Box { Full(Vector<Leaf?>), Empty }
+function consume(b: Box) -> Integer { return 0; }
+function main() -> Integer { return 0; }

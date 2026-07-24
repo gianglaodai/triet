@@ -1,0 +1,12 @@
+// ERROR: heap-nullable T? not yet lowered
+// WO-SPOF-1 (2026-07-25) — a struct FIELD whose type is `Vector<Leaf?>`
+// (Leaf has a heap String field) is a container-element position. Before
+// this WO, `Body::verify()` scanned struct fields only via
+// `find_refused_nullable_field` (no Vector/HashMap arm) — so a function
+// merely HANDLING this struct passed verify+JIT clean, emitting latent
+// `free(1)` drop-glue (ADR-0065 §15.4 UB, shadowed only by the
+// construction-side local-scan = SPOF). Now refused at both positions.
+struct Leaf { s: String }
+struct Bag { v: Vector<Leaf?> }
+function consume(b: Bag) -> Integer { return 0; }
+function main() -> Integer { return 0; }

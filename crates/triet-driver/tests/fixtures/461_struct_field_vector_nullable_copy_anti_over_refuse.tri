@@ -1,0 +1,10 @@
+// EXPECT: 0
+// WO-SPOF-1 (2026-07-25) — anti-over-refuse control: a struct field of
+// `Vector<P?>` where `P` is Copy-only (no heap) must STAY compiling. The
+// new container-scan recurses via the Copy-gated
+// `find_refused_nullable_field`, which classifies a fully-Copy `Struct?`
+// element as lowerable — so this must NOT be refused.
+struct P { x: Integer, y: Integer }
+struct Bag2 { v: Vector<P?> }
+function consume(b: Bag2) -> Integer { return 0; }
+function main() -> Integer { return 0; }

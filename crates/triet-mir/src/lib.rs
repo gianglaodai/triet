@@ -1994,18 +1994,45 @@ impl Body {
                         span: DUMMY_SPAN.clone(),
                     });
                 }
+                // WO-SPOF-1: a struct field whose type IS a container
+                // (`Vector<Leaf?>`/`HashMap<_,Leaf?>`) with a heap-bearing
+                // nullable element — the container-element free-loop UB
+                // (ADR-0065 §15.4). Mirrors the return/local positions
+                // (`:1957`/`:1976`) which run BOTH scans; closes the SPOF
+                // where this position had no independent guard.
+                if let Some(inner) = find_refused_nullable_container(&field.ty, self) {
+                    return Err(MirError::HeapNullableNotLowered {
+                        inner_type: inner.clone(),
+                        position: format!(
+                            "struct field `{}.{}` (container element)",
+                            layout.name, field.name
+                        ),
+                        span: DUMMY_SPAN.clone(),
+                    });
+                }
             }
         }
         for layout in &self.enum_layouts {
             for variant in &layout.variants {
-                if let Some(payload) = &variant.payload
-                    && let Some(inner) = find_refused_nullable_field(&payload.ty, self)
-                {
-                    return Err(MirError::HeapNullableNotLowered {
-                        inner_type: inner.clone(),
-                        position: format!("enum payload `{}.{}`", layout.name, variant.name),
-                        span: DUMMY_SPAN.clone(),
-                    });
+                if let Some(payload) = &variant.payload {
+                    if let Some(inner) = find_refused_nullable_field(&payload.ty, self) {
+                        return Err(MirError::HeapNullableNotLowered {
+                            inner_type: inner.clone(),
+                            position: format!("enum payload `{}.{}`", layout.name, variant.name),
+                            span: DUMMY_SPAN.clone(),
+                        });
+                    }
+                    // WO-SPOF-1: container-element position for the payload type.
+                    if let Some(inner) = find_refused_nullable_container(&payload.ty, self) {
+                        return Err(MirError::HeapNullableNotLowered {
+                            inner_type: inner.clone(),
+                            position: format!(
+                                "enum payload `{}.{}` (container element)",
+                                layout.name, variant.name
+                            ),
+                            span: DUMMY_SPAN.clone(),
+                        });
+                    }
                 }
             }
         }
