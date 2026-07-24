@@ -2776,6 +2776,36 @@ impl JitContext {
         Ok(())
     }
 
+    /// Bind a computed scalar `val` (from a non-`String` `Const`) to `dest`'s
+    /// SSA variable, and — if `dest` also occupies a struct/enum `StackSlot`
+    /// niche — mirror the same value into the slot's tag/disc offset.
+    ///
+    /// Two ADRs share this shape because both niches use the same
+    /// `Integer`-typed `Const` to materialize `~0` (null): ADR-0062
+    /// (`String?` slot ptr@0 == `NULL_SENTINEL`) and ADR-0065 Lát 1 (`Enum?`
+    /// slot disc@0 == `NULL_SENTINEL`). A scalar `Const` into a
+    /// struct/enum-repr local only ever happens for this null-sentinel
+    /// materialize case; the rest of the slot (len/cap, payload) is left
+    /// don't-care, since consumers null-check the tag/disc offset only.
+    fn store_scalar_const(
+        &self,
+        builder: &mut FunctionBuilder<'_>,
+        dest: &Place,
+        val: cranelift_codegen::ir::Value,
+    ) {
+        builder.def_var(self.var(dest.local), val);
+        if dest.projection.is_empty()
+            && let Some((slot, _)) = self.struct_slots.get(&dest.local)
+        {
+            builder.ins().stack_store(val, *slot, 0);
+        }
+        if dest.projection.is_empty()
+            && let Some((slot, _)) = self.enum_slots.get(&dest.local)
+        {
+            builder.ins().stack_store(val, *slot, 0);
+        }
+    }
+
     /// Lower statements in a block.
     #[allow(clippy::too_many_lines)] // JIT lowering dispatch — splitting would scatter Cranelift builder state
     fn lower_block_statements(
@@ -2852,8 +2882,8 @@ impl JitContext {
                         builder.def_var(self.var(*l), zero);
                     }
                 }
-                Statement::Const { dest, value, .. } => {
-                    if let ConstValue::String(s) = value {
+                Statement::Const { dest, value, .. } => match value {
+                    ConstValue::String(s) => {
                         // AOT: replace with define_data (ADR-0040 §3.3).
                         let bytes = s.as_bytes();
                         let ptr_val = builder.ins().iconst(I64, bytes.as_ptr() as i64);
@@ -2872,47 +2902,26 @@ impl JitContext {
                             builder.ins().stack_store(len_val, *slot, 16); // cap = len
                         }
                         builder.def_var(self.var(dest.local), handle);
-                    } else {
-                        let val = match value {
-                            ConstValue::Integer(n) => {
-                                let n_i64 = i64::try_from(*n).map_err(|_| {
-                                    JitError::Unsupported(format!(
-                                        "Integer constant {n} does not fit in i64 — \
-                                         Bậc A only supports 64-bit values."
-                                    ))
-                                })?;
-                                builder.ins().iconst(I64, n_i64)
-                            }
-                            ConstValue::Trit(t) => builder.ins().iconst(I64, i64::from(*t)),
-                            ConstValue::Unit => builder.ins().iconst(I64, 0),
-                            ConstValue::String(_) => unreachable!("String handled by if-let above"),
-                        };
-                        builder.def_var(self.var(dest.local), val);
-                        // ADR-0062: `~0` (null) into a `String?` local materializes
-                        // NULL_SENTINEL into the slot's ptr@0 (the repr is the
-                        // 24-byte String slot; len/cap stay don't-care). A scalar
-                        // Integer const into a String-repr local only happens for
-                        // this null-sentinel materialize. len@8/cap@16 left as-is
-                        // — the shim no-ops on ptr@0 == NULL_SENTINEL before
-                        // reading cap, and consumers null-check ptr@0 only.
-                        if dest.projection.is_empty()
-                            && let Some((slot, _)) = self.struct_slots.get(&dest.local)
-                        {
-                            builder.ins().stack_store(val, *slot, 0);
-                        }
-                        // ADR-0065 Lát 1: `~0` (null) into an `Enum?` local
-                        // materializes NULL_SENTINEL into the enum slot's disc@0
-                        // (the disc-sentinel niche). A scalar Integer const into
-                        // an enum-repr local only happens for this null-sentinel
-                        // materialize; payload area stays don't-care (the match
-                        // `~0` arm never reads it).
-                        if dest.projection.is_empty()
-                            && let Some((slot, _)) = self.enum_slots.get(&dest.local)
-                        {
-                            builder.ins().stack_store(val, *slot, 0);
-                        }
                     }
-                }
+                    ConstValue::Integer(n) => {
+                        let n_i64 = i64::try_from(*n).map_err(|_| {
+                            JitError::Unsupported(format!(
+                                "Integer constant {n} does not fit in i64 — \
+                                 Bậc A only supports 64-bit values."
+                            ))
+                        })?;
+                        let val = builder.ins().iconst(I64, n_i64);
+                        self.store_scalar_const(builder, dest, val);
+                    }
+                    ConstValue::Trit(t) => {
+                        let val = builder.ins().iconst(I64, i64::from(*t));
+                        self.store_scalar_const(builder, dest, val);
+                    }
+                    ConstValue::Unit => {
+                        let val = builder.ins().iconst(I64, 0);
+                        self.store_scalar_const(builder, dest, val);
+                    }
+                },
 
                 Statement::Assign { dest, source, .. } => {
                     // ADR-0057: Outcome slot-to-slot move. When both dest and
