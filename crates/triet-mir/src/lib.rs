@@ -1316,21 +1316,20 @@ pub fn builtin_shim_meta(name: &str) -> Option<BuiltinShimMeta> {
         "__triet_string_append" => Some(BuiltinShimMeta {
             name: "__triet_string_append",
             returns_borrow_of: None,
-            // ADR-0085 AMEND-2: Some(0) self-conflicted with the loan created
-            // by the call's own explicit `&0 mutable m` argument (append/
-            // clear pass m's OWN local, unlike pop/remove which pass a bare
-            // container local with no `&0` expression) — 5 live fixtures
-            // (93/96/97/99/100) hit a false E2440. Closing the real E2440
-            // gap needs the M3 pre-check to exclude the arg's own loan
-            // first; deferred to Nhịp 2, out of scope for WO-N1.
-            mutates_arg: None,
+            // ADR-0085 Nhịp 2a: restored to Some(0) now that the M3
+            // pre-check's self-loan-exclusion (checker.rs, mirrors U2
+            // :1260) traces through the call's own `&0 mutable m` arg to
+            // its real source and excludes that self-loan from the
+            // conflict search — closes the E2440 gap without the false
+            // positive AMEND-2 hit on 93/96/97/99/100.
+            mutates_arg: Some(0),
             arg_consumes: &[false, false],
         }),
         "__triet_string_clear" => Some(BuiltinShimMeta {
             name: "__triet_string_clear",
             returns_borrow_of: None,
-            // ADR-0085 AMEND-2: see __triet_string_append above.
-            mutates_arg: None,
+            // ADR-0085 Nhịp 2a: see __triet_string_append above.
+            mutates_arg: Some(0),
             arg_consumes: &[false],
         }),
         "__triet_string_contains" => Some(BuiltinShimMeta {

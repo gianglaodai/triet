@@ -1291,11 +1291,20 @@ fn process_block(
             let is_mutated = (i < meta.arg_consumes.len() && meta.arg_consumes[i])
                 || meta.mutates_arg == Some(i);
             if is_mutated {
-                let arg_place = Place::from(*arg);
+                // Nhịp 2a: nếu arg là dest của direct borrow (clear(&0 mutable m) →
+                // _1 = &0 mutable m; clear(_1)), thứ bị mutate là SOURCE của borrow đó
+                // (container); chính borrow tạo ra arg là self-loan cấp phép lời gọi —
+                // KHÔNG được tự xung đột với mình. Trace + loại self-loan (mirror U2 :1260).
+                let real_place = state
+                    .active_loans
+                    .iter()
+                    .find(|l| l.dest == *arg && !l.is_propagated)
+                    .map_or(Place::from(*arg), |l| l.source.clone());
                 if let Some(conflicting) = state
                     .active_loans
                     .iter()
-                    .find(|l| places_conflict(&l.source, &arg_place, true))
+                    .filter(|l| l.dest != *arg)
+                    .find(|l| places_conflict(&l.source, &real_place, true))
                 {
                     let arg_name = names.get(arg).cloned().unwrap_or_else(|| format!("{arg}"));
                     errors.push(BorrowError::NllExclusivityViolation {
@@ -3277,6 +3286,71 @@ mod tests {
         assert!(
             !result.is_ok(),
             "E2440 must fire when mutating (pop) vector while get_ref borrow is alive"
+        );
+        assert!(
+            result
+                .errors
+                .iter()
+                .any(|e| matches!(e, BorrowError::NllExclusivityViolation { .. })),
+            "expected E2440 NllExclusivityViolation, got: {:?}",
+            result.errors
+        );
+    }
+
+    /// ADR-0085 Nhịp 2a T2 (decisive tooth): self-loan-exclusion in the M3
+    /// mutate pre-check must NOT create a false negative. `clear(&0 mutable
+    /// m)` lowers to `arg = &0 mutable m; clear(arg)` — the pre-check must
+    /// trace `arg` back to its real source (`m`) and exclude THAT self-loan
+    /// from the conflict search (else it would spuriously conflict with
+    /// itself, ADR-0085 AMEND-2). But a SEPARATE, genuine borrow `r = &0 m`
+    /// that is still alive at the call site must still be found — the
+    /// exclusion is keyed on `loan.dest == arg` (the specific loan serving
+    /// THIS call), not on the container `m` as a whole. If the exclusion
+    /// were ever widened to drop every loan sourced from `m`, this test
+    /// would go from "must fire E2440" to "silently accepts" — the exact
+    /// false-negative this tooth exists to catch.
+    #[test]
+    fn self_loan_exclusion_does_not_blind_genuine_concurrent_borrow() {
+        let mut b = MirBuilder::new("clear_self_loan_vs_other_borrow", MirType::Unit);
+        let m = b.add_param("m", ParameterPassing::Move);
+        b.set_local_type(m, "String");
+        let r = b.new_local();
+        let arg = b.new_local();
+
+        // bb0: r = &0 m (genuine separate borrow, stays alive) ; arg = &0
+        // mutable m (self-loan feeding the call) ; clear(arg)
+        let bb0 = b.new_block();
+        b.push(bb0, storage_live(r));
+        b.push(bb0, borrow(r, ReferenceForm::BorrowReadOnly, m));
+        b.push(bb0, storage_live(arg));
+        b.push(bb0, borrow(arg, ReferenceForm::BorrowExclusiveMutable, m));
+        let out = b.new_local();
+        b.push(bb0, storage_live(out));
+        let bb1 = b.new_block();
+        b.set_terminator(
+            bb0,
+            shim_call("__triet_string_clear", vec![arg], bb1, vec![out]),
+        );
+
+        // bb1: cleanup
+        b.push(bb1, Statement::Drop(r, DUMMY_SPAN));
+        b.push(bb1, Statement::Drop(arg, DUMMY_SPAN));
+        b.push(bb1, Statement::Drop(out, DUMMY_SPAN));
+        b.push(bb1, Statement::Drop(m, DUMMY_SPAN));
+        b.set_terminator(bb1, return_(vec![]));
+
+        let body = b.build(bb0);
+        println!("=== self-loan excluded, but genuine concurrent borrow `r` must still fire ===");
+        println!("{body}");
+        let result = check_body(&body);
+        for err in &result.errors {
+            println!("  {err}");
+        }
+        assert!(
+            !result.is_ok(),
+            "E2440 must still fire: `r` is a GENUINE separate borrow of `m`, not \
+             the call's own self-loan — self-loan-exclusion must only skip the \
+             loan whose dest IS the call's arg, not every loan on the container."
         );
         assert!(
             result
