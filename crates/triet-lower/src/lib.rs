@@ -27,47 +27,212 @@ use triet_syntax::{
 
 // ── Lowering error ───────────────────────────────────────────
 
-/// An error produced when lowering cannot proceed because an AST construct
-/// is not yet supported by the MIR backend.
-#[derive(Debug, Clone)]
-pub struct LowerError {
-    /// Human-readable description of what was not supported.
-    pub message: String,
-    /// Source location of the unsupported construct.
-    pub span: Span,
+/// An error produced when lowering cannot proceed — either because an AST
+/// construct is not yet supported by the MIR backend (a compiler-completeness
+/// gap), because the program hit a design fence the backend intentionally
+/// refuses to cross, because of a user-visible mistake (undefined local,
+/// ambiguous null literal, out-of-range literal), or because an internal
+/// invariant the lowerer relies on was violated (a compiler bug).
+///
+/// Mirrors `CapabilityError` (`triet-typecheck/src/capability_check.rs`):
+/// every variant carries its own `message`/`span` pair and a
+/// `triet::lower::E11XX` diagnostic code (ADR-0086).
+#[derive(Debug, Clone, thiserror::Error, miette::Diagnostic)]
+pub enum LowerError {
+    /// A supported-in-principle AST construct that the current backend does
+    /// not lower yet — a gap in compiler completeness, not a mistake in the
+    /// user's program.
+    #[error("{message}")]
+    #[diagnostic(
+        code(triet::lower::E1100),
+        help(
+            "this construct is not yet lowered by the current backend — this is a \
+             compiler-completeness gap, not an error in your program. Please report \
+             it with a minimal reproduction."
+        )
+    )]
+    ConstructNotYetLowered {
+        /// Human-readable description of the unsupported construct.
+        message: String,
+        /// Source location of the unsupported construct.
+        #[label]
+        span: Span,
+    },
+
+    /// A payload-bearing nullable enum (`E?`) reached a position the
+    /// disc-niche nullable repr cannot represent. Design fence per ADR-0065
+    /// §12.7 — not a missing feature.
+    #[error("{message}")]
+    #[diagnostic(
+        code(triet::lower::E1120),
+        help(
+            "payload-bearing `Enum?` is a design fence (ADR-0065 §12.7), not a \
+             not-implemented-yet gap — see the [Fix] guidance above."
+        )
+    )]
+    NullableEnumPayloadUnsupported {
+        /// Human-readable description of the offending type + location.
+        message: String,
+        /// Source location of the offending declaration/expression.
+        #[label]
+        span: Span,
+    },
+
+    /// A nullable struct return (`Struct?`) has a heap-bearing field, which
+    /// the tag-prepend sret buffer cannot carry (no drop-glue). Design fence
+    /// per ADR-0065 §4 (B8) — not a missing feature.
+    #[error("{message}")]
+    #[diagnostic(
+        code(triet::lower::E1121),
+        help(
+            "`Struct?`/`Enum?` returns are Copy-only-fields-only by design (ADR-0065 \
+             §4 B8) — see the [Fix] guidance above."
+        )
+    )]
+    NullableStructReturnHeapField {
+        /// Human-readable description of the offending struct + field.
+        message: String,
+        /// Source location of the offending return.
+        #[label]
+        span: Span,
+    },
+
+    /// A general first-class/escaping closure (`Expr::Lambda`) reached the
+    /// lowerer. Intentional seal (YAGNI) per ADR-0039 recon, not a gap —
+    /// nullable/Outcome operator families lower via dedicated inline AST
+    /// nodes and have no first-class closure consumer.
+    #[error("{message}")]
+    #[diagnostic(
+        code(triet::lower::E1122),
+        help(
+            "general escaping closures are intentionally sealed (YAGNI per ADR-0039 \
+             recon), not an unimplemented gap."
+        )
+    )]
+    EscapingClosureSealed {
+        /// Human-readable description of the seal.
+        message: String,
+        /// Source location of the `Expr::Lambda`.
+        #[label]
+        span: Span,
+    },
+
+    /// A local variable was referenced that has no binding in scope.
+    #[error("{message}")]
+    #[diagnostic(
+        code(triet::lower::E1140),
+        help("check that the variable is declared (and still in scope) before this use.")
+    )]
+    UndefinedLocal {
+        /// Human-readable description naming the undefined local.
+        message: String,
+        /// Source location of the reference.
+        #[label]
+        span: Span,
+    },
+
+    /// An Outcome/nullable constructor (`~+`/`~0`/`~-`) was used without an
+    /// expected type available from context to resolve its target type.
+    #[error("{message}")]
+    #[diagnostic(
+        code(triet::lower::E1141),
+        help(
+            "annotate the binding or the function return type so the constructor \
+             knows its target type, e.g. `let x: Integer? = ~0`."
+        )
+    )]
+    NullLiteralWithoutExpectedType {
+        /// Human-readable description of the missing-expected-type site.
+        message: String,
+        /// Source location of the constructor.
+        #[label]
+        span: Span,
+    },
+
+    /// A literal value in a match pattern (or Trit/Tryte/Long literal) fell
+    /// outside the representable range for its type.
+    #[error("{message}")]
+    #[diagnostic(
+        code(triet::lower::E1142),
+        help("the literal value is outside the representable range for this type.")
+    )]
+    LiteralOutOfRange {
+        /// Human-readable description naming the type and offending value.
+        message: String,
+        /// Source location of the literal.
+        #[label]
+        span: Span,
+    },
+
+    /// An internal invariant the lowerer relies on (name resolution,
+    /// exhaustiveness scan, fixpoint convergence, …) was violated. This
+    /// indicates a compiler bug, not a mistake in the user's program.
+    #[error("{message}")]
+    #[diagnostic(
+        code(triet::lower::E1190),
+        help(
+            "internal compiler invariant violated — please report this as a compiler \
+             bug with the input program that triggered it."
+        )
+    )]
+    InternalInvariant {
+        /// Human-readable description of the violated invariant.
+        message: String,
+        /// Source location where the invariant check fired.
+        #[label]
+        span: Span,
+    },
 }
 
 impl LowerError {
+    /// The human-readable message text carried by every variant. Kept as an
+    /// accessor (rather than a public field) now that `LowerError` is an
+    /// enum — prefer rendering via `miette::Report` for user-facing output;
+    /// this exists for call sites (tests) that only need the text.
+    #[must_use]
+    pub fn message(&self) -> &str {
+        match self {
+            Self::ConstructNotYetLowered { message, .. }
+            | Self::NullableEnumPayloadUnsupported { message, .. }
+            | Self::NullableStructReturnHeapField { message, .. }
+            | Self::EscapingClosureSealed { message, .. }
+            | Self::UndefinedLocal { message, .. }
+            | Self::NullLiteralWithoutExpectedType { message, .. }
+            | Self::LiteralOutOfRange { message, .. }
+            | Self::InternalInvariant { message, .. } => message,
+        }
+    }
+
     fn unsupported_stmt(stmt: &Stmt, span: Span) -> Self {
-        Self {
+        Self::ConstructNotYetLowered {
             message: format!("lowerer does not yet support this statement: {stmt:?}"),
             span,
         }
     }
 
     fn unsupported_expr(expr: &Expr, span: Span) -> Self {
-        Self {
+        Self::ConstructNotYetLowered {
             message: format!("lowerer does not yet support this expression: {expr:?}"),
             span,
         }
     }
 
     fn unsupported_callee(expr: &Expr, span: Span) -> Self {
-        Self {
+        Self::ConstructNotYetLowered {
             message: format!("unsupported callee expression: {expr:?}"),
             span,
         }
     }
 
     fn undefined_local(name: &str, span: Span) -> Self {
-        Self {
+        Self::UndefinedLocal {
             message: format!("undefined local variable: {name}"),
             span,
         }
     }
 
     fn heap_type_not_supported(what: &str, span: Span) -> Self {
-        Self {
+        Self::ConstructNotYetLowered {
             message: format!(
                 "heap types (String, Vector, HashMap) are not yet supported in this position: {what}. \
                  Only bare local variables may hold heap values in Bậc A."
@@ -94,7 +259,7 @@ impl LowerError {
         span: Span,
     ) -> Self {
         let where_clause = location.map_or(String::new(), |loc| format!(" ({loc})"));
-        Self {
+        Self::NullableEnumPayloadUnsupported {
             message: format!(
                 "nullable enum `{enum_name}?`{where_clause}: payload-bearing nullable \
                  enums inside aggregates are currently unsupported (ADR-0065 pending).\n\
@@ -123,7 +288,7 @@ impl LowerError {
         field_name: &str,
         span: Span,
     ) -> Self {
-        Self {
+        Self::NullableStructReturnHeapField {
             message: format!(
                 "nullable struct return `{struct_name}?` has a heap-bearing field \
                  `{field_name}` and cannot be returned this way: ADR-0065 §4 (B8) \
@@ -140,19 +305,13 @@ impl LowerError {
     }
 
     fn null_literal_without_expected_type(span: Span) -> Self {
-        Self {
+        Self::NullLiteralWithoutExpectedType {
             message: "Outcome/nullable constructor (`~+`/`~0`/`~-`) requires an expected \
                  type from context (annotate the binding or the return type, e.g. \
                  `let x: Integer? = ~0` or a function returning `T?` / `T~E`)."
                 .to_string(),
             span,
         }
-    }
-}
-
-impl std::fmt::Display for LowerError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}", self.message)
     }
 }
 
@@ -762,7 +921,7 @@ pub fn lower_program(
     loop {
         fixpoint_iterations += 1;
         if fixpoint_iterations > FIXPOINT_ITERATION_LIMIT {
-            return Err(LowerError {
+            return Err(LowerError::InternalInvariant {
                 message: format!(
                     "struct/enum layout sizing did not converge after \
                      {FIXPOINT_ITERATION_LIMIT} iterations (a cyclic aggregate \
@@ -1116,7 +1275,7 @@ pub(crate) fn lower_function(
                     .insert(FieldPath::Root, BTreeSet::from([ref_param_indices[0]]));
             }
             _ => {
-                return Err(LowerError {
+                return Err(LowerError::InternalInvariant {
                     message: format!(
                         "internal: return-borrow elision expects exactly 1 ref-param \
                          (found {}; typecheck E2400 should have rejected this)",
@@ -3928,16 +4087,19 @@ fn lower_expr(
             // Look up the discriminant value for this variant.
             // Clone the value out of the HashMap before mutating ctx.
             let disc = {
-                let layout = c.enum_layouts.get(name).ok_or_else(|| LowerError {
-                    message: format!("unknown enum '{name}'"),
-                    span: expr_span.clone(),
-                })?;
+                let layout =
+                    c.enum_layouts
+                        .get(name)
+                        .ok_or_else(|| LowerError::InternalInvariant {
+                            message: format!("unknown enum '{name}'"),
+                            span: expr_span.clone(),
+                        })?;
                 layout
                     .variants
                     .iter()
                     .find(|v| v.name == *variant_name)
                     .map(|v| v.discriminant_value)
-                    .ok_or_else(|| LowerError {
+                    .ok_or_else(|| LowerError::InternalInvariant {
                         message: format!("unknown variant '{variant_name}' in enum '{name}'"),
                         span: expr_span.clone(),
                     })?
@@ -4001,7 +4163,7 @@ fn lower_expr(
                     let pat_span = pat.span.clone();
                     // Wildcard must be the last arm (arms after = unreachable).
                     if wildcard_arm.is_some() {
-                        return Err(LowerError {
+                        return Err(LowerError::InternalInvariant {
                             message: "wildcard `_` must be the last arm in a Trit match — \
                                       arms after wildcard are unreachable"
                                 .to_string(),
@@ -4017,9 +4179,11 @@ fn lower_expr(
                             value,
                             suffix: Some(NumericSuffix::Trit),
                         }) => {
-                            let key = i64::try_from(*value).map_err(|_| LowerError {
-                                message: format!("Trit literal value {value} out of range"),
-                                span: pat_span.clone(),
+                            let key = i64::try_from(*value).map_err(|_| {
+                                LowerError::LiteralOutOfRange {
+                                    message: format!("Trit literal value {value} out of range"),
+                                    span: pat_span.clone(),
+                                }
                             })?;
                             let arm_bb = c.alloc_bb();
                             cases.push((key, arm_bb));
@@ -4044,7 +4208,7 @@ fn lower_expr(
                             c.pop_scope();
                         }
                         other => {
-                            return Err(LowerError {
+                            return Err(LowerError::InternalInvariant {
                                 message: format!(
                                     "unsupported pattern in Trit match: {other:?} — expected \
                                      `-1_trit`/`0_trit`/`1_trit` or `_`"
@@ -4125,7 +4289,7 @@ fn lower_expr(
                     let pat = arena.pattern(arm.pattern);
                     let pat_span = pat.span.clone();
                     if wildcard_arm.is_some() {
-                        return Err(LowerError {
+                        return Err(LowerError::InternalInvariant {
                             message: "wildcard `_` must be the last arm in a Trilean match — \
                                       arms after wildcard are unreachable"
                                 .to_string(),
@@ -4166,7 +4330,7 @@ fn lower_expr(
                             c.pop_scope();
                         }
                         other => {
-                            return Err(LowerError {
+                            return Err(LowerError::InternalInvariant {
                                 message: format!(
                                     "unsupported pattern in Trilean match: {other:?} — expected \
                                      `true`/`false`/`unknown` or `_`"
@@ -4274,7 +4438,7 @@ fn lower_expr(
 
                     // Guard 2: any arm after wildcard is unreachable.
                     if wildcard_arm.is_some() {
-                        return Err(LowerError {
+                        return Err(LowerError::InternalInvariant {
                             message: "wildcard `_` must be the last arm in a nullable match — \
                                       arms after wildcard are unreachable"
                                 .to_string(),
@@ -4290,7 +4454,7 @@ fn lower_expr(
                         } => {
                             // Guard 1: duplicate ~+ arm.
                             if present_arm.is_some() {
-                                return Err(LowerError {
+                                return Err(LowerError::InternalInvariant {
                                     message: "duplicate `~+` arm in nullable match".to_string(),
                                     span: pat_span,
                                 });
@@ -4300,7 +4464,7 @@ fn lower_expr(
                                 match &arena.pattern(*sub_pat).node {
                                     Pattern::Variable(_) | Pattern::Wildcard => {}
                                     other => {
-                                        return Err(LowerError {
+                                        return Err(LowerError::InternalInvariant {
                                             message: format!(
                                                 "unsupported sub-pattern in `~+` arm: \
                                                  {other:?} — only variable bindings and `_` \
@@ -4319,7 +4483,7 @@ fn lower_expr(
                         } => {
                             // Guard 1: duplicate ~0 arm.
                             if null_arm.is_some() {
-                                return Err(LowerError {
+                                return Err(LowerError::InternalInvariant {
                                     message: "duplicate `~0` arm in nullable match".to_string(),
                                     span: pat_span,
                                 });
@@ -4330,7 +4494,7 @@ fn lower_expr(
                             arm: OutcomeArm::Negative,
                             ..
                         } => {
-                            return Err(LowerError {
+                            return Err(LowerError::InternalInvariant {
                                 message:
                                     "`~-` arm on nullable type — typechecker should have rejected this"
                                         .to_string(),
@@ -4338,7 +4502,7 @@ fn lower_expr(
                             });
                         }
                         other => {
-                            return Err(LowerError {
+                            return Err(LowerError::InternalInvariant {
                                 message: format!(
                                     "unsupported match pattern on nullable scrutinee: {other:?}"
                                 ),
@@ -4440,22 +4604,28 @@ fn lower_expr(
 
                 // ── Null branch: ~0 arm or wildcard fallback ──
                 c.cur = null_bb;
-                let arm_for_null = null_arm.or(wildcard_arm).ok_or_else(|| LowerError {
-                    message: "nullable match: no arm for null (~0) state — \
+                let arm_for_null =
+                    null_arm
+                        .or(wildcard_arm)
+                        .ok_or_else(|| LowerError::InternalInvariant {
+                            message: "nullable match: no arm for null (~0) state — \
                               typechecker should have rejected this"
-                        .to_string(),
-                    span: expr_span.clone(),
-                })?;
+                                .to_string(),
+                            span: expr_span.clone(),
+                        })?;
                 lower_arm_no_bind(arm_for_null, c, arena, result, merge_bb, expr_span.clone())?;
 
                 // ── Present branch: ~+ arm or wildcard fallback ──
                 c.cur = present_bb;
-                let arm_for_present = present_arm.or(wildcard_arm).ok_or_else(|| LowerError {
-                    message: "nullable match: no arm for present (~+) state — \
+                let arm_for_present =
+                    present_arm
+                        .or(wildcard_arm)
+                        .ok_or_else(|| LowerError::InternalInvariant {
+                            message: "nullable match: no arm for present (~+) state — \
                               typechecker should have rejected this"
-                        .to_string(),
-                    span: expr_span.clone(),
-                })?;
+                                .to_string(),
+                            span: expr_span.clone(),
+                        })?;
 
                 c.push_scope();
                 // Bind ~+ variable if present and has a variable sub-pattern.
@@ -4534,7 +4704,7 @@ fn lower_expr(
                     let pat = arena.pattern(arm.pattern);
                     let pat_span = pat.span.clone();
                     if wildcard_arm.is_some() {
-                        return Err(LowerError {
+                        return Err(LowerError::InternalInvariant {
                             message: "wildcard `_` must be the last arm".to_string(),
                             span: pat_span,
                         });
@@ -4546,7 +4716,7 @@ fn lower_expr(
                             payload,
                         } => {
                             if positive_arm.is_some() {
-                                return Err(LowerError {
+                                return Err(LowerError::InternalInvariant {
                                     message: "duplicate `~+` arm".to_string(),
                                     span: pat_span,
                                 });
@@ -4555,7 +4725,7 @@ fn lower_expr(
                                 match &arena.pattern(*sub).node {
                                     Pattern::Variable(_) | Pattern::Wildcard => {}
                                     other => {
-                                        return Err(LowerError {
+                                        return Err(LowerError::InternalInvariant {
                                             message: format!(
                                                 "unsupported sub-pattern in `~+` arm: {other:?}"
                                             ),
@@ -4571,7 +4741,7 @@ fn lower_expr(
                             payload,
                         } => {
                             if negative_arm.is_some() {
-                                return Err(LowerError {
+                                return Err(LowerError::InternalInvariant {
                                     message: "duplicate `~-` arm".to_string(),
                                     span: pat_span,
                                 });
@@ -4580,7 +4750,7 @@ fn lower_expr(
                                 match &arena.pattern(*sub).node {
                                     Pattern::Variable(_) | Pattern::Wildcard => {}
                                     other => {
-                                        return Err(LowerError {
+                                        return Err(LowerError::InternalInvariant {
                                             message: format!(
                                                 "unsupported sub-pattern in `~-` arm: {other:?}"
                                             ),
@@ -4596,13 +4766,13 @@ fn lower_expr(
                             ..
                         } => {
                             if !is_ternary {
-                                return Err(LowerError {
+                                return Err(LowerError::InternalInvariant {
                                     message: "`~0` arm on binary Outcome — typechecker should have rejected this".to_string(),
                                     span: pat_span,
                                 });
                             }
                             if zero_arm.is_some() {
-                                return Err(LowerError {
+                                return Err(LowerError::InternalInvariant {
                                     message: "duplicate `~0` arm".to_string(),
                                     span: pat_span,
                                 });
@@ -4610,7 +4780,7 @@ fn lower_expr(
                             zero_arm = Some(arm);
                         }
                         other => {
-                            return Err(LowerError {
+                            return Err(LowerError::InternalInvariant {
                                 message: format!(
                                     "unsupported pattern on Outcome scrutinee: {other:?}"
                                 ),
@@ -4757,10 +4927,13 @@ fn lower_expr(
 
                 // ── Positive arm (~+ x): OutcomeUnwrap → bind payload ──
                 c.cur = pos_bb;
-                let pos_arm = positive_arm.or(wildcard_arm).ok_or_else(|| LowerError {
-                    message: "missing `~+` arm in Outcome match".to_string(),
-                    span: expr_span.clone(),
-                })?;
+                let pos_arm =
+                    positive_arm
+                        .or(wildcard_arm)
+                        .ok_or_else(|| LowerError::InternalInvariant {
+                            message: "missing `~+` arm in Outcome match".to_string(),
+                            span: expr_span.clone(),
+                        })?;
                 let (pos_needs_deinit, pos_payload_ty) =
                     if let MirType::Outcome { ref value_type, .. } = scrut_ty {
                         (value_type.is_any_heap(), (**value_type).clone())
@@ -4785,10 +4958,13 @@ fn lower_expr(
 
                 // ── Negative arm (~- e): OutcomeUnwrapError → bind payload ──
                 c.cur = neg_bb;
-                let neg_arm = negative_arm.or(wildcard_arm).ok_or_else(|| LowerError {
-                    message: "missing `~-` arm in Outcome match".to_string(),
-                    span: expr_span.clone(),
-                })?;
+                let neg_arm =
+                    negative_arm
+                        .or(wildcard_arm)
+                        .ok_or_else(|| LowerError::InternalInvariant {
+                            message: "missing `~-` arm in Outcome match".to_string(),
+                            span: expr_span.clone(),
+                        })?;
                 let (neg_needs_deinit, neg_payload_ty) =
                     if let MirType::Outcome { ref error_type, .. } = scrut_ty {
                         (error_type.is_any_heap(), (**error_type).clone())
@@ -4814,10 +4990,13 @@ fn lower_expr(
                 // ── Zero arm (~0): no payload bind, just eval body ──
                 if let Some(zb) = zero_bb {
                     c.cur = zb;
-                    let z_arm = zero_arm.or(wildcard_arm).ok_or_else(|| LowerError {
-                        message: "missing `~0` arm in ternary Outcome match".to_string(),
-                        span: expr_span.clone(),
-                    })?;
+                    let z_arm =
+                        zero_arm
+                            .or(wildcard_arm)
+                            .ok_or_else(|| LowerError::InternalInvariant {
+                                message: "missing `~0` arm in ternary Outcome match".to_string(),
+                                span: expr_span.clone(),
+                            })?;
                     c.push_scope();
                     // ~0 has no payload — no variable binding.
                     let body_val = lower_expr(z_arm.body, expected, arena, c)?;
@@ -4885,7 +5064,7 @@ fn lower_expr(
                 );
                 if is_catch_all {
                     if wildcard_arm.is_some() {
-                        return Err(LowerError {
+                        return Err(LowerError::InternalInvariant {
                             message: "duplicate catch-all (`_` or binding) in enum match"
                                 .to_string(),
                             span: expr_span.clone(),
@@ -4893,7 +5072,7 @@ fn lower_expr(
                     }
                     wildcard_arm = Some(arm);
                 } else if wildcard_arm.is_some() {
-                    return Err(LowerError {
+                    return Err(LowerError::InternalInvariant {
                         message: "catch-all (`_` or binding) must be the last arm in an enum \
                                   match — arms after it are unreachable"
                             .to_string(),
@@ -4929,7 +5108,7 @@ fn lower_expr(
                         payload: sub_pattern,
                         ..
                     } => {
-                        let res = resolution.ok_or_else(|| LowerError {
+                        let res = resolution.ok_or_else(|| LowerError::InternalInvariant {
                             message: format!(
                                 "unresolved enum variant '{variant_name}' — type checker should have resolved this"
                             ),
@@ -5096,7 +5275,7 @@ fn lower_expr(
                                     // _ — do nothing, no binding
                                 }
                                 other => {
-                                    return Err(LowerError {
+                                    return Err(LowerError::InternalInvariant {
                                         message: format!(
                                             "unsupported match sub-pattern: {other:?}"
                                         ),
@@ -5131,7 +5310,7 @@ fn lower_expr(
                     // catch-all binding, already skipped above and lowered as
                     // `default_bb`. It never reaches this match.
                     other => {
-                        return Err(LowerError {
+                        return Err(LowerError::InternalInvariant {
                             message: format!(
                                 "unsupported match pattern (expected enum variant): {other:?}"
                             ),
@@ -5416,7 +5595,7 @@ fn lower_expr(
                 // Refuse NARROW (nợ #2 §2): Vector / HashMap / Enum /
                 // Reference trait-method returns still need their own ABI.
                 // Refuse rather than fall through to a scalar miscompile.
-                return Err(LowerError {
+                return Err(LowerError::ConstructNotYetLowered {
                     message: format!(
                         "trait method `{callee_name}` returns `{callee_ret}` — \
                          Vector/HashMap/Enum/Reference returns deferred (nợ #2 scope)"
@@ -5932,7 +6111,7 @@ fn lower_expr(
         // there is no first-class closure consumer, so a `Lambda` reaching
         // the lowerer is refused explicitly rather than via the generic
         // catch-all (clearer diagnostic + intentional seal, not a gap).
-        Expr::Lambda { .. } => Err(LowerError {
+        Expr::Lambda { .. } => Err(LowerError::EscapingClosureSealed {
             message: "general escaping closure sealed (YAGNI per ADR-0039 recon — \
                       nullable/Outcome ops use inline nodes, no first-class closure consumer)"
                 .to_string(),
@@ -6014,7 +6193,7 @@ fn lower_value_keyed_match(
         MirType::Long => (Some(NumericSuffix::Long), "Long"),
         // Caller gates to these three; defend against drift.
         _ => {
-            return Err(LowerError {
+            return Err(LowerError::InternalInvariant {
                 message: "value-keyed match dispatched on a non-integer scalar".to_string(),
                 span: expr_span.clone(),
             });
@@ -6033,7 +6212,7 @@ fn lower_value_keyed_match(
         let pat = arena.pattern(arm.pattern);
         let pat_span = pat.span.clone();
         if wildcard_arm.is_some() {
-            return Err(LowerError {
+            return Err(LowerError::InternalInvariant {
                 message: format!(
                     "wildcard `_` must be the last arm in a {type_name} match — \
                      arms after wildcard are unreachable"
@@ -6049,7 +6228,7 @@ fn lower_value_keyed_match(
             Pattern::Literal(LiteralPattern::Integer { value, suffix })
                 if *suffix == expected_suffix =>
             {
-                let key = i64::try_from(*value).map_err(|_| LowerError {
+                let key = i64::try_from(*value).map_err(|_| LowerError::LiteralOutOfRange {
                     message: format!("{type_name} literal value {value} out of range"),
                     span: pat_span.clone(),
                 })?;
@@ -6076,7 +6255,7 @@ fn lower_value_keyed_match(
                 c.pop_scope();
             }
             other => {
-                return Err(LowerError {
+                return Err(LowerError::InternalInvariant {
                     message: format!(
                         "unsupported pattern in {type_name} match: {other:?} — expected \
                          a {type_name} literal or `_`"
@@ -6207,15 +6386,20 @@ mod tests {
     #[test]
     fn lambda_is_sealed_yagni() {
         // Phase 14.0: a first-class/escaping closure reaching the lowerer is
-        // refused with the explicit YAGNI message, NOT the generic
-        // unsupported_expr catch-all. Poison: remove the Expr::Lambda arm →
-        // it falls to the generic catch-all → this assertion goes red.
+        // refused with the explicit YAGNI seal (E1122 EscapingClosureSealed),
+        // NOT the generic unsupported_expr catch-all (E1100
+        // ConstructNotYetLowered). Poison: remove the Expr::Lambda arm → it
+        // falls to the generic catch-all → both assertions go red.
         let err = try_lower_first_fn("function main() -> Integer { let f = |x| x; 0 }")
             .expect_err("lambda must be refused");
         assert!(
-            err.message.contains("closure sealed (YAGNI"),
+            matches!(err, LowerError::EscapingClosureSealed { .. }),
+            "lambda must hit the explicit EscapingClosureSealed (E1122) variant, got: {err:?}"
+        );
+        assert!(
+            err.message().contains("closure sealed (YAGNI"),
             "lambda must hit the explicit YAGNI seal, got: {}",
-            err.message
+            err.message()
         );
     }
 

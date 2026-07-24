@@ -7,6 +7,9 @@ description = "Triết AST → MIR lowering — flattens typed AST into flat MIR
 [dependencies]
 triet-mir = { path = "../triet-mir" }
 triet-syntax = { path = "../triet-syntax" }
+thiserror = "2"
+miette = { version = "7", features = ["fancy"] }
 
 [dev-dependencies]
 triet-parser = { path = "../triet-parser" }
+triet-typecheck = { path = "../triet-typecheck" }

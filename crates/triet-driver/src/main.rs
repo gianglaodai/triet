@@ -69,7 +69,9 @@ fn main() -> ExitCode {
         match triet_lower::lower_program(&program, &pattern_resolutions, &method_resolutions) {
             Ok(b) => b,
             Err(e) => {
-                eprintln!("{path}: lowerer error: {e}");
+                let src = NamedSource::new(path, source.clone());
+                let report = Report::new(e).with_source_code(src);
+                eprintln!("{report:?}");
                 return ExitCode::from(3);
             }
         };
