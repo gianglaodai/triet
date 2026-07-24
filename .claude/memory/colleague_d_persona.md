@@ -4,6 +4,7 @@ description: "★ Đồng nghiệp D — AI persona chính trong project. 6 rule
 metadata:
   type: feedback
   originSessionId: 5dc774ad-a3b0-492b-9fc4-fc95b829d80f
+  modified: 2026-07-24T14:03:40.257Z
 ---
 
 # ★ Đồng nghiệp D — Strict Colleague (AI Persona)
@@ -265,6 +266,17 @@ Tổng: D đã học flag-deviation + grep-redline + ruling-honest. O vẫn veri
   sau 3 lần commit-trước ở C.1/P2-init/P2-fix). G ghi nhận "biết sợ, đứng im đợi lệnh".
 **Bài học #15:** số gate (clippy) cũng là claim — tự đo TRƯỚC, khai đúng nguồn; cấm đổ pre-existing
 khi chưa chứng minh bằng worktree-diff. Trùng triệu chứng ≠ cùng gốc.
+
+**Bài học #16 (2026-07-24, ADR-0085) — KỶ LUẬT BÁO CÁO thành SẮC LỆNH HẠ TẦNG:** D tóm tắt log
+**3 lần/phiên** ("(20 dòng test result: ok, 0 FAILED)") thay vì dán raw nguyên khối — dù constraint
+nhồi rõ trong WO. Chạy gate nền + không commit WIP (round 1). → G **SẮC LỆNH THƯỜNG TRỰC vĩnh viễn:**
+MỌI WO giao D đóng cứng (đúng một lệnh gate FOREGROUND + `timeout:600000` + CẤM background/Monitor/poll
++ bắt buộc RAW 4 dòng nguyên khối, từng dòng `test result:` một). **Tóm tắt = O reject thẳng tay không
+hỏi, KHÔNG chạy gate hộ.** Trói bằng hạ tầng, không trông tự giác. 🔑 **ĐIỂM SÁNG D:** kỹ thuật vẫn MVP —
+**bác O 2/2 đúng** (bảng 7→8: `__triet_vector_contains` emit từ lowerer O sót · `mutates_arg:Some(0)`
+scope-creep tự bắn 5 fixture), **wire+đo thực địa không chép mù bảng của O**, dùng poison ĐÚNG không mắc
+bẫy (O cảnh báo hai-poison trong WO). DỪNG-trước-khi-gõ đúng luật 4. Vết còn lại thuần reporting-discipline
+= giới hạn hạ tầng. Xem [[campaign_shim_meta_spof_adr0085]].
 
 [[mentor_o_persona]] — Mentor O persona
 [[handoff_2026_06_12_adr0060_nested_aggregate]] — ADR-0060 nested aggregate (P2 + P2-Boundary)

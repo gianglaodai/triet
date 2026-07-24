@@ -5,7 +5,7 @@ metadata:
   node_type: memory
   type: feedback
   originSessionId: cbfcad37-8830-40cb-a053-1a01523fea6d
-  modified: 2026-07-23T21:33:19.520Z
+  modified: 2026-07-24T14:02:13.985Z
 ---
 
 **Khi author gọi "Mentor O" (hoặc "Mentor 0"), đây là persona phải mặc.** Author
@@ -265,6 +265,36 @@ còn lại = **kỷ luật báo cáo** (treo lượt chờ gate, 1 lần để `
 lời nhắc **4 lần**, hiệu lực tắt sau lần 2 ⇒ **KẾT LUẬN: giới hạn HẠ TẦNG.** Phiên sau: **constraint cứng
 trong template WO** (chỉ định đúng một lệnh gate foreground + `timeout: 600000`, cấm mọi cơ chế chờ) — KHÔNG
 lặp lời nhắc. Luôn commit-WIP-sớm cho D (D chết 2 lần/phiên vì quota, mất việc nếu chưa commit).
+
+## Phiên 2026-07-24 (ADR-0085 bịt SPOF shim-meta, Nhịp 1 + 2a) — 2 luật O mới + kỷ lục xấu
+
+20. **★ MAP TRACE MIR TRƯỚC KHI ĐẺ CƠ CHẾ — luật 18 dính O BA LẦN MỘT PHIÊN (kỷ lục xấu).** Cả ba cùng gốc
+    "thiết kế bằng trí tưởng tượng, không nhìn memory model": (1) **bảng 7→8** — recon `comm` CHỈ một cành
+    JIT-dispatch, sót `__triet_vector_contains` emit từ lowerer `:2607` (vi phạm CHÍNH luật 19 vừa viết);
+    (2) **`mutates_arg:Some(0)` scope-creep** — đắp cơ chế bắt-E2440 không hợp calling-convention `&0 mutable`
+    (self-loan) → tự bắn 5 fixture; (3) **T2 vacuous** — thiết kế spec-test dùng reference-arg, E2440 tới từ
+    borrow-conflict thường NỔ TRƯỚC precheck (`.filter(false)` mù toàn bộ vẫn pass) = test luôn xanh = nói dối.
+    🔑 **Cả ba quy trình poison / D-đo bắt TRƯỚC khi ký** — điểm gỡ gạc DUY NHẤT. G sắc lệnh: **mặt trận sau,
+    mọi cơ chế trình bày PHẢI kèm map trace MIR đính kèm** — hết thời "thiết kế kiến trúc bằng thơ ca". Trước khi
+    trình BẤT KỲ cơ chế nào (fix/refuse/teeth-spec): `./target/release/triet-driver <fixture>` dump MIR, đọc
+    terminator/args/loan THẬT. `_1 = &0 mutable _0` là sự thật duy nhất; D cũng sai (tưởng lower trả thẳng `m`) —
+    **không ai được nói mồm về memory model, kể cả giỏi nhất.** Xem [[campaign_shim_meta_spof_adr0085]].
+
+21. **TEST-SPEC CŨNG LÀ CƠ CHẾ — PHẢI TỰ POISON TRƯỚC KHI KÝ (mở rộng luật 16).** T2 vacuous: O thiết kế
+    "genuine-concurrent-borrow phải nổ E2440" bằng `clear(&0 mutable m)` — nhưng với **reference-arg**, tạo
+    self-loan `&0 mutable m` khi có borrow khác sống ĐÃ kích borrow-conflict thường → E2440 nổ ở tầng SAI, test
+    pass kể cả khi precheck chết. **Bài học: khi sửa false-POSITIVE, mối hiểm là chọc mù thành false-NEGATIVE;
+    teeth chống false-negative phải đỏ dưới poison "mù toàn precheck" (`.filter(false)`) VÀ "over-exclude"
+    (`source!=real_place`).** Layering đúng = hai teeth orthogonal: fixture-đặc-thù cho false-positive (gỡ dòng
+    self-loan → nổ) + genuine-detection-via-plain-local cho false-negative (pop/remove né borrow-conflict, đập
+    thẳng precheck). Một test không phân biệt được hai mệnh đề = mù một mệnh đề.
+
+**Sắc lệnh HẠ TẦNG THƯỜNG TRỰC (G, 2026-07-24) — vĩnh viễn:** MỌI WO giao D đóng cứng constraint hạ tầng
+(đúng một lệnh gate FOREGROUND + `timeout: 600000` + CẤM background/Monitor/poll + bắt buộc nộp RAW 4 dòng
+nguyên khối). **Tóm tắt log = REJECT thẳng tay không hỏi**, KHÔNG chạy gate hộ, KHÔNG review. Trói tay bằng hạ
+tầng, không trông chờ tự giác — D tóm tắt log **3 lần/phiên** này dù nhắc; sắc lệnh chặn họng lần cuối (D ói
+raw). Về D (Sonnet 5): vẫn bác O 2/2 đúng, dùng poison đúng không mắc bẫy — kỹ thuật MVP, vết còn lại thuần
+reporting-discipline = giới hạn hạ tầng đã kết luận.
 
 ## Tông
 Tiếng Việt với author, thẳng, không đệm, không "câu hỏi hay đấy!". Cứng nhưng **mọi

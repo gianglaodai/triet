@@ -5,7 +5,7 @@ metadata:
   node_type: memory
   type: project
   originSessionId: 61f64f48-b9b4-485d-9ae7-3e54b99fcbda
-  modified: 2026-07-23T21:32:17.510Z
+  modified: 2026-07-24T14:03:54.858Z
 ---
 
 ## ✅ ĐÓNG — 8 commit, tất cả O ✅ + G ✅, đã PUSH
@@ -73,7 +73,7 @@ Gate cuối `0·0·452·0 CLEAN`. Fixture 439→452.
 3. **Container-element `Nullable(Struct-heap)` hiện REFUSE** — muốn hỗ trợ = cho free-loop GIỮ `Nullable` route qua `struct_drop` arm (như local), thay vì bóc trước (§15.6).
 4. **lỗ N1** (`let x:E?=~0` + widening bypass) — POLICY-HOLE không UB (đo FREE=1 dup=0, giá trị đúng). §13.
 5. **`Struct?`/`Enum?` return qua method-call** = over-refuse (bản sao #3, probe 448/453).
-6. **WO-3 răng canh `builtin_shim_meta`** — G duyệt nguyên tắc "canh sự tồn tại entry trước, cờ sau"; SPOF `arg_consumes` chưa có răng.
+6. ~~**WO-3 răng canh `builtin_shim_meta`** — SPOF `arg_consumes` chưa có răng.~~ **✅ ĐÓNG 2026-07-24 — ADR-0085 Nhịp 1 (P-exist: bảng toàn phần + cổng `verify()`) + Nhịp 2a (self-loan-exclusion, `mutates_arg:Some(0)`), origin/main `f6b569f`.** Nợ Nhịp 2b (P-flag canary — cờ khai láo) CÒN treo. → [[campaign_shim_meta_spof_adr0085]]
 7. **Deep-Clone · drain · BOM FIX-2 zero-@8** (carry-over các phiên trước).
 
 [[campaign_nullable_position_and_temp_ownership]] [[campaign_nullable_enum_aggregate_pa_a]] [[campaign_aggregate_nullable]] [[feedback_failure_mode_precision]] [[feedback_poison_must_be_red]] [[mentor_o_persona]] [[colleague_d_persona]]
