@@ -35,6 +35,10 @@ pub enum JitError {
     Unsupported(String),
     /// Cranelift module error.
     Module(String),
+    /// A compiler-internal invariant was violated — an ICE, NOT the user's fault.
+    /// Mirrors the philosophy of `LowerError` E1190 (ADR-0086): surface compiler
+    /// bugs as "please report", never blame the user's program.
+    Internal(String),
 }
 
 impl std::fmt::Display for JitError {
@@ -42,6 +46,7 @@ impl std::fmt::Display for JitError {
         match self {
             Self::Unsupported(msg) => write!(f, "JIT unsupported: {msg}"),
             Self::Module(msg) => write!(f, "JIT module error: {msg}"),
+            Self::Internal(msg) => write!(f, "JIT internal error (please report): {msg}"),
         }
     }
 }
