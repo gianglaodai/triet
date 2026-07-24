@@ -1,11 +1,11 @@
 ---
 name: campaign_shim_meta_spof_adr0085
-description: "✅ ĐÓNG 2026-07-24 (Nhịp 1 + 2a) — ADR-0085 bịt SPOF builtin_shim_meta. Nhịp 1: bảng toàn phần 8-entry + cổng tồn tại Body::verify() discriminator __triet_ (P-exist). Nhịp 2a: self-loan-exclusion M3 mutate-precheck + khôi phục mutates_arg:Some(0) append/clear (E2440-string-mutate). origin/main f6b569f, gate 0·0·452·0. D bác O 2/2 đúng; O luật-18 dính BA lần cùng phiên (poison cứu cả ba). Nợ Nhịp 2b (P-flag canary) treo."
+description: "✅ ĐÓNG 2026-07-24 (Nhịp 1 + 2a) — ADR-0085 bịt SPOF builtin_shim_meta. Nhịp 1: bảng toàn phần 8-entry + cổng tồn tại Body::verify() discriminator __triet_ (P-exist). Nhịp 2a: self-loan-exclusion M3 mutate-precheck + khôi phục mutates_arg:Some(0) append/clear (E2440-string-mutate). origin/main f6b569f, gate 0·0·452·0. D bác O 2/2 đúng; O luật-18 dính BA lần cùng phiên (poison cứu cả ba). 2026-07-24(b): Nhịp 2b KHAI TỬ (audit lôi ra canary stale; lỗ thật = push_owned-vs-M3 isolation, hạ xuống nợ defense-in-depth sổ đen G)."
 metadata:
   node_type: memory
   type: project
   originSessionId: 82e5c422
-  modified: 2026-07-24T14:01:01.884Z
+  modified: 2026-07-24T15:21:23.782Z
 ---
 
 ## ✅ ĐÓNG — Nhịp 1 + 2a, O+G ký, đã PUSH (origin/main `f6b569f`, gate `0·0·452·0`)
@@ -40,8 +40,11 @@ Bảng tĩnh `triet-mir/src/lib.rs:1076`, đọc bởi **5 read-site / 3 crate**
 ## Ghi chú vai
 **D (Sonnet 5):** bác O 2/2 đúng (wire+đo thực địa, không nhắm mắt chép bảng O), dùng poison ĐÚNG không mắc bẫy (O cảnh báo hai-poison trong WO). Vết: **kỷ luật báo cáo — tóm tắt log 3 lần** (WO-N1 ×2, WO-N2a ×1) → G ra **SẮC LỆNH HẠ TẦNG THƯỜNG TRỰC: mọi WO đóng cứng foreground+timeout600000+raw, reject-thẳng-tay nếu tóm tắt** (thực thi lần cuối, D ói raw). Chạy gate nền + không commit WIP (round 1) → O bắt commit trước.
 
-## 🔴 NỢ CÒN TREO (đóng-gói-campaign-riêng)
-1. **Nhịp 2b — P-flag behavioral canary:** roundtrip leak-count per consuming shim (push/insert/free); oracle FREE-count **PHẢI dedup con trỏ** (`distinct==N dup==0`, luật 14) để bắt cờ `arg_consumes` khai láo. Chờ G+Giang mở.
-2. Carry-over: `LowerError` không hệ mã lỗi · `mir_lower.rs:3730` panic thay Err · container-element `Nullable(Struct-heap)` refuse (§15.6) · lỗ N1 widening · method-call return over-refuse · Deep-Clone · drain · `&0 Enum` tiêu thụ · borrow-params `&+ T` (Bậc C lát 2).
+## ⚰ NHỊP 2b KHAI TỬ (2026-07-24(b), G ký) — audit gác-cổng lôi ra bản chất thật
+O recon toàn diện trước khi ra WO (Giang chốt "kiểm coverage-gap trước"): **canary "per consuming shim" là STALE** — cả 3 cờ heap-consume (push elem, insert key, insert value) ĐÃ có tooth free-once + poison ghi sẵn trong corpus `*_counting.rs` (typed_vector #1, typed_hashmap #1/#4, vector_userstruct T-DOUBLE/T-LEAK). Dựng canary mới = rơi vào bẫy **δ** G đã bác. **LỖ THẬT DUY NHẤT** (comment prior-O `triet-lower/src/lib.rs:1490-1509` tự thú): mọi tooth test **pipeline HỢP NHẤT** (lowerer `push_owned` + JIT M3 cùng bật); vì **M3 một mình đã đủ** (zero slot → Drop no-op), tầng `push_owned` là **phòng thủ dư thừa BỊ CHE** — sai hoàn toàn mà test vẫn xanh. Tooth thật phải **fire với M3 TẮT** → cần hạ tầng disable-M3 JIT chưa tồn tại, canh một tầng hôm-nay-không-load-bearing. G phán: **lãng phí tài nguyên chiến tranh, Simplicity First** → hạ Nhịp 2b từ "campaign khẩn cấp" xuống **nợ defense-in-depth `push_owned`-vs-M3-isolation** trong sổ đen. 🩸 O suýt đuổi nhầm mục tiêu (canary-fixture) — bằng chứng producer+consumer + comment prior-O cứu; đúng sắc lệnh G "DUMP MIR/đọc source, không thơ ca".
+
+## 🔴 NỢ CÒN TREO
+1. **push_owned-vs-M3 isolation** (defense-in-depth, sổ đen G): tooth chứng minh `push_owned` free-once VỚI M3 tắt — cần feature-flag/JitContext option disable-M3. Không khẩn (M3 đang đủ, không hở bộ nhớ).
+2. Carry-over: `mir_lower.rs` panic thay Err (~4 panic + 4 unreachable + 5 unwrap + 38 expect, Track B #1 — cần triage reachable-vs-internal) · container-element `Nullable(Struct-heap)` refuse (§15.6) · lỗ N1 widening · method-call return over-refuse · Deep-Clone · drain · `&0 Enum` tiêu thụ · borrow-params `&+ T` (Bậc C lát 2). **ĐÃ ĐÓNG:** `LowerError` hệ mã lỗi → [[campaign_front_a_lower_error_codes]].
 
 [[campaign_forgot_nullable_sweep]] [[campaign_nullable_position_and_temp_ownership]] [[mentor_o_persona]] [[colleague_d_persona]] [[feedback_poison_must_be_red]] [[feedback_g_report_protocol]]
