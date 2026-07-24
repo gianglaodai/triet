@@ -3297,50 +3297,67 @@ mod tests {
         );
     }
 
-    /// ADR-0085 Nhịp 2a T2 (decisive tooth): self-loan-exclusion in the M3
-    /// mutate pre-check must NOT create a false negative. `clear(&0 mutable
-    /// m)` lowers to `arg = &0 mutable m; clear(arg)` — the pre-check must
-    /// trace `arg` back to its real source (`m`) and exclude THAT self-loan
-    /// from the conflict search (else it would spuriously conflict with
-    /// itself, ADR-0085 AMEND-2). But a SEPARATE, genuine borrow `r = &0 m`
-    /// that is still alive at the call site must still be found — the
-    /// exclusion is keyed on `loan.dest == arg` (the specific loan serving
-    /// THIS call), not on the container `m` as a whole. If the exclusion
-    /// were ever widened to drop every loan sourced from `m`, this test
-    /// would go from "must fire E2440" to "silently accepts" — the exact
-    /// false-negative this tooth exists to catch.
+    /// ADR-0085 Nhịp 2a T2-Amend (non-vacuous replacement — see WO-N2a-Amend):
+    /// the self-loan-exclusion fix in the M3 mutate pre-check
+    /// (`.filter(|l| l.dest != *arg)`, ~:1306) must not blind the pre-check
+    /// for the ORDINARY (non-self-loan) case. `pop`/`remove` take the
+    /// container as a plain Local `v` — not through a `&0 mutable v`
+    /// reference like `clear`/`append` do — so `real_place` for `arg` never
+    /// matches any loan's `dest` (the exclusion filter is a structural
+    /// no-op for this call shape). A genuine, separate loan
+    /// `r = get_ref(&0 v, i)` still alive at the `pop` call site must still
+    /// be found and fire E2440 — the whole-container mutate-while-borrowed
+    /// rule (ADR-0079 U3) must survive the self-loan-exclusion change intact.
+    ///
+    /// The predecessor test `self_loan_exclusion_does_not_blind_genuine_concurrent_borrow`
+    /// was VACUOUS (O poison: `.filter(|_l| false)` — blinding the ENTIRE
+    /// precheck — still passed) because its E2440 came from the ordinary
+    /// borrow-conflict check at `arg = &0 mutable m` creation (ExclusiveMutable
+    /// vs live ReadOnly `r`), firing before the mutate pre-check was ever
+    /// reached. This replacement drives the conflict through the mutate
+    /// pre-check itself by using a plain-local mutate arg, which cannot hit
+    /// that earlier check.
     #[test]
-    fn self_loan_exclusion_does_not_blind_genuine_concurrent_borrow() {
-        let mut b = MirBuilder::new("clear_self_loan_vs_other_borrow", MirType::Unit);
-        let m = b.add_param("m", ParameterPassing::Move);
-        b.set_local_type(m, "String");
+    fn mutate_precheck_still_fires_after_self_loan_exclusion() {
+        let mut b = MirBuilder::new("mutate_precheck_survives_self_loan_fix", MirType::Unit);
+        let v = b.add_param("v", ParameterPassing::Move);
+        b.set_local_type(v, "Vector<String>");
         let r = b.new_local();
-        let arg = b.new_local();
+        let i = b.new_local();
 
-        // bb0: r = &0 m (genuine separate borrow, stays alive) ; arg = &0
-        // mutable m (self-loan feeding the call) ; clear(arg)
+        // bb0: r = get_ref(&0 v, i) → genuine loan created on v
         let bb0 = b.new_block();
         b.push(bb0, storage_live(r));
-        b.push(bb0, borrow(r, ReferenceForm::BorrowReadOnly, m));
-        b.push(bb0, storage_live(arg));
-        b.push(bb0, borrow(arg, ReferenceForm::BorrowExclusiveMutable, m));
-        let out = b.new_local();
-        b.push(bb0, storage_live(out));
+        b.push(bb0, storage_live(i));
+        b.push(bb0, const_int(i, 0));
         let bb1 = b.new_block();
         b.set_terminator(
             bb0,
-            shim_call("__triet_string_clear", vec![arg], bb1, vec![out]),
+            shim_call("__triet_vector_get_ref", vec![v, i], bb1, vec![r]),
         );
 
-        // bb1: cleanup
-        b.push(bb1, Statement::Drop(r, DUMMY_SPAN));
-        b.push(bb1, Statement::Drop(arg, DUMMY_SPAN));
-        b.push(bb1, Statement::Drop(out, DUMMY_SPAN));
-        b.push(bb1, Statement::Drop(m, DUMMY_SPAN));
-        b.set_terminator(bb1, return_(vec![]));
+        // bb1: pop(v) — arg is the PLAIN LOCAL v (NOT a `&0 mutable`
+        // reference), so the self-loan-exclusion filter (`l.dest != *arg`)
+        // never matches any loan (no loan has dest == v) — it is a no-op
+        // for this call shape. The genuine loan `r` sourced from v must
+        // still be found by the conflict search and fire E2440.
+        let out = b.new_local();
+        b.push(bb1, storage_live(out));
+        let bb2 = b.new_block();
+        b.set_terminator(
+            bb1,
+            shim_call("__triet_vector_pop", vec![v], bb2, vec![out]),
+        );
+
+        // bb2: cleanup
+        b.push(bb2, Statement::Drop(r, DUMMY_SPAN));
+        b.push(bb2, Statement::Drop(out, DUMMY_SPAN));
+        b.push(bb2, Statement::Drop(v, DUMMY_SPAN));
+        b.push(bb2, storage_dead(i));
+        b.set_terminator(bb2, return_(vec![]));
 
         let body = b.build(bb0);
-        println!("=== self-loan excluded, but genuine concurrent borrow `r` must still fire ===");
+        println!("=== mutate-precheck must still fire after self-loan-exclusion fix ===");
         println!("{body}");
         let result = check_body(&body);
         for err in &result.errors {
@@ -3348,9 +3365,9 @@ mod tests {
         }
         assert!(
             !result.is_ok(),
-            "E2440 must still fire: `r` is a GENUINE separate borrow of `m`, not \
-             the call's own self-loan — self-loan-exclusion must only skip the \
-             loan whose dest IS the call's arg, not every loan on the container."
+            "E2440 must still fire: `v` is a plain-local container arg (not a \
+             self-loan dest), so the self-loan-exclusion filter must not \
+             blind the genuine mutate-while-borrowed conflict against `r`."
         );
         assert!(
             result
