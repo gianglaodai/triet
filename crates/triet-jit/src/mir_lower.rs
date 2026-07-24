@@ -1068,7 +1068,11 @@ impl JitContext {
                      (ADR-0082 B-α refuses Capability/Outcome elements)"
                 )))
             }
-            MirType::Nullable(_) => unreachable!("nullable_payload already stripped one layer"),
+            MirType::Nullable(_) => Err(JitError::Internal(
+                "vector element type still Nullable after nullable_payload stripped one layer \
+                 (double-nested Nullable is unrepresentable)"
+                    .into(),
+            )),
         }
     }
 
@@ -1504,21 +1508,17 @@ impl JitContext {
 
     /// Compile a single MIR body (no cross-function calls).
     ///
-    /// # Panics
-    ///
-    /// Panics if `compile_multi` returns an empty map (internal bug).
-    ///
     /// # Errors
     ///
-    /// Returns [`JitError::Module`] if a function declaration fails, or
-    /// [`JitError::Unsupported`] if a MIR construct cannot be lowered.
+    /// Returns [`JitError::Module`] if a function declaration fails,
+    /// [`JitError::Unsupported`] if a MIR construct cannot be lowered, or
+    /// [`JitError::Internal`] if `compile_multi` returned an empty map for
+    /// a single body (an internal invariant violation, not a user error).
     pub fn compile(&mut self, body: &Body) -> Result<CompiledFunction, JitError> {
         let result = self.compile_multi(&[body])?;
-        let compiled = result
-            .into_iter()
-            .next()
-            .map(|(_, f)| f)
-            .expect("just compiled one function");
+        let compiled = result.into_iter().next().map(|(_, f)| f).ok_or_else(|| {
+            JitError::Internal("compile_multi returned an empty map for a single body".into())
+        })?;
         Ok(compiled)
     }
 
