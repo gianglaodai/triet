@@ -33,6 +33,64 @@ CLAUDE.md §Error code namespace bổ sung dòng `triet::lower::E11XX`.
 Gate lúc nộp: `0·0·452·0` (không đổi so với Mốc — totality-grep xác nhận
 0 construction-literal `LowerError { .. }` còn sót ngoài định nghĩa enum).
 
+### 🔨 ĐANG MỞ — **`WO-SPOF-3`: canary `builtin_shim_meta` Threat-1 (arg_consumes vs hành vi C-shim thật), M3-ON** — implement xong, chờ O cắm poison 2 chiều + G ký (commit-hash để trống)
+
+Đóng (một phần) nợ SPOF `builtin_shim_meta().arg_consumes` (điểm-chết được ghi ở
+Mốc trên — cả `push_owned` lowerer lẫn M3 zero JIT đọc CÙNG một bảng, một
+entry khai láo thủng cả hai câm) bằng canary pin bảng CONTENT khớp hành vi
+free thật của C-shim, KHÔNG chỉ P-exist (đã đóng Nhịp 1) hay self-loan
+(Nhịp 2a).
+
+**WO-SPOF-2 (disable_m3 isolation) HỦY — premise sai:** `Stmt::Let` đăng ký
+Drop cho named local VÔ ĐIỀU KIỆN, nên nhánh `!consumed` của Lowerer
+(WO-ShimTempOwnership) chỉ cứu **anonymous temp** khỏi Drop thừa — việc
+tombstone **named local** sau một consuming shim call nằm HOÀN TOÀN trên cơ
+chế zero-slot của M3. M3 không phải "mái che dự phòng" — nó **load-bearing**
+cho việc khác (named-local tombstone), nên không thể cô lập nhánh
+`!consumed` bằng FREE-count với M3-OFF: baseline M3-OFF tự double-free
+(named local KHÔNG được zero sau consume → cả element-free của container LẪN
+Drop cuối scope của biến gốc đều free cùng pointer), không phải một test có
+ý nghĩa cho `!consumed`. Xác nhận bởi comment đã có sẵn tại
+`crates/triet-lower/src/lib.rs:1641-1647` (ghi đúng crash-mode này từ trước).
+
+**WO-SPOF-3 — canary M3-ON `crates/triet-driver/tests/shim_arg_consumes_spof_canary.rs`**
+(prefix symbol riêng `__sacs_*`, không đụng `__hsct_*`/`__nls_*` của các file khác):
+
+| Shape | Construct | Shim đo | Baseline FREE (đo thật) | Chiều poison |
+|---|---|---|---|---|
+| A | `push(v, h.name)` trên `Vector<String>` | `__triet_vector_push` | **1** | Chiều 1 (consume→borrow): `arg_consumes &[true,true]→&[true,false]` |
+| B | `insert(m, 1, h.name)` trên `HashMap<Integer,String>` | `__triet_hashmap_insert` | **1** | Chiều 1 phụ, không teeth riêng bắt buộc — baseline-sound check |
+| C | `push` 2 phần tử rồi `pop(v3)` trên `Vector<String>` | `__triet_vector_pop` | **2** (v3 giữ "a" + x giữ "b" popped, cả hai đều free) | Chiều 2 (borrow→consume): `arg_consumes &[false]→&[true]` |
+
+Shape C **cố ý lệch số** so A/B (G duyệt) — điểm quan trọng là SIGNAL đổi
+(2→~1 khi poison), không phải con số tuyệt đối.
+
+**Hai ứng viên bị loại cho Chiều 2 trước khi chốt `pop`, cả hai verify bằng
+MIR dump thật (không đoán):**
+- `length(s)` (owned `String`) — lowerer có fast-path RIÊNG cho `length` trên
+  owned String (`crates/triet-lower/src/lib.rs:2701-2723`) đọc field `len`
+  trực tiếp bằng `Statement::Assign`, **KHÔNG BAO GIỜ emit `CallDispatch`**
+  tới `__triet_string_len` — poison bảng đó vô tác dụng trên MIR thật (dump
+  xác nhận 0 `CallDispatch` trong body).
+- `length(&0 s)` (borrow) — CÓ gọi shim thật (`CallDispatch` xác nhận qua MIR
+  dump), nhưng `&0 String` là **Copy** ở tầng MIR nên cả M3
+  (`crates/triet-jit/src/mir_lower.rs:4809`, guard `!arg_ty.is_copy(...)`)
+  lẫn borrowck mutate-precheck đều BỎ QUA một `arg_consumes` bị poison trên
+  arg Copy — teeth sẽ KHÔNG BAO GIỜ đỏ (vacuous).
+- `pop(Vector<String>)` là construct DUY NHẤT verify-reachable cho chiều
+  borrow→consume: vector-handle non-Copy, đi qua `emit_shim_call`
+  (`crates/triet-lower/src/lib.rs:3095`), thật sự consult
+  `builtin_shim_meta("__triet_vector_pop")` ở M3 (`mir_lower.rs:4803-4871`).
+
+**Doc-comment đầu file** ghi quy trình poison-2-chiều THỦ CÔNG đầy đủ (sửa
+`triet-mir/src/lib.rs`, rebuild, chạy CHỈ file này `--exact
+--test-threads=1`, `cp`-restore — KHÔNG `git checkout`) để O/ai re-verify;
+poison KHÔNG cắm sẵn trong file (theo yêu cầu WO — G/O cắm tay, số đo tại
+thời điểm poison là dữ liệu, không phải giả định trước).
+
+Baseline 3 shape đã chạy xanh đúng số kỳ vọng (A=1, B=1, C=2) TRƯỚC khi nộp
+gate — raw output trong báo cáo nộp WO.
+
 ### ✅ ĐÓNG — **`WO-INV-HeapNullable-Probe`** — LOCAL SOUND, doc comment sửa (O duyệt + G ký nhánh B, 2026-07-19, `5f65dee`+giai đoạn (a))
 
 **Câu hỏi:** `Nullable(Struct)` ở LOCAL-binding position với struct mang PLAIN heap field
