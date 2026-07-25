@@ -886,6 +886,38 @@ pub enum TypeError {
         span: Span,
     },
 
+    /// E1051: `get()`/`get_ref` on a container whose VALUE/ELEMENT type is
+    /// itself `Nullable` (`T?`) — ADR-0088 (deferred). `get` already returns
+    /// `V?` (outer `?` = key-found/not-found); if `V` is itself `T?`, the
+    /// result would be a double-nullable `T??` / `(&0 T?)?` — the outer `?`
+    /// (key found) and the inner `?` (stored value is null) would collide.
+    /// A silent flatten would lose the not-found-vs-stored-null distinction
+    /// (wrong result), so this is refused outright until `T??` semantics are
+    /// designed end-to-end (AST/typecheck/MIR/JIT/match).
+    #[error("E1051: `get()`/`get_ref` cannot return a double-nullable `{value}?` value type")]
+    #[diagnostic(
+        code(triet::typecheck::E1051),
+        help(
+            "Double-nullable container reads (e.g. `get(&0 c, k)` where the value \
+            type is `T?` → `(&0 T?)?` / `T??`) are not yet supported — the outer \
+            `?` (key found) and inner `?` (stored value null) would collide. \
+            See ADR-0088.\n\n\
+            [Fix] Restructure the container's value type to avoid a nested \
+            `T?` (e.g. use a sentinel value, or a wrapper Struct with an \
+            explicit \"present\" flag instead of `T?`)."
+        )
+    )]
+    GetContainerNullableValueUnsupported {
+        /// The nested nullable value type (`T?`) that cannot be returned
+        /// double-nullable.
+        value: String,
+        /// Source location of the `get` call.
+        #[label(
+            "value type `{value}` is itself nullable — double-nullable `T??` not yet supported"
+        )]
+        span: Span,
+    },
+
     // === Warning-severity diagnostics (Q2-C: miette severity field) ===
     /// W2001: deprecated `null` keyword (use `~0` canonical literal).
     /// Severity: WARNING (does not block compile until v1.0 per
@@ -1114,6 +1146,7 @@ impl TypeError {
             | Self::UnsupportedHashMapKey { span, .. }
             | Self::GetAggregateByValueRequiresClone { span, .. }
             | Self::BorrowedEnumPayloadBindUnsupported { span, .. }
+            | Self::GetContainerNullableValueUnsupported { span, .. }
             | Self::CapabilityLevelUnsupported { span, .. }
             | Self::CapabilityNotPossessable { span, .. }
             | Self::NullDeprecated { span } => span.clone(),
