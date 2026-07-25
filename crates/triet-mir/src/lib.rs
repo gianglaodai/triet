@@ -1111,6 +1111,35 @@ pub fn builtin_shim_meta(name: &str) -> Option<BuiltinShimMeta> {
             mutates_arg: None,
             arg_consumes: &[false],
         }),
+        // ADR-0087: print/println, owned-String overload — by-value arg is
+        // MOVED into the shim (write + free); caller's slot is zeroed by M3
+        // after the call so the caller's own Deinit is a no-op free(0).
+        "__triet_print" => Some(BuiltinShimMeta {
+            name: "__triet_print",
+            returns_borrow_of: None,
+            mutates_arg: None,
+            arg_consumes: &[true],
+        }),
+        "__triet_println" => Some(BuiltinShimMeta {
+            name: "__triet_println",
+            returns_borrow_of: None,
+            mutates_arg: None,
+            arg_consumes: &[true],
+        }),
+        // ADR-0087: print/println, `&0 String` overload — borrow only, the
+        // shim writes but never frees; caller keeps ownership.
+        "__triet_print_ref" => Some(BuiltinShimMeta {
+            name: "__triet_print_ref",
+            returns_borrow_of: None,
+            mutates_arg: None,
+            arg_consumes: &[false],
+        }),
+        "__triet_println_ref" => Some(BuiltinShimMeta {
+            name: "__triet_println_ref",
+            returns_borrow_of: None,
+            mutates_arg: None,
+            arg_consumes: &[false],
+        }),
         "__triet_vector_alloc" => Some(BuiltinShimMeta {
             name: "__triet_vector_alloc",
             returns_borrow_of: None,

@@ -153,6 +153,17 @@ impl ShimSymbol {
         }
     }
 
+    /// Register a 3-arg → void shim (ADR-0087: owned-String print/println,
+    /// `(ptr, len, cap)` — write needs `len`, free needs `cap`).
+    pub fn fn_3_0(name: &str, f: extern "C" fn(i64, i64, i64)) -> Self {
+        Self {
+            name: name.into(),
+            addr: f as usize,
+            arity: 3,
+            has_return: false,
+        }
+    }
+
     /// Register a 3-arg → 1-return shim.
     pub fn fn_3_1(name: &str, f: extern "C" fn(i64, i64, i64) -> i64) -> Self {
         Self {
@@ -3810,6 +3821,18 @@ impl JitContext {
                             "__triet_string_eq" | "__triet_string_contains"
                         );
                         let concat_sret = callee_name.as_str() == "__triet_string_concat";
+                        // ADR-0087: print/println owned-String overload —
+                        // marshal (ptr,len,cap) directly (3 i64 words), NOT
+                        // the 2-word bung_fields shape (write needs len,
+                        // free needs cap).
+                        let print_owned =
+                            matches!(callee_name.as_str(), "__triet_print" | "__triet_println");
+                        // ADR-0087: print/println `&0 String` overload —
+                        // marshal (ptr,len) only, no free.
+                        let print_ref = matches!(
+                            callee_name.as_str(),
+                            "__triet_print_ref" | "__triet_println_ref"
+                        );
                         let mutate_writeback = matches!(
                             callee_name.as_str(),
                             "__triet_string_clear" | "__triet_string_append"
@@ -4454,6 +4477,42 @@ impl JitContext {
                                 builder.ins().iconst(I64, 0)
                             };
                             vec![vec_val, out_ptr]
+                        } else if print_owned || print_ref {
+                            // ADR-0087: marshal the single String arg to raw
+                            // i64 words. Owned needs {ptr,len,cap} (write
+                            // reads len, free reads cap); ref needs {ptr,len}
+                            // only (no free — owner keeps the slot).
+                            let a = args[0];
+                            if print_owned {
+                                if let Some((slot, _)) = self.struct_slots.get(&a) {
+                                    let ptr = builder.ins().stack_load(I64, *slot, 0);
+                                    let len = builder.ins().stack_load(I64, *slot, 8);
+                                    let cap = builder.ins().stack_load(I64, *slot, 16);
+                                    vec![ptr, len, cap]
+                                } else {
+                                    return Err(JitError::Unsupported(
+                                        "print: owned String arg without slot".into(),
+                                    ));
+                                }
+                            } else {
+                                // print_ref: arg is a Reference(String) local
+                                // — holds a slot_addr pointer (no struct_slot
+                                // of its own). Load {ptr,len} from the
+                                // pointed-to slot (mirrors `bung_fields`'s
+                                // is_reference branch).
+                                let arg_ty = &body.local_decls[a.0].ty;
+                                if arg_ty.is_reference() {
+                                    let slot_ptr = builder.use_var(self.var(a));
+                                    let mem_flags = cranelift_codegen::ir::MemFlags::new();
+                                    let ptr = builder.ins().load(I64, mem_flags, slot_ptr, 0);
+                                    let len = builder.ins().load(I64, mem_flags, slot_ptr, 8);
+                                    vec![ptr, len]
+                                } else {
+                                    return Err(JitError::Unsupported(
+                                        "print_ref: String arg is not a Reference".into(),
+                                    ));
+                                }
+                            }
                         } else {
                             args.iter()
                                 .map(|a| {

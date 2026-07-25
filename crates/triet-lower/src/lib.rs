@@ -2717,6 +2717,50 @@ fn lower_expr(
                         emit_shim_call(c, "__triet_string_eq", args, MirType::Integer, expr_span);
                     return Ok(dest);
                 }
+                "print" | "println" => {
+                    // ADR-0087: 4-overload builtin — print/println × owned
+                    // String (move, shim frees after write) / `&0` String
+                    // (borrow, shim never frees). Dispatch shim by
+                    // (callee_name, is_ref); return type is Unit (real Unit
+                    // local via `emit_shim_call`'s Unit branch, not a
+                    // throwaway i64).
+                    if arguments.len() != 1 {
+                        return Err(LowerError::unsupported_expr(
+                            &arena.expression(*callee).node,
+                            expr_span,
+                        ));
+                    }
+                    let arg = lower_expr(arguments[0], None, arena, c)?;
+                    let arg_ty = &c.local_decls[arg.0].ty;
+                    let is_ref = matches!(arg_ty, MirType::Reference { .. });
+                    let base_ty = if let MirType::Reference { inner, .. } = arg_ty {
+                        inner.as_ref()
+                    } else {
+                        arg_ty
+                    };
+                    if !matches!(base_ty, MirType::String) {
+                        return Err(LowerError::heap_type_not_supported(
+                            &format!(
+                                "{callee_name}() on type `{base_ty}` — expected String or \
+                                 &0 String"
+                            ),
+                            expr_span,
+                        ));
+                    }
+                    let shim_name = if callee_name == "println" {
+                        if is_ref {
+                            "__triet_println_ref"
+                        } else {
+                            "__triet_println"
+                        }
+                    } else if is_ref {
+                        "__triet_print_ref"
+                    } else {
+                        "__triet_print"
+                    };
+                    let dest = emit_shim_call(c, shim_name, vec![arg], MirType::Unit, expr_span);
+                    return Ok(dest);
+                }
                 "len" | "length" => {
                     // Type-aware dispatch: String → string_len, Vector → vector_len.
                     // ADR-0045 §8: strip reference prefix to accept &0 String etc.
