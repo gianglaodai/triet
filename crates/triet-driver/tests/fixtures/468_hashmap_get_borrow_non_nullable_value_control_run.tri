@@ -1,0 +1,14 @@
+// EXPECT: 0
+// WO-GetRefNullableRefuse (ADR-0088 defer) — anti-over-refuse control: V =
+// Integer (non-nullable) must NOT be caught by the new double-nullable guard
+// (465/466/467's plain-value sibling). get(&0 m, k) on a present key still
+// runs — the guard is specific to a Nullable VALUE type, not any get call.
+function main() -> Integer {
+    let mutable m: HashMap<Integer, Integer> = hashmap_new();
+    m = insert(m, 1, 100);
+    let r = get(&0 m, 1);
+    return match r {
+        ~+ v => 0,
+        ~0 => 99,
+    };
+}

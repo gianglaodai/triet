@@ -1,0 +1,12 @@
+// ERROR: E1051
+// WO-GetRefNullableRefuse (ADR-0088 defer) — get(&0 Vector<Integer?>, i)
+// would return a double-nullable (Integer?)? / Integer?? — same collision
+// as the HashMap-value sibling (465), exercised through the Vector-element
+// arm instead (proves the guard isn't HashMap-only).
+function main() -> Integer {
+    let mutable v: Vector<Integer?> = vector_new();
+    let elem: Integer? = ~+ 7;
+    v = push(v, elem);
+    let r = get(&0 v, 0);
+    return 0;
+}

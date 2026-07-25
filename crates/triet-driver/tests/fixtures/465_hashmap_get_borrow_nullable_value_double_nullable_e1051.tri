@@ -1,0 +1,12 @@
+// ERROR: E1051
+// WO-GetRefNullableRefuse (ADR-0088 defer) — get(&0 HashMap<Integer,Integer?>,
+// k) would return a double-nullable (Integer?)? / Integer?? (outer ? = key
+// found, inner ? = stored value null) — refused at typecheck, not silently
+// flattened (a flatten would lose not-found vs stored-null).
+function main() -> Integer {
+    let mutable m: HashMap<Integer, Integer?> = hashmap_new();
+    let elem: Integer? = ~+ 42;
+    m = insert(m, 1, elem);
+    let r = get(&0 m, 1);
+    return 0;
+}

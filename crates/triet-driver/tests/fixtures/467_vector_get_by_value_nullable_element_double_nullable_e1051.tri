@@ -1,0 +1,12 @@
+// ERROR: E1051
+// WO-GetRefNullableRefuse (ADR-0088 defer) — get-by-value form: `get(v, i)`
+// (no &0 borrow) on `Vector<Integer?>` hits the SAME double-nullable guard
+// (the guard's container match unwraps `&0` References but also matches a
+// plain owned container directly) — proves the refuse isn't borrow-only.
+function main() -> Integer {
+    let mutable v: Vector<Integer?> = vector_new();
+    let elem: Integer? = ~+ 9;
+    v = push(v, elem);
+    let r = get(v, 0);
+    return 0;
+}
