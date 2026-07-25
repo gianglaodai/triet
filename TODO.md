@@ -556,11 +556,40 @@ Các test free-count (`nullable_map_heap_output_counting`, `vector_nullable_drop
 
 ## 🟢 BACKLOG MỞ
 
-### 🔴 P1 AUDIT — copy #2 (`Expr::Call`) scalar-return `Vector`/`HashMap` nghi silent miscompile (ghi bởi WO-MethodCallFatReturn, 2026-07-25)
-copy #2 (`Expr::Call`, `crates/triet-lower/src/lib.rs:3507` else-branch) scalar-return `Vector`/`HashMap`
-(không `is_string_repr`, không sret) — nghi silent miscompile fat→i64. Chưa chứng minh sound. Audit
-riêng, KHÔNG thuộc WO-MethodCallFatReturn (WO đó chỉ đóng copy #3 `Expr::MethodCall` cho Enum/
-`Struct?`/`Enum?`).
+### 📋 TRIAGE SỔ NỢ (O verify code+probe, 2026-07-25) — đính chính nhãn + phát hiện phụ
+Verify sâu toàn sổ nợ bằng probe thật (5 mũi recon song song). Không khoản nào là hố UB sống (tất cả
+fail-closed). Đính chính + ghi mới:
+- **N1 widening (E1120) — NHÃN LỆCH, sửa:** không phải "refuse sạch". E1120 **LỌT** ở đường widening/fast-path
+  (`let x: E? = E::V(42)` / `= ~0` chạy exit 0; chỉ `return ~+`/struct-field bị refuse). **G đã phân loại
+  POLICY-HOLE, KHÔNG UB** (đo 2026-07-20: FREE=1 distinct=1, `i64::MIN` không biểu diễn từ source; ADR-0065
+  §13 "CẤM viện §13 như đã đóng một đường UB"). Mở = feature payload-nullable-enum (campaign ADR-0065), không khẩn.
+- **🆕 for/loop/break/continue lower-gap:** parse + typecheck **qua** nhưng lowerer refuse **E1100**
+  (`triet-lower/src/lib.rs:2144` catch-all). Fail-closed (không UB) nhưng bẫy "câm-một-nửa" — frontend nhận,
+  backend chặn. Liên quan mọi design `drain`/iteration dùng `for x in ...`.
+- **🆕 `T??` khai-trần message SAI HƯỚNG:** khai `Integer??` (param/local, ngoài `get`) → parser nhận `??` →
+  typecheck KHÔNG chặn (E1051 chỉ `name=="get"`) → MIR verifier báo "heap-nullable T? ... ADR-0065 §4 B8"
+  (Integer đâu heap — verifier over-match coi inner `Integer?` là heap-nullable). Fail-closed nhưng message
+  đánh lạc hướng + chứng minh ADR-0088 defer chưa phủ bề mặt `T??` khai trực tiếp. Gắn ADR-0088.
+- **Panic Nhóm C (layout `.unwrap()` `mir_lower.rs:5382/5757/6297`) — ĐO REACHABILITY, KHÔNG phải P1 ICE:**
+  `i64_to_usize` dùng `debug_assert!` (compile-out release) → về lý thuyết cap/len âm/khổng lồ → overflow →
+  unwrap panic. **Nhưng KHÔNG builtin nào nhận i64-runtime-của-user làm size** (`vector_new`/`hashmap_new` 0 arg;
+  `push`/`insert` grow-gấp-đôi từ header; `to_string` digit-count; `concat` tổng len thật) — âm bất-khả (floor
+  `.max(1/2/8)`), overflow cần size exabyte không tồn tại được (OOM-null bắt trước). **Bất-khả-đạt-từ-source →
+  defensive, KHÔNG cắm P1.** 🚩 TRIPWIRE: re-verify NẾU thêm builtin capacity-hint/resize/repeat.
+- **Panic Nhóm B (host-ISA `mir_lower.rs:1534/1540`) = PARK chính đáng** (RATIONALE môi-trường-fatal, như rustc thiếu LLVM).
+- **REAL đúng nhãn (giữ, campaign riêng):** ADR-0088 double-nullable · Deep-Clone · drain · §15.6 `Vector<Leaf?>` refuse.
+- **🔵 NỢ VERIFY TREO — ADR-0084 field-auto-deref (Slice 1a/1b):** code land (`d02c0c4`+`006b6c7`) + corpus xanh
+  (381→30/383→5/385→4/387→E2440) NHƯNG **ADR vẫn DRAFT chờ O ký** + **tooth-386 nghi VACUOUS** (file ghi
+  `ERROR: E2450` nhưng binary CLI thật cho **E2400** typecheck-fatal-return-sớm; E2450 chỉ "thấy" qua test-harness
+  gộp-đa-pha — răng không cắn user thật, bài học luật O #15/#21). Phiên sau: O mở mũi verify riêng + soi tooth-386 + G ký.
+
+### ✅ ĐÓNG (FALSE ALARM O) — copy #2 (`Expr::Call`) scalar-return `Vector`/`HashMap` (đo 2026-07-25)
+~~nghi silent miscompile fat→i64~~ → **ĐÃ ĐO, KHÔNG PHẢI BOM.** Vector/HashMap = **single-i64 handle**
+(con trỏ tới heap-buffer 3-field phía sau), KHÁC String (3-field nằm TRONG slot 24B → cần sret). Nên
+`ReturnShape::Scalar` (một i64 = handle) là ĐÚNG. Caller `:3507` + callee `Ctx::new :466` **đối xứng
+Scalar** — không lệch ABI. Probe RAW: `make()->Vector<Integer>` return-by-value → 42; `->HashMap` → 1;
+fixture **166** (Vector return-bind) → 3 (đã trong corpus xanh). O cắm cờ này do đọc-code-nửa-vời, không
+probe — rút. Bài học: refuse-over-guess áp cả claim của O (mẫu "kết luận trước khi đo").
 
 ### 🔨 ĐANG MỞ — Field auto-deref qua `&0` reference (ADR-0084 DRAFT, chờ O verify + G ký)
 `e.f` với `e : &0 T` / `&0 mutable T` (T=UserStruct) → auto-deref 1 tầng project field. Semantic đầy đủ khóa ở ADR-0084 §CỐT LÕI.
@@ -568,10 +597,10 @@ riêng, KHÔNG thuộc WO-MethodCallFatReturn (WO đó chỉ đóng copy #3 `Exp
 - [x] **Slice 1b — sub-borrow aggregate/heap field qua `&0`** (D code, chờ O verify + G ký): `f` là Struct/String/Vector/HashMap → `&0 F` sub-borrow zero-copy (chainable, `(&0 Ngoai).trong.x`). 4 tầng — typecheck arm (`is_scalar`→value giữ 1a; `UserStruct`/`is_heap`→`Reference(BorrowReadOnly, field_ty)`) · lowerer `Expr::FieldAccess` rvalue (source có `Deref` + Struct/heap → emit `Statement::Borrow` thay `Assign`) · JIT `Statement::Borrow` projected-source (`walk_projections` offset + base-addr, số học địa chỉ KHÔNG copy) · borrowck WHOLE-OBJECT FALLBACK + REBORROW CHASE (Deref-source → anchor loan lên whole object; combo `(&0 h).name` chase qua temp về owner). Gate `0·0·381·0`. Fixtures 383 (heap-leaf param, EXPECT 5) / 384 (nested scalar, 7) / 385 (nested heap, 4) / 386 (dangling ERROR E2450) / 387 (move-while-borrowed ERROR E2440). Poison-đỏ: JIT revert projected-addr → 383/385 silent-wrong · borrowck bỏ chase → E2450/E2440 biến mất · typecheck gỡ arm → E1015. §AMEND ADR-0084 (DRAFT). Nghi ngờ báo O: whole-object false-conflict (2 field khác qua cùng ref) · Vector/HashMap-field cùng đường addr nhưng chưa có builtin đọc để fixture riêng (chỉ String-field test end-to-end).
 - [ ] 🚩 **Borrowck lexical wart (NLL defer VÔ THỜI HẠN)** — borrow local còn sống tới return của owner = E2450 giả (ADR-0046 Case-D, fixtures 21/24). KHÔNG unsound, chỉ cồng kềnh (dùng block-scope/param để lách). NLL = hố đen, KHÔNG đụng `flush_all_for_return`.
 
-### 🔨 ĐANG MỞ — Key-typed `HashMap<String,V>` (ADR-0080 + §AMEND-1, Author+O+G ký 2026-07-03)
+### ✅ ĐÓNG — Key-typed `HashMap<String,V>` (ADR-0080 + §AMEND-1, Author+O+G ký 2026-07-03; source `381979e` + KHÓA SỔ 2026-07-03)
 Key mang content hash/eq + drop-obligation. ADR mới (BÁC amend ADR-0038 Comparable: `Ord ≠ Hash`; BÁC `Hashable` trait). Key ∈ {Integer, String} đóng băng. Slot `[key@key_stride | value@value_stride | state]`.
 - [x] **KM-P1a BACKEND** (`c003a5f`) — Mũi A slot key_stride 24B fat · B `__triet_string_hash` FNV-1a + dispatch · D.1/D.2/D.5 key drop-obligation (§AMEND-1 out-param `is_update_out`/`key_out_ptr`, free registry-routed) · rehash key-stride. Hand-built MIR + counting, sleeping. O verify 5 teeth (#1 map-drop / #2 update / #3 remove / #5 content-hash / #7 rehash).
-- [ ] **KM-P1b TYPECHECK+BORROWCK** (WO G-duyệt 2026-07-03, D đang code) — mở source `.tri` end-to-end:
+- [x] **KM-P1b TYPECHECK+BORROWCK** (`381979e` source end-to-end — ĐÓNG; nhãn "D đang code" là ZOMBIE, sửa 2026-07-25 triage. Probe `HashMap<String,Integer>` insert+get→1; E1048 UnsupportedHashMapKey wired `error.rs:822`; fixtures 335/336/337/359 xanh) — mở source `.tri` end-to-end:
   - **C1** typecheck generic-ize K∈{Integer,String} (`env.rs:342-391`): `hashmap_new<K,V>`/`insert<K,V>`/`remove<K,V>` + String-key overload get/contains/len. Seed K từ expected_type_stack.
   - **C2** REFUSE K∉{Integer,String} → mã lỗi MỚI `E10xx UnsupportedHashMapKey` (G: lấy E-code cao nhất rảnh, đập ở cửa typecheck, không defer-mềm).
   - **D3** borrowck insert-key = **Move** (String consume, Integer no-op) — mirror value-consume type-aware (`checker.rs:1224-1227`).
