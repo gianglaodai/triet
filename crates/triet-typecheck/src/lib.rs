@@ -627,23 +627,34 @@ mod tests {
 
     #[test]
     fn flags_call_arity_mismatch() {
-        assert_has_error(r"function main() { print() }", |e| {
-            matches!(
-                e,
-                TypeError::WrongArity {
-                    expected: 1,
-                    found: 0,
-                    ..
-                }
-            )
-        });
+        // ADR-0087: uses a user-defined single-signature function, not a
+        // builtin — a builtin's overload state can change independently
+        // (print became overloaded, breaking this test when it borrowed
+        // `print` as its example). A user function is never overloaded,
+        // so it always exercises the plain WrongArity/Mismatch path.
+        assert_has_error(
+            "function helper(x: Integer) -> Integer = x\nfunction main() { helper() }",
+            |e| {
+                matches!(
+                    e,
+                    TypeError::WrongArity {
+                        expected: 1,
+                        found: 0,
+                        ..
+                    }
+                )
+            },
+        );
     }
 
     #[test]
     fn flags_call_argument_type_mismatch() {
-        assert_has_error(r"function main() { print(42) }", |e| {
-            matches!(e, TypeError::Mismatch { .. })
-        });
+        // ADR-0087: see flags_call_arity_mismatch above for why a
+        // user-defined function replaces the builtin example.
+        assert_has_error(
+            "function helper(x: Integer) -> Integer = x\nfunction main() { helper(\"x\") }",
+            |e| matches!(e, TypeError::Mismatch { .. }),
+        );
     }
 
     #[test]

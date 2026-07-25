@@ -140,7 +140,14 @@ fn bind_prelude(env: &mut TypeEnvironment) {
     let trilean = Type::TRILEAN;
     let vector_integer = Vector(Box::new(Integer.clone()));
 
-    env.declare(
+    // `print`/`println` are overloaded: owned String (move, shim frees
+    // after write) and `&0 String` (borrow, shim never frees) — ADR-0087.
+    // Registered via declare_overload (mirrors `length`/`concat`/`eq` above):
+    // a regular `declare` binding would SKIP `resolve_overload` entirely
+    // (`check_call` only tries overloads when `env.lookup(name).is_none()`),
+    // making the `&0 String` overload unreachable from any user program.
+    let ref_string_print = Type::Reference(ReferenceForm::BorrowReadOnly, Box::new(String.clone()));
+    env.declare_overload(
         "print",
         Type::Function {
             type_parameters: Vec::new(),
@@ -148,11 +155,27 @@ fn bind_prelude(env: &mut TypeEnvironment) {
             return_type: Box::new(Unit.clone()),
         },
     );
-    env.declare(
+    env.declare_overload(
+        "print",
+        Type::Function {
+            type_parameters: Vec::new(),
+            parameters: vec![ref_string_print.clone()],
+            return_type: Box::new(Unit.clone()),
+        },
+    );
+    env.declare_overload(
         "println",
         Type::Function {
             type_parameters: Vec::new(),
             parameters: vec![String.clone()],
+            return_type: Box::new(Unit.clone()),
+        },
+    );
+    env.declare_overload(
+        "println",
+        Type::Function {
+            type_parameters: Vec::new(),
+            parameters: vec![ref_string_print],
             return_type: Box::new(Unit.clone()),
         },
     );
@@ -970,9 +993,13 @@ mod tests {
 
     #[test]
     fn prelude_includes_print_and_println() {
+        // ADR-0087: print/println are now overloaded (owned + `&0 String`),
+        // so they have no "regular" binding — `lookup` (single-binding
+        // lookup) correctly returns None; `lookup_all` (overload lookup)
+        // is the API that surfaces them post-migration.
         let env = TypeEnvironment::with_prelude();
-        assert!(env.lookup("print").is_some());
-        assert!(env.lookup("println").is_some());
+        assert!(env.lookup_all("print").is_some_and(|c| c.len() == 2));
+        assert!(env.lookup_all("println").is_some_and(|c| c.len() == 2));
         assert!(env.lookup("to_string").is_some());
     }
 
