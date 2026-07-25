@@ -1682,6 +1682,41 @@ fn emit_shim_call(
             c.push_owned(arg);
         }
     }
+    let dest_ty: MirType = dest_ty.into();
+    if matches!(dest_ty, MirType::Unit) {
+        // ADR-0087: a void shim (e.g. print/println) has no meaningful
+        // return value — do NOT alloc/StorageLive a `dest` slot for the
+        // call itself (`dest: vec![]`, `ReturnShape::Unit`, arity 0). The
+        // function still hands back a REAL Unit-typed Local (not a
+        // throwaway i64 rebound) using the same convention as other
+        // Unit-valued expressions in this lowerer (`Statement::Const` with
+        // `ConstValue::Unit`, mirrored at :3524/:3620/:5645 — line numbers
+        // as of this commit).
+        let ret_bb = c.alloc_bb();
+        let call_bb = c.cur;
+        c.term(
+            call_bb,
+            Terminator::CallDispatch {
+                callee: triet_mir::FunctionId(0),
+                callee_name: shim_name.into(),
+                target: CallTarget::Shim,
+                args,
+                return_bb: ret_bb,
+                dest: vec![],
+                return_shape: triet_mir::ReturnShape::Unit,
+                span: span.clone(),
+            },
+        );
+        c.cur = ret_bb;
+        let u = c.alloc_local();
+        c.push(Statement::StorageLive(u, span.clone()));
+        c.push(Statement::Const {
+            dest: Place::local(u),
+            value: ConstValue::Unit,
+            span,
+        });
+        return u;
+    }
     let dest = c.alloc_local_ty(dest_ty);
     c.push(Statement::StorageLive(dest, span.clone()));
     let ret_bb = c.alloc_bb();
