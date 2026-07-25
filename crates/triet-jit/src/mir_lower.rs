@@ -7875,6 +7875,76 @@ mod tests {
         assert_eq!(r.1, -1, "payload should be -1");
     }
 
+    // ── WO-Robust-InstResults: checked inst_results (Track B rule #1) ──
+
+    /// A registered `extern "C"` shim that takes no args and returns
+    /// nothing — `has_return: false`, so Cranelift's `call` instruction
+    /// produces ZERO results.
+    extern "C" fn arity_mismatch_void_shim() {}
+
+    /// A `main` body that CallDispatch-es a `CallTarget::Shim` callee with
+    /// a NON-empty `dest` + `ReturnShape::Scalar` — i.e. the caller expects
+    /// to read one result — while the registered shim itself has
+    /// `has_return: false` (zero results). This is the caller/callee ABI
+    /// arity mismatch `nth_call_result` must catch.
+    fn build_shim_arity_mismatch_caller(callee_name: &str) -> Body {
+        let mut b = MirBuilder::new("main", MirType::Integer);
+        let dest = b.new_local();
+        b.set_local_mir_type(dest, MirType::Integer);
+        let bb0 = b.new_block();
+        let ret_bb = b.new_block();
+        b.push(bb0, storage_live(dest));
+        b.set_terminator(
+            bb0,
+            Terminator::CallDispatch {
+                callee: FunctionId(0),
+                callee_name: callee_name.into(),
+                target: CallTarget::Shim,
+                args: vec![],
+                return_bb: ret_bb,
+                dest: vec![dest],
+                return_shape: ReturnShape::Scalar,
+                span: DUMMY_SPAN,
+            },
+        );
+        b.set_terminator(ret_bb, return_(vec![dest]));
+        b.build(bb0)
+    }
+
+    /// Track B rule #1: a caller/callee `CallDispatch` result-count
+    /// mismatch must return `Err(JitError::CallResultArityMismatch)`, NOT
+    /// panic with an index-out-of-bounds on `inst_results(call)[0]`.
+    #[test]
+    fn call_result_arity_mismatch_returns_err_not_panic() {
+        let shim = ShimSymbol {
+            name: "arity_mismatch_void_shim".to_string(),
+            addr: arity_mismatch_void_shim as *const () as usize,
+            arity: 0,
+            has_return: false,
+        };
+        let body = build_shim_arity_mismatch_caller("arity_mismatch_void_shim");
+        let mut ctx = JitContext::with_shims(&[shim]);
+        let result = ctx.compile_multi(&[&body]);
+        match result {
+            Err(JitError::CallResultArityMismatch {
+                callee,
+                expected,
+                got,
+            }) => {
+                assert_eq!(callee, "arity_mismatch_void_shim");
+                assert_eq!(expected, 1);
+                assert_eq!(got, 0);
+            }
+            Ok(_) => panic!(
+                "expected Err(JitError::CallResultArityMismatch), got Ok(_) — \
+                 nth_call_result must catch the arity mismatch, not silently succeed"
+            ),
+            Err(other) => {
+                panic!("expected Err(JitError::CallResultArityMismatch), got Err({other:?})")
+            }
+        }
+    }
+
     // ── Logic op truth table tests ─────────────────────────
 
     /// Trilean encoding: +1=True, 0=Unknown, -1=False.
