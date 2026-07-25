@@ -1154,6 +1154,11 @@ impl Checker<'_> {
     /// whose parameter types all match. Emits `UndefinedName` if no
     /// candidate matches (the name exists in overloads but no signature
     /// fits the argument types).
+    #[allow(clippy::too_many_lines)] // ADR-0088 refuse guard pushed this over
+    // the threshold; the refuse-guards are all early-return dispatch on
+    // `name`/`arg_tys` — extracting them would scatter the `get`-family
+    // refuse logic (heap-violation, double-nullable, aggregate-key) across
+    // several small functions for no soundness benefit.
     fn resolve_overload(
         &mut self,
         name: &str,
@@ -1184,6 +1189,37 @@ impl Checker<'_> {
                     element,
                     span: span.clone(),
                 });
+                return Type::Unknown;
+            }
+        }
+
+        // ADR-0088 (defer): get/get_ref where the container VALUE/ELEMENT is
+        // itself Nullable would produce a double-nullable `T??` /
+        // `(&0 T?)?` — refuse until the semantics are designed (silent
+        // flatten would lose not-found vs stored-null). CHỈ `get` (bao
+        // get-by-value + get_ref, cùng builtin) — KHÔNG chặn `contains`.
+        if name == "get"
+            && let Some(first) = arg_tys.first()
+        {
+            let container = match first {
+                Type::Reference(ReferenceForm::BorrowReadOnly, inner) => inner.as_ref(),
+                other => other,
+            };
+            let nullable_v = match container {
+                Type::Vector(inner) if matches!(inner.as_ref(), Type::Nullable(_)) => {
+                    Some(inner.to_string())
+                }
+                Type::HashMap(_, v) if matches!(v.as_ref(), Type::Nullable(_)) => {
+                    Some(v.to_string())
+                }
+                _ => None,
+            };
+            if let Some(value) = nullable_v {
+                self.errors
+                    .push(TypeError::GetContainerNullableValueUnsupported {
+                        value,
+                        span: span.clone(),
+                    });
                 return Type::Unknown;
             }
         }
