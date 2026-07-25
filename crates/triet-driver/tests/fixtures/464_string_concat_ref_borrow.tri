@@ -1,0 +1,19 @@
+// EXPECT: 12
+// WO-JIT-Concat (2026-07-25): `concat(String, String)` was a single
+// `declare` (owned-only) — E1003 type-mismatch before this WO for any &0
+// combo, and even after WO-Str0Coverage's typecheck attempt the JIT's
+// `concat_sret` marshaling class had no Reference-arg fallback (unlike
+// `bung_fields`, used by eq/contains) and failed at compile time with
+// "concat: String arg without slot". Fixed by mirroring bung_fields's
+// is_reference() branch into concat_sret's source-arg loop (mir_lower.rs).
+// Now `declare_overload`'d with the 3 &0 combos: (&0,owned), (owned,&0),
+// (&0,&0) — all verified via MIR-dump + `triet-driver run`.
+// len("hiyo") == 4, three times == 12.
+function main() -> Integer {
+    let a = "hi";
+    let b = "yo";
+    let r1 = concat(&0 a, &0 b);
+    let r2 = concat(&0 a, b);
+    let r3 = concat(a, &0 b);
+    return len(&0 r1) + len(&0 r2) + len(&0 r3);
+}

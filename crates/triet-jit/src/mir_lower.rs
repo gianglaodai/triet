@@ -3972,9 +3972,25 @@ impl JitContext {
                                     vals.push(ptr);
                                     vals.push(len);
                                 } else {
-                                    return Err(JitError::Unsupported(
-                                        "concat: String arg without slot".into(),
-                                    ));
+                                    // WO-JIT-Concat: mirror of `bung_fields`'s
+                                    // is_reference() branch below — a `&0`
+                                    // String arg has no struct_slots entry of
+                                    // its own (it's a Reference-typed local
+                                    // holding a slot_addr), so load {ptr,len}
+                                    // from the pointed-to slot instead.
+                                    let arg_ty = &body.local_decls[a.0].ty;
+                                    if arg_ty.is_reference() {
+                                        let slot_ptr = builder.use_var(self.var(*a));
+                                        let mem_flags = cranelift_codegen::ir::MemFlags::new();
+                                        let ptr = builder.ins().load(I64, mem_flags, slot_ptr, 0);
+                                        let len = builder.ins().load(I64, mem_flags, slot_ptr, 8);
+                                        vals.push(ptr);
+                                        vals.push(len);
+                                    } else {
+                                        return Err(JitError::Unsupported(
+                                            "concat: String arg without slot".into(),
+                                        ));
+                                    }
                                 }
                             }
                             vals

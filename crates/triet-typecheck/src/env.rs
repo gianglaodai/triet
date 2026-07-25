@@ -228,7 +228,14 @@ fn bind_prelude(env: &mut TypeEnvironment) {
     // ── Phase 4.3c: String builtins (deferred from 4.3a) ──
 
     // `concat(String, String) -> String` — borrow semantics (arg_consumes = [false, false]).
-    env.declare(
+    // WO-JIT-Concat (2026-07-25): the `&0 String` combos were HALTED under
+    // WO-Str0Coverage (JIT's `concat_sret` marshaling class had no
+    // Reference-arg fallback) — now opened by mirroring `bung_fields`'s
+    // `is_reference()` branch into `concat_sret` (mir_lower.rs). Overloaded
+    // with the 3 `&0` combos (Phương án A, explicit overloads only).
+    let ref_string_concat =
+        Type::Reference(ReferenceForm::BorrowReadOnly, Box::new(String.clone()));
+    env.declare_overload(
         "concat",
         Type::Function {
             type_parameters: Vec::new(),
@@ -236,13 +243,62 @@ fn bind_prelude(env: &mut TypeEnvironment) {
             return_type: Box::new(String.clone()),
         },
     );
+    env.declare_overload(
+        "concat",
+        Type::Function {
+            type_parameters: Vec::new(),
+            parameters: vec![ref_string_concat.clone(), String.clone()],
+            return_type: Box::new(String.clone()),
+        },
+    );
+    env.declare_overload(
+        "concat",
+        Type::Function {
+            type_parameters: Vec::new(),
+            parameters: vec![String.clone(), ref_string_concat.clone()],
+            return_type: Box::new(String.clone()),
+        },
+    );
+    env.declare_overload(
+        "concat",
+        Type::Function {
+            type_parameters: Vec::new(),
+            parameters: vec![ref_string_concat.clone(), ref_string_concat],
+            return_type: Box::new(String.clone()),
+        },
+    );
 
     // `eq(String, String) -> Integer` — returns 1 (true) or 0 (false).
-    env.declare(
+    let ref_string_eq = Type::Reference(ReferenceForm::BorrowReadOnly, Box::new(String.clone()));
+    env.declare_overload(
         "eq",
         Type::Function {
             type_parameters: Vec::new(),
             parameters: vec![String.clone(), String.clone()],
+            return_type: Box::new(Integer.clone()),
+        },
+    );
+    env.declare_overload(
+        "eq",
+        Type::Function {
+            type_parameters: Vec::new(),
+            parameters: vec![ref_string_eq.clone(), String.clone()],
+            return_type: Box::new(Integer.clone()),
+        },
+    );
+    env.declare_overload(
+        "eq",
+        Type::Function {
+            type_parameters: Vec::new(),
+            parameters: vec![String.clone(), ref_string_eq.clone()],
+            return_type: Box::new(Integer.clone()),
+        },
+    );
+    env.declare_overload(
+        "eq",
+        Type::Function {
+            type_parameters: Vec::new(),
+            parameters: vec![ref_string_eq.clone(), ref_string_eq],
             return_type: Box::new(Integer.clone()),
         },
     );
@@ -700,6 +756,19 @@ fn bind_prelude(env: &mut TypeEnvironment) {
         Type::Function {
             type_parameters: Vec::new(),
             parameters: vec![ref_hashmap_str_int.clone()],
+            return_type: Box::new(Integer.clone()),
+        },
+    );
+    // WO-Str0Coverage: `len(&0 String)` was missing from this block — the
+    // `&0 Vector`/`&0 HashMap` siblings above were covered but String's
+    // ADR-0059 C.2 &0 overload wasn't; lowering already strips the reference
+    // prefix (triet-lower/src/lib.rs "len" | "length" arm) so no lowering
+    // change is needed here.
+    env.declare_overload(
+        "len",
+        Type::Function {
+            type_parameters: Vec::new(),
+            parameters: vec![ref_string.clone()],
             return_type: Box::new(Integer.clone()),
         },
     );

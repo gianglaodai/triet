@@ -1,0 +1,16 @@
+// EXPECT: 3
+// WO-Str0Coverage (2026-07-25): `eq(String, String)` was a single `declare`
+// (no &0 overload) — E1003 type-mismatch before this WO for any &0 combo.
+// Now `declare_overload`'d with the 3 additional &0 combos: (&0,owned),
+// (owned,&0), (&0,&0) — all 4 combos verified via `triet-driver run`
+// MIR-dump (bung_fields JIT class already had a Reference fallback, unlike
+// concat's concat_sret class — see env.rs comment on `concat`). Sums the
+// three &0-involving combos: 1(ref,owned) + 1(owned,ref) + 1(ref,ref) = 3.
+function main() -> Integer {
+    let a = "hello";
+    let b = "hello";
+    let r1 = eq(&0 a, b);
+    let r2 = eq(a, &0 b);
+    let r3 = eq(&0 a, &0 b);
+    return r1 + r2 + r3;
+}

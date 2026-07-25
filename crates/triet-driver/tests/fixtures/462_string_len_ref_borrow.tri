@@ -1,0 +1,10 @@
+// EXPECT: 5
+// WO-Str0Coverage (2026-07-25): `len(&0 String)` overload was missing from
+// env.rs's ADR-0059 C.2 block (the &0 Vector/HashMap siblings were present,
+// String's was not) — lowering already strips the reference prefix (the
+// "len" | "length" arm in triet-lower/src/lib.rs), so this is a typecheck-
+// only fix. Was E1041 NoMatchingOverload before this WO.
+function main() -> Integer {
+    let s = "hello";
+    return len(&0 s);
+}
