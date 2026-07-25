@@ -307,6 +307,29 @@ pub struct JitContext {
     switch_synth_base: HashMap<BasicBlock, usize>,
 }
 
+/// Track B rule #1 (compiler never panics on user input): a checked
+/// replacement for `builder.inst_results(call)[idx]`. Caller/callee arity
+/// mismatch (e.g. a `has_return:false` shim whose result the caller still
+/// reads) becomes `Err(JitError::CallResultArityMismatch)` instead of an
+/// index-out-of-bounds panic — an ICE, not a user-facing diagnostic.
+fn nth_call_result(
+    builder: &FunctionBuilder<'_>,
+    call: cranelift_codegen::ir::Inst,
+    idx: usize,
+    expected: usize,
+    callee: &str,
+) -> Result<cranelift_codegen::ir::Value, JitError> {
+    let results = builder.inst_results(call);
+    results
+        .get(idx)
+        .copied()
+        .ok_or_else(|| JitError::CallResultArityMismatch {
+            callee: callee.to_string(),
+            expected,
+            got: results.len(),
+        })
+}
+
 impl JitContext {
     /// Return the Cranelift Variable for a MIR Local.
     /// Bậc A: one Cranelift Variable per MIR Local — everything is i64.
@@ -646,7 +669,7 @@ impl JitContext {
                 let hash_id = self.get_or_declare_shim("__triet_string_hash")?;
                 let href = self.module.declare_func_in_func(hash_id, b.func);
                 let call = b.ins().call(href, &[p, l]);
-                let v = b.inst_results(call)[0];
+                let v = nth_call_result(b, call, 0, 1, "__triet_string_hash")?;
                 Ok(mix(b, acc, v))
             }
             MirType::Struct(name) => {
@@ -763,7 +786,7 @@ impl JitContext {
                 let eq_id = self.get_or_declare_shim("__triet_string_eq")?;
                 let eref = self.module.declare_func_in_func(eq_id, b.func);
                 let call = b.ins().call(eref, &[pa, la, pb, lb]);
-                let r = b.inst_results(call)[0];
+                let r = nth_call_result(b, call, 0, 1, "__triet_string_eq")?;
                 let one = b.ins().iconst(I64, 1);
                 let eq_i = b.ins().icmp(IntCC::Equal, r, one);
                 let next = b.create_block();
@@ -2932,7 +2955,8 @@ impl JitContext {
                         let func_id = self.get_or_declare_shim("__triet_string_from_bytes")?;
                         let func_ref = self.module.declare_func_in_func(func_id, builder.func);
                         let call_inst = builder.ins().call(func_ref, &[ptr_val, len_val]);
-                        let handle = builder.inst_results(call_inst)[0];
+                        let handle =
+                            nth_call_result(builder, call_inst, 0, 1, "__triet_string_from_bytes")?;
                         // ADR-0049 Lát 6.3: populate String slot from
                         // compile-time-known values (no heap len/cap).
                         if let Some((slot, _layout)) = self.struct_slots.get(&dest.local) {
@@ -3595,7 +3619,7 @@ impl JitContext {
                     let func_id = self.get_or_declare_shim("__triet_cap_check")?;
                     let func_ref = self.module.declare_func_in_func(func_id, builder.func);
                     let call_inst = builder.ins().call(func_ref, &[cap_id]);
-                    let result = builder.inst_results(call_inst)[0];
+                    let result = nth_call_result(builder, call_inst, 0, 1, "__triet_cap_check")?;
                     let zero = builder.ins().iconst(I64, 0);
                     let denied = builder
                         .ins()
@@ -3817,14 +3841,14 @@ impl JitContext {
                         ) {
                             // ADR-0052 OP.4a: Outcome call — store 2 return
                             // values into the dest Outcome slot.
-                            let disc = builder.inst_results(call_inst)[0];
-                            let payload = builder.inst_results(call_inst)[1];
+                            let disc = nth_call_result(builder, call_inst, 0, 2, callee_name)?;
+                            let payload = nth_call_result(builder, call_inst, 1, 2, callee_name)?;
                             if let Some(&slot) = self.outcome_slots.get(&dest[0]) {
                                 builder.ins().stack_store(disc, slot, 0);
                                 builder.ins().stack_store(payload, slot, 8);
                             }
                         } else if !is_sret_call && !dest.is_empty() {
-                            let ret_val = builder.inst_results(call_inst)[0];
+                            let ret_val = nth_call_result(builder, call_inst, 0, 1, callee_name)?;
                             builder.def_var(self.var(dest[0]), ret_val);
                         }
 
@@ -4580,7 +4604,7 @@ impl JitContext {
                                      arg type"
                                 ))
                             })?;
-                            let cell_ptr = builder.inst_results(call_inst)[0];
+                            let cell_ptr = nth_call_result(builder, call_inst, 0, 1, callee_name)?;
                             let sentinel = builder.ins().iconst(I64, triet_mir::NULL_SENTINEL);
                             let is_null = builder.ins().icmp(IntCC::Equal, cell_ptr, sentinel);
                             let present_bb = builder.create_block();
@@ -4705,7 +4729,7 @@ impl JitContext {
                                 // (Mentor O, poison-verified: dropping this
                                 // write and reading back whatever was already
                                 // in the slot flips the fixture 1→0).
-                                let ret = builder.inst_results(call_inst)[0];
+                                let ret = nth_call_result(builder, call_inst, 0, 1, callee_name)?;
                                 let sentinel = builder.ins().iconst(I64, triet_mir::NULL_SENTINEL);
                                 let is_null = builder.ins().icmp(IntCC::Equal, ret, sentinel);
                                 let present_bb = builder.create_block();
@@ -4737,7 +4761,7 @@ impl JitContext {
                                 )));
                             }
                         } else if !dest.is_empty() && !concat_sret {
-                            let ret_val = builder.inst_results(call_inst)[0];
+                            let ret_val = nth_call_result(builder, call_inst, 0, 1, callee_name)?;
                             builder.def_var(self.var(dest[0]), ret_val);
                             // ADR-0049 Lát 6.3: populate String slot from shim args
                             // (no len/cap on heap). Derive len/cap from known args.
