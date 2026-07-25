@@ -143,6 +143,12 @@ fn main() -> ExitCode {
         ShimSymbol::fn_1_1("__triet_string_len", mir_lower::__triet_string_len),
         // ADR-0080 Mũi B: content hash for String HashMap keys.
         ShimSymbol::fn_2_1("__triet_string_hash", mir_lower::__triet_string_hash),
+        // ADR-0087: print/println 4-overload — owned (moves+frees,
+        // arity 3: ptr/len/cap) and `&0 String` (borrows, arity 2: ptr/len).
+        ShimSymbol::fn_3_0("__triet_print", mir_lower::__triet_print),
+        ShimSymbol::fn_2_0("__triet_print_ref", mir_lower::__triet_print_ref),
+        ShimSymbol::fn_3_0("__triet_println", mir_lower::__triet_println),
+        ShimSymbol::fn_2_0("__triet_println_ref", mir_lower::__triet_println_ref),
         // Vector shims (ADR-0040 §5)
         ShimSymbol::fn_3_1("__triet_vector_alloc", mir_lower::__triet_vector_alloc),
         ShimSymbol::fn_1_0("__triet_vector_free", mir_lower::__triet_vector_free),

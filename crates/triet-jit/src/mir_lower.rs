@@ -21,6 +21,7 @@ use cranelift_frontend::{FunctionBuilder, FunctionBuilderContext, Variable};
 use cranelift_jit::{JITBuilder, JITModule};
 use cranelift_module::{Linkage, Module};
 use std::collections::{HashMap, HashSet};
+use std::io::Write as _;
 use triet_mir::{
     BasicBlock, BinOp, Body, CallTarget, ConstValue, ControlFlowGraph, EnumLayout, Local, MirType,
     Place, Projection, Statement, StructLayout, Terminator, builtin_shim_meta,
@@ -5508,6 +5509,78 @@ pub extern "C" fn __triet_string_len(ptr: i64) -> i64 {
     }
     // SAFETY: ptr points to a StackSlot; len is at offset 8.
     unsafe { (ptr as *const i64).add(1).read_unaligned() }
+}
+
+// ── print/println I/O shims (ADR-0087) ──────────────────────
+
+/// `__triet_print(ptr, len, cap)` — write an owned String's bytes to
+/// stdout, then free it. `ptr == 0 || ptr == NULL_SENTINEL` (moved-out /
+/// null) is a no-op, mirroring `__triet_string_free`'s guard.
+#[allow(unsafe_code)]
+#[unsafe(no_mangle)]
+pub extern "C" fn __triet_print(ptr: i64, len: i64, cap: i64) {
+    if ptr == 0 || ptr == triet_mir::NULL_SENTINEL {
+        return;
+    }
+    // SAFETY: ADR-0049 Lát 6.3 — no len/cap on heap, data starts at ptr.
+    let bytes = unsafe { std::slice::from_raw_parts(ptr as *const u8, i64_to_usize(len)) };
+    let stdout = std::io::stdout();
+    let mut handle = stdout.lock();
+    let _ = handle.write_all(bytes);
+    let _ = handle.flush();
+    __triet_string_free(ptr, cap);
+}
+
+/// `__triet_print_ref(ptr, len)` — write a `&0 String`'s bytes to stdout.
+/// Never frees (ADR-0087) — the owner keeps the String.
+#[allow(unsafe_code)]
+#[unsafe(no_mangle)]
+pub extern "C" fn __triet_print_ref(ptr: i64, len: i64) {
+    if ptr == 0 || ptr == triet_mir::NULL_SENTINEL {
+        return;
+    }
+    // SAFETY: same as `__triet_print` — read-only borrow of the same
+    // {ptr,len} shape, no free.
+    let bytes = unsafe { std::slice::from_raw_parts(ptr as *const u8, i64_to_usize(len)) };
+    let stdout = std::io::stdout();
+    let mut handle = stdout.lock();
+    let _ = handle.write_all(bytes);
+    let _ = handle.flush();
+}
+
+/// `__triet_println(ptr, len, cap)` — like `__triet_print`, plus a
+/// trailing newline before freeing.
+#[allow(unsafe_code)]
+#[unsafe(no_mangle)]
+pub extern "C" fn __triet_println(ptr: i64, len: i64, cap: i64) {
+    if ptr == 0 || ptr == triet_mir::NULL_SENTINEL {
+        return;
+    }
+    // SAFETY: ADR-0049 Lát 6.3 — no len/cap on heap, data starts at ptr.
+    let bytes = unsafe { std::slice::from_raw_parts(ptr as *const u8, i64_to_usize(len)) };
+    let stdout = std::io::stdout();
+    let mut handle = stdout.lock();
+    let _ = handle.write_all(bytes);
+    let _ = handle.write_all(b"\n");
+    let _ = handle.flush();
+    __triet_string_free(ptr, cap);
+}
+
+/// `__triet_println_ref(ptr, len)` — like `__triet_print_ref`, plus a
+/// trailing newline. Never frees.
+#[allow(unsafe_code)]
+#[unsafe(no_mangle)]
+pub extern "C" fn __triet_println_ref(ptr: i64, len: i64) {
+    if ptr == 0 || ptr == triet_mir::NULL_SENTINEL {
+        return;
+    }
+    // SAFETY: same as `__triet_print_ref` — read-only borrow, no free.
+    let bytes = unsafe { std::slice::from_raw_parts(ptr as *const u8, i64_to_usize(len)) };
+    let stdout = std::io::stdout();
+    let mut handle = stdout.lock();
+    let _ = handle.write_all(bytes);
+    let _ = handle.write_all(b"\n");
+    let _ = handle.flush();
 }
 
 // ADR-0049 Lát 5: fat-pointer layout mirrored in shim for writeback.
