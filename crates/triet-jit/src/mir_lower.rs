@@ -40,6 +40,18 @@ pub enum JitError {
     /// Mirrors the philosophy of `LowerError` E1190 (ADR-0086): surface compiler
     /// bugs as "please report", never blame the user's program.
     Internal(String),
+    /// Caller/callee disagreed on the number of `CallDispatch` results — an
+    /// ABI mismatch, ICE, NOT the user's fault. Mirrors the `Internal` "please
+    /// report" philosophy (Track B rule #1: checked `inst_results` access
+    /// instead of an index-out-of-bounds panic).
+    CallResultArityMismatch {
+        /// The callee (JIT function or shim symbol) whose result count disagreed.
+        callee: String,
+        /// The number of results the caller expected to read.
+        expected: usize,
+        /// The number of results Cranelift actually produced for the call.
+        got: usize,
+    },
 }
 
 impl std::fmt::Display for JitError {
@@ -48,6 +60,15 @@ impl std::fmt::Display for JitError {
             Self::Unsupported(msg) => write!(f, "JIT unsupported: {msg}"),
             Self::Module(msg) => write!(f, "JIT module error: {msg}"),
             Self::Internal(msg) => write!(f, "JIT internal error (please report): {msg}"),
+            Self::CallResultArityMismatch {
+                callee,
+                expected,
+                got,
+            } => write!(
+                f,
+                "JIT internal error (please report): call to `{callee}` produced {got} \
+                 result(s), expected {expected}"
+            ),
         }
     }
 }
