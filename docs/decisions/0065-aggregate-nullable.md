@@ -481,17 +481,28 @@ nằm trong một comment code (`triet-lower/src/lib.rs:3094-3100`) — một l�
 |---|---|---|---|
 | 1 | `triet-lower/src/lib.rs:320` (`Ctx::new`) | **callee-side** | match exact → miscompile |
 | 2 | `triet-lower/src/lib.rs:3103` (`Expr::Call`) | **caller-side** | match exact → miscompile |
-| 3 | `triet-lower/src/lib.rs:5219` (`Expr::MethodCall`) | caller-side | **fail-closed** → `Err(LowerError)` |
+| 3 | `triet-lower/src/lib.rs:5501` (`Expr::MethodCall`) | caller-side | ✅ **sret (WO-MethodCallFatReturn)** |
 
 **Mismatch caller/callee = JIT panic HOẶC silent Scalar miscompile.** Sửa một bản mà quên bản khác là
 lỗi kinh điển của họ này (WO-2 recon: O khoanh bán kính chỉ thấy #1; #2 do D tìm ra; #3 do O tự đào khi
 đi kiểm claim của D).
 
-**Lát A sửa #1 + #2.** #3 KHÔNG sửa — nó fail-closed (over-refuse, không UB), nhưng phải **chứng minh
-bằng probe**, không bằng đọc code. Hệ quả ghi sổ nợ: **`Struct?` return qua cú pháp method-call =
-over-refuse**, chờ lát riêng.
+**Lát A sửa #1 + #2.** #3 ban đầu KHÔNG sửa — fail-closed (over-refuse, không UB), chứng minh bằng
+probe (fixture 448/453 `_refused`).
 
 **Quy tắc thường trực:** ai đụng một trong ba bản sao PHẢI grep hai bản còn lại trong cùng một lát.
+
+#### AMENDMENT (WO-MethodCallFatReturn, 2026-07-25) — đóng copy #3
+
+**Trạng thái:** O ✅ · G ✅ · D ✅
+
+Copy #3 (`Expr::MethodCall`) nay mirror copy #2: `is_fat_ret` unwrap `Nullable` để nhận diện bare
+`Enum`, `Struct?` (Nullable Copy-only), và `Enum?` (Nullable unit-only) → dispatch sret (`EnumAlloc`/
+`StructAlloc` + `ReturnShape::Enum`/`ReturnShape::Struct`), thay vì rơi vào refuse. Phạm vi đóng:
+Enum (bare) · `Struct?` · `Enum?`. **Vector/HashMap/Reference (+ `Vector?`/`HashMap?`) VẪN refuse** —
+over-refuse > miscompile, chưa có ABI riêng. `Struct?` heap-field / `Enum?` payload-bearing KHÔNG
+đụng tới (callee-side E1121/E1120 tự fire trước khi tới đây). Fixture 448/453 flip sang `EXPECT`;
+469 thêm probe bare `Enum` method-return.
 
 ---
 

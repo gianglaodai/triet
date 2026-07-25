@@ -556,6 +556,12 @@ Các test free-count (`nullable_map_heap_output_counting`, `vector_nullable_drop
 
 ## 🟢 BACKLOG MỞ
 
+### 🔴 P1 AUDIT — copy #2 (`Expr::Call`) scalar-return `Vector`/`HashMap` nghi silent miscompile (ghi bởi WO-MethodCallFatReturn, 2026-07-25)
+copy #2 (`Expr::Call`, `crates/triet-lower/src/lib.rs:3507` else-branch) scalar-return `Vector`/`HashMap`
+(không `is_string_repr`, không sret) — nghi silent miscompile fat→i64. Chưa chứng minh sound. Audit
+riêng, KHÔNG thuộc WO-MethodCallFatReturn (WO đó chỉ đóng copy #3 `Expr::MethodCall` cho Enum/
+`Struct?`/`Enum?`).
+
 ### 🔨 ĐANG MỞ — Field auto-deref qua `&0` reference (ADR-0084 DRAFT, chờ O verify + G ký)
 `e.f` với `e : &0 T` / `&0 mutable T` (T=UserStruct) → auto-deref 1 tầng project field. Semantic đầy đủ khóa ở ADR-0084 §CỐT LÕI.
 - [x] **Slice 1a — scalar field** (D code, chờ O verify): typecheck auto-deref scalar-only (`check_field_access` `is_scalar()` gate) + lowerer `Projection::Deref` (`place_result_type`+`lower_place`) + JIT `walk_projections` Deref + **Blocker-B vá** (`Statement::Borrow` slot-addr mọi struct/enum local, không chỉ String). Fixtures 381 (param) / 382 (block-local), EXPECT 30. Poison-2-tầng: gỡ typecheck→E1015 · revert Blocker-B→SIGSEGV 139.

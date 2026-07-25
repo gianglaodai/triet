@@ -1,0 +1,26 @@
+// EXPECT: 10
+// WO-MethodCallFatReturn (ADR-0065 §14.7 AMEND, 2026-07-25): closed by
+// mirroring copy #2's (`Expr::Call`) `is_fat_ret` unwrap into copy #3
+// (`Expr::MethodCall`, `triet-lower/src/lib.rs:5501`). A trait method
+// returning `Struct?` (Nullable, Copy-only payload) now dispatches through
+// sret (`StructAlloc` tag-prepend + `ReturnShape::Struct`) instead of
+// falling through to the trailing refuse. Was fixture 448 "_refused"
+// (proved the pre-fix copy failed CLOSED, not open into a miscompile);
+// flipped now that the copy is closed.
+struct P { x: Integer, y: Integer }
+
+trait Maker {
+    function make(self) -> P?
+}
+
+implement Maker for Integer {
+    function make(self) -> P? { return ~+ P { x: self, y: 2 } }
+}
+
+function main() -> Integer {
+    let p = (10).make();
+    return match p {
+        ~+ v => v.x,
+        ~0 => -1,
+    };
+}

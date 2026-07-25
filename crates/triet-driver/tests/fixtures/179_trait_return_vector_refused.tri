@@ -1,9 +1,13 @@
-// ERROR: Vector/HashMap/Enum/Reference returns deferred
+// ERROR: Vector/HashMap/Reference returns deferred
 // Nợ #2 §2 (refuse NARROW): a trait method returning Vector still needs its
 // own ABI. The lowerer must REFUSE cleanly, NOT fall through to the scalar
 // branch and miscompile the fat pointer into a single i64 (silent soundness
 // hole). Poison check: delete the narrow refuse arm → the call falls into the
 // scalar branch and miscompiles instead of producing this clean Err.
+// Message updated by WO-MethodCallFatReturn (ADR-0065 §14.7 AMEND,
+// 2026-07-25): "Enum" dropped from the refuse text since bare `Enum` /
+// `Struct?` / `Enum?` trait-method returns now dispatch through sret
+// instead of refusing — only Vector/HashMap/Reference remain refused here.
 //
 // `v` is bound but not consumed: `length(v)` would trip an unrelated typecheck
 // overload error first, masking the lower-side refuse we want to exercise.

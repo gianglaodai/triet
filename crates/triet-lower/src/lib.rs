@@ -5498,7 +5498,21 @@ fn lower_expr(
                 // ADR-0062 Lát 4.5: `String?` method return shares String's fat
                 // sret path (mirror Expr::Call). `is_string_repr()` covers both
                 // `String` and `String?` (Nullable(String)).
-                let is_fat_ret = matches!(callee_ret, MirType::Struct(_))
+                // ADR-0065 §14.7 AMEND (WO-MethodCallFatReturn, 2026-07-25 —
+                // closes copy #3 of the three `is_fat_ret` copies): unwrap
+                // `Nullable` so bare `Enum` and `Struct?`/`Enum?` method
+                // returns dispatch through sret, mirroring copy #2
+                // (`Expr::Call`, `:3343-3363`). `Vector?`/`HashMap?`/
+                // `Reference` are NOT unwrapped here and still fall through
+                // to the refuse below.
+                let is_enum_ret = matches!(
+                    callee_ret.nullable_payload().unwrap_or(&callee_ret),
+                    MirType::Enum(_)
+                );
+                let is_fat_ret = matches!(
+                    callee_ret.nullable_payload().unwrap_or(&callee_ret),
+                    MirType::Struct(_)
+                ) || is_enum_ret
                     || callee_ret.is_string_repr()
                     || is_heap_outcome_ret;
                 // Only SCALAR nullables (Integer? etc., PA-3c single-i64) count
@@ -5521,10 +5535,14 @@ fn lower_expr(
                     MirType::Nullable(inner) if triet_mir::is_scalar_nullable_payload(inner)
                 );
                 // sret slot layout name: `String?` reprs as the "String" layout
-                // (ptr-sentinel, same 24-byte slot); `to_string()` would yield
-                // "String?", which has no registered layout (mirror Call:2245).
+                // (ptr-sentinel, same 24-byte slot); `Struct?`/`Enum?` repr as
+                // the INNER layout's name (mirror copy #2, `:3370-3376`);
+                // `to_string()` would yield e.g. "Point?"/"U?", which has no
+                // registered layout.
                 let sret_layout_name = if callee_ret.is_string_repr() {
                     "String".to_string()
+                } else if let Some(inner) = callee_ret.nullable_payload() {
+                    inner.to_string()
                 } else {
                     callee_ret.to_string()
                 };
@@ -5544,6 +5562,16 @@ fn lower_expr(
                     if is_heap_outcome_ret {
                         c.push(Statement::OutcomeAlloc {
                             dest: ret_local,
+                            span: expr_span.clone(),
+                        });
+                    } else if is_enum_ret {
+                        // Mirror copy #2 (`:3398-3408`): enum sret gives the
+                        // caller's return buffer a real StackSlot; the callee
+                        // block-copies its own slot's bytes into it, so no
+                        // SetDiscriminant here.
+                        c.push(Statement::EnumAlloc {
+                            dest: ret_local,
+                            enum_name: sret_layout_name.clone(),
                             span: expr_span.clone(),
                         });
                     } else {
@@ -5569,6 +5597,15 @@ fn lower_expr(
                         .collect();
                     let ret_bb = c.alloc_bb();
                     let call_bb = c.cur;
+                    let return_shape = if is_enum_ret {
+                        triet_mir::ReturnShape::Enum {
+                            enum_name: sret_layout_name,
+                        }
+                    } else {
+                        triet_mir::ReturnShape::Struct {
+                            struct_name: sret_layout_name,
+                        }
+                    };
                     c.term(
                         call_bb,
                         Terminator::CallDispatch {
@@ -5578,9 +5615,7 @@ fn lower_expr(
                             args,
                             return_bb: ret_bb,
                             dest: Vec::new(),
-                            return_shape: triet_mir::ReturnShape::Struct {
-                                struct_name: sret_layout_name,
-                            },
+                            return_shape,
                             span: expr_span,
                         },
                     );
@@ -5671,13 +5706,15 @@ fn lower_expr(
                     }
                     return Ok(dest);
                 }
-                // Refuse NARROW (nợ #2 §2): Vector / HashMap / Enum /
-                // Reference trait-method returns still need their own ABI.
-                // Refuse rather than fall through to a scalar miscompile.
+                // Refuse NARROW (nợ #2 §2, closed for Enum/Struct?/Enum? by
+                // WO-MethodCallFatReturn ADR-0065 §14.7 AMEND): Vector /
+                // HashMap / Reference trait-method returns still need their
+                // own ABI. Refuse rather than fall through to a scalar
+                // miscompile.
                 return Err(LowerError::ConstructNotYetLowered {
                     message: format!(
                         "trait method `{callee_name}` returns `{callee_ret}` — \
-                         Vector/HashMap/Enum/Reference returns deferred (nợ #2 scope)"
+                         Vector/HashMap/Reference returns deferred (nợ #2 scope)"
                     ),
                     span: expr_span,
                 });

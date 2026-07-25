@@ -1,0 +1,24 @@
+// EXPECT: 5
+// WO-MethodCallFatReturn (ADR-0065 §14.7 AMEND, 2026-07-25): probe bare
+// `Enum` (NOT `Enum?`) returned from a trait method-call. Before this WO,
+// copy #3 of `is_fat_ret` (`Expr::MethodCall`, `triet-lower/src/lib.rs:5501`)
+// did not recognize `MirType::Enum` at all — even a non-nullable enum
+// method return fell through to the trailing refuse. Exhaustive match — no
+// wildcard — so a register-shortcut regression traps loudly (SIGILL)
+// instead of silently returning garbage.
+enum U { A, B }
+
+trait Maker {
+    function make(self) -> U
+}
+
+implement Maker for Integer {
+    function make(self) -> U { return U::A }
+}
+
+function main() -> Integer {
+    return match (10).make() {
+        U::A => 5,
+        U::B => 9,
+    };
+}
