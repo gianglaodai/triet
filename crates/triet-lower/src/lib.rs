@@ -1594,6 +1594,28 @@ fn ctx_is_copy(ty: &MirType, c: &Ctx) -> bool {
     }
 }
 
+/// ADR-0089 §AMEND Slice 2a: `true` for a MIR type whose value fits a single
+/// i64 word with no separate StackSlot — a bare scalar, OR `Nullable` of one
+/// (PA-3c sentinel encoding shares the same word, no tag prefix). Used by
+/// the `for item in <Vector>` desugar to pick the raw-i64 `__triet_vector_get`
+/// shim over the sret `__triet_vector_get_copy` shim. Deliberately EXCLUDES
+/// `Struct`/`Enum` (handled by a separate arm) and `Nullable(Struct)` /
+/// `Nullable(Enum)` (not yet supported by this desugar — refuse rather than
+/// misroute to a shim whose slot-layout assumption doesn't match).
+fn is_scalar_repr(ty: &MirType) -> bool {
+    match ty {
+        MirType::Integer
+        | MirType::Trit
+        | MirType::Tryte
+        | MirType::Long
+        | MirType::Trilean
+        | MirType::Unit
+        | MirType::Unknown => true,
+        MirType::Nullable(inner) => is_scalar_repr(inner),
+        _ => false,
+    }
+}
+
 fn lower_type_simple(arena: &Arena, id: TypeId, c: &Ctx) -> MirType {
     match &arena.type_expression(id).node {
         TypeExpr::Named(n) => match n.as_str() {
@@ -2306,41 +2328,209 @@ fn lower_stmt(stmt: &Stmt, stmt_span: Span, arena: &Arena, c: &mut Ctx) -> Resul
             body,
         } => {
             // ADR-0089 §2/§3: typecheck (E1052) already refuses any
-            // iterable that isn't an inline `Expr::Range` literal — but it
-            // does NOT abort the pipeline on that error (so borrowck
-            // diagnostics can still surface). Re-check the expr-kind here
-            // defensively and refuse (never panic) rather than assume the
-            // upstream guard always ran.
-            let Expr::Range {
+            // iterable that isn't an inline `Expr::Range` literal or a
+            // Copy-element `Vector` (§AMEND Slice 2a) — but it does NOT
+            // abort the pipeline on that error (so borrowck diagnostics can
+            // still surface). Re-check the expr-kind/type here defensively
+            // and refuse (never panic) rather than assume the upstream
+            // guard always ran.
+            if let Expr::Range {
                 start,
                 end,
                 inclusive,
             } = &arena.expression(*iterable).node
-            else {
+            {
+                let (start, end, inclusive) = (*start, *end, *inclusive);
+
+                // `i = start` — induction local, Integer scalar/Copy, NOT
+                // owned-tracked (ADR-0089 §3).
+                let start_val = lower_expr(start, None, arena, c)?;
+                let elem_ty = c.local_decls[start_val.0].ty.clone();
+                let induction = c.alloc_local_ty(elem_ty.clone());
+                c.push(Statement::StorageLive(induction, stmt_span.clone()));
+                c.push(Statement::Assign {
+                    dest: Place::local(induction),
+                    source: Place::local(start_val),
+                    span: stmt_span.clone(),
+                });
+
+                match &arena.pattern(*variable).node {
+                    triet_syntax::Pattern::Variable(name) => {
+                        c.vars.insert(name.clone(), induction);
+                        c.local_names.insert(induction, name.clone());
+                    }
+                    triet_syntax::Pattern::Wildcard => {}
+                    _ => return Err(LowerError::unsupported_stmt(stmt, stmt_span)),
+                }
+
+                let hdr = c.alloc_bb();
+                let bdy = c.alloc_bb();
+                let step = c.alloc_bb();
+                let ext = c.alloc_bb();
+
+                let cur = c.cur;
+                c.term(
+                    cur,
+                    Terminator::Goto {
+                        target: hdr,
+                        span: DUMMY_SPAN,
+                    },
+                );
+
+                // hdr: cond = i < end (exclusive) / i <= end (inclusive)
+                c.cur = hdr;
+                let end_val = lower_expr(end, None, arena, c)?;
+                let cmp_op = if inclusive { BinOp::Le } else { BinOp::Lt };
+                let cond = c.alloc_local_ty(MirType::Trilean);
+                c.push(Statement::StorageLive(cond, stmt_span.clone()));
+                c.push(Statement::BinaryOp {
+                    dest: Place::local(cond),
+                    op: cmp_op,
+                    left: Place::local(induction),
+                    right: Place::local(end_val),
+                    span: stmt_span.clone(),
+                });
+                let hdr_end = c.cur;
+                c.term(
+                    hdr_end,
+                    Terminator::If {
+                        cond,
+                        positive_bb: bdy,
+                        zero_bb: None,
+                        negative_bb: ext,
+                        span: arena.expression(*iterable).span.clone(),
+                    },
+                );
+
+                // bdy: <body> — break→ext, continue→step.
+                c.cur = bdy;
+                let drop_snapshot = c.owned_locals.len();
+                c.loop_stack.push(LoopContext {
+                    break_bb: ext,
+                    continue_bb: step,
+                    drop_snapshot,
+                });
+                lower_block(*body, arena, c)?;
+                c.loop_stack.pop();
+                let bdy_end = c.cur;
+                c.term(
+                    bdy_end,
+                    Terminator::Goto {
+                        target: step,
+                        span: DUMMY_SPAN,
+                    },
+                );
+
+                // step: i = i + 1 (range-enforced trap per ADR-0044, same
+                // BinaryOp(Add) the JIT backend already traps on).
+                c.cur = step;
+                let one = c.alloc_local_ty(elem_ty);
+                c.push(Statement::StorageLive(one, stmt_span.clone()));
+                c.push(Statement::Const {
+                    dest: Place::local(one),
+                    value: ConstValue::Integer(1),
+                    span: stmt_span.clone(),
+                });
+                c.push(Statement::BinaryOp {
+                    dest: Place::local(induction),
+                    op: BinOp::Add,
+                    left: Place::local(induction),
+                    right: Place::local(one),
+                    span: stmt_span.clone(),
+                });
+                let step_end = c.cur;
+                c.term(
+                    step_end,
+                    Terminator::Goto {
+                        target: hdr,
+                        span: DUMMY_SPAN,
+                    },
+                );
+
+                c.cur = ext;
+                return Ok(());
+            }
+
+            // ── ADR-0089 §AMEND Slice 2a: `for item in <Vector>` copy
+            // by-value sugar ──
+            //
+            // §2a.3.1 HANDLE-ALIASING guard (mandatory — double-free
+            // CONTAINER otherwise): no explicit `push_owned(iter_local)`
+            // runs in this arm at all — `emit_shim_call` (`lib.rs:1783`)
+            // already `push_owned`s every non-consumed shim argument, and
+            // the very next statement below calls it for `__triet_vector_len`
+            // with `iter_local` as arg 0 (not consumed by that shim), so
+            // `iter_local` is registered in `owned_locals` there
+            // unconditionally. `push_owned` is dedup'd (`Ctx::push_owned`
+            // checks `!owned_locals.contains(&l)` before pushing), so this
+            // is correct for BOTH iterable shapes without any lvalue/rvalue
+            // branch here:
+            // - lvalue iterable (`Expr::Identifier`, e.g. `for item in my_vec`):
+            //   `lower_expr` returns `my_vec`'s OWN existing local, already
+            //   registered by its enclosing `let`/param binding — the
+            //   `len`-shim's `push_owned` call is a no-op dedup, so `my_vec`
+            //   still drops exactly once, at ITS OWN scope exit.
+            // - rvalue iterable (e.g. `for item in make_vector()`):
+            //   `lower_expr` on a bare `Expr::Call` returns a FRESH temp
+            //   that nothing else tracks yet — the `len`-shim's
+            //   `push_owned` call is what registers it, so it drops exactly
+            //   once at the enclosing scope's exit.
+            // (2026-07-26 CLEANUP: an earlier revision duplicated this
+            // registration with an explicit `if !is_lvalue { push_owned }`
+            // guard here — redundant given `emit_shim_call` already covers
+            // it, and its comment wrongly implied it was load-bearing
+            // double-free protection; removed rather than left as
+            // misleading dead weight.)
+            let iter_local = lower_expr(*iterable, None, arena, c)?;
+
+            let MirType::Vector(inner) = c.local_decls[iter_local.0].ty.clone() else {
                 return Err(LowerError::unsupported_stmt(stmt, stmt_span));
             };
-            let (start, end, inclusive) = (*start, *end, *inclusive);
+            let inner = *inner;
 
-            // `i = start` — induction local, Integer scalar/Copy, NOT
-            // owned-tracked (ADR-0089 §3).
-            let start_val = lower_expr(start, None, arena, c)?;
-            let elem_ty = c.local_decls[start_val.0].ty.clone();
-            let induction = c.alloc_local_ty(elem_ty.clone());
-            c.push(Statement::StorageLive(induction, stmt_span.clone()));
-            c.push(Statement::Assign {
-                dest: Place::local(induction),
-                source: Place::local(start_val),
+            // Defense-in-depth mirror of typecheck's §2a.2 Copy gate: a
+            // heap element (typecheck bypassed) refuses here rather than
+            // desugaring an unsound aliasing copy.
+            if !ctx_is_copy(&inner, c) {
+                return Err(LowerError::unsupported_stmt(stmt, stmt_span));
+            }
+            // Struct is handled via a dedicated wrap/unwrap (see below —
+            // `Struct?`'s tag-prepend +8 sizing is asymmetric with bare
+            // `Struct`). Anything else this arm doesn't specifically
+            // recognize (Enum, `Nullable(Struct)`/`Nullable(Enum)`, …)
+            // refuses rather than risk misrouting to a shim whose
+            // slot-layout assumption doesn't match — a coverage gap
+            // (E1100), not a soundness hole.
+            let is_struct_elem = matches!(inner, MirType::Struct(_));
+            if !is_struct_elem && !is_scalar_repr(&inner) {
+                return Err(LowerError::unsupported_stmt(stmt, stmt_span));
+            }
+
+            // __len = len(iter_local) — computed ONCE before the loop.
+            let len_local = emit_shim_call(
+                c,
+                "__triet_vector_len",
+                vec![iter_local],
+                MirType::Integer,
+                stmt_span.clone(),
+            );
+
+            // __i = 0 — index induction local, Integer scalar, NOT
+            // owned-tracked (mirrors the Range induction local above).
+            let index = c.alloc_local_ty(MirType::Integer);
+            c.push(Statement::StorageLive(index, stmt_span.clone()));
+            let zero = c.alloc_local_ty(MirType::Integer);
+            c.push(Statement::StorageLive(zero, stmt_span.clone()));
+            c.push(Statement::Const {
+                dest: Place::local(zero),
+                value: ConstValue::Integer(0),
                 span: stmt_span.clone(),
             });
-
-            match &arena.pattern(*variable).node {
-                triet_syntax::Pattern::Variable(name) => {
-                    c.vars.insert(name.clone(), induction);
-                    c.local_names.insert(induction, name.clone());
-                }
-                triet_syntax::Pattern::Wildcard => {}
-                _ => return Err(LowerError::unsupported_stmt(stmt, stmt_span)),
-            }
+            c.push(Statement::Assign {
+                dest: Place::local(index),
+                source: Place::local(zero),
+                span: stmt_span.clone(),
+            });
 
             let hdr = c.alloc_bb();
             let bdy = c.alloc_bb();
@@ -2356,17 +2546,15 @@ fn lower_stmt(stmt: &Stmt, stmt_span: Span, arena: &Arena, c: &mut Ctx) -> Resul
                 },
             );
 
-            // hdr: cond = i < end (exclusive) / i <= end (inclusive)
+            // hdr: cond = __i < __len
             c.cur = hdr;
-            let end_val = lower_expr(end, None, arena, c)?;
-            let cmp_op = if inclusive { BinOp::Le } else { BinOp::Lt };
             let cond = c.alloc_local_ty(MirType::Trilean);
             c.push(Statement::StorageLive(cond, stmt_span.clone()));
             c.push(Statement::BinaryOp {
                 dest: Place::local(cond),
-                op: cmp_op,
-                left: Place::local(induction),
-                right: Place::local(end_val),
+                op: BinOp::Lt,
+                left: Place::local(index),
+                right: Place::local(len_local),
                 span: stmt_span.clone(),
             });
             let hdr_end = c.cur;
@@ -2381,8 +2569,62 @@ fn lower_stmt(stmt: &Stmt, stmt_span: Span, arena: &Arena, c: &mut Ctx) -> Resul
                 },
             );
 
-            // bdy: <body> — break→ext, continue→step.
+            // bdy: item = <infallible-get>(iter_local, __i) — in-bounds by
+            // construction (`__i < __len`), so the "not found" state is
+            // provably unreachable; bind `item : inner` directly, no
+            // Nullable wrap surfaced to the user/borrowck.
             c.cur = bdy;
+            let item_local = if is_struct_elem {
+                // `Struct?`'s tag-prepend (+8) is asymmetric with bare
+                // `Struct` (ADR-0065 §14 Phương án A) — the JIT's fat
+                // `_get_copy` copy-write unconditionally writes at
+                // `slot+8`, so the shim call MUST target a
+                // `Nullable(Struct)` dest to get the +8-sized slot the
+                // "Lát 2" struct-slot allocation loop derives from that
+                // wrapper (`mir_lower.rs`, struct-slot pre-pass). Unwrap
+                // into a genuinely bare-`Struct` local via the SAME
+                // "PA-3c identity" Assign the `match { ~+ p => .. }`
+                // present-arm bind already uses (`lib.rs`, Nullable-match
+                // arm) — reads here are always in-bounds, so the would-be
+                // "null" tag is provably dead; no match/branch needed.
+                let nullable_tmp = emit_shim_call(
+                    c,
+                    "__triet_vector_get_copy",
+                    vec![iter_local, index],
+                    MirType::Nullable(Box::new(inner.clone())),
+                    stmt_span.clone(),
+                );
+                let item = c.alloc_local_ty(inner.clone());
+                c.push(Statement::StorageLive(item, stmt_span.clone()));
+                c.push(Statement::Assign {
+                    dest: Place::local(item),
+                    source: Place::local(nullable_tmp),
+                    span: stmt_span.clone(),
+                });
+                item
+            } else {
+                // Scalar-repr element (incl. `Nullable(scalar)`) — single
+                // i64, no StackSlot at all; the raw shim return is already
+                // the correct bit pattern for `inner`.
+                emit_shim_call(
+                    c,
+                    "__triet_vector_get",
+                    vec![iter_local, index],
+                    inner,
+                    stmt_span.clone(),
+                )
+            };
+
+            match &arena.pattern(*variable).node {
+                triet_syntax::Pattern::Variable(name) => {
+                    c.vars.insert(name.clone(), item_local);
+                    c.local_names.insert(item_local, name.clone());
+                }
+                triet_syntax::Pattern::Wildcard => {}
+                _ => return Err(LowerError::unsupported_stmt(stmt, stmt_span)),
+            }
+
+            // <body> — break→ext, continue→step (loop-context as for-Range).
             let drop_snapshot = c.owned_locals.len();
             c.loop_stack.push(LoopContext {
                 break_bb: ext,
@@ -2400,10 +2642,9 @@ fn lower_stmt(stmt: &Stmt, stmt_span: Span, arena: &Arena, c: &mut Ctx) -> Resul
                 },
             );
 
-            // step: i = i + 1 (range-enforced trap per ADR-0044, same
-            // BinaryOp(Add) the JIT backend already traps on).
+            // step: __i = __i + 1
             c.cur = step;
-            let one = c.alloc_local_ty(elem_ty);
+            let one = c.alloc_local_ty(MirType::Integer);
             c.push(Statement::StorageLive(one, stmt_span.clone()));
             c.push(Statement::Const {
                 dest: Place::local(one),
@@ -2411,9 +2652,9 @@ fn lower_stmt(stmt: &Stmt, stmt_span: Span, arena: &Arena, c: &mut Ctx) -> Resul
                 span: stmt_span.clone(),
             });
             c.push(Statement::BinaryOp {
-                dest: Place::local(induction),
+                dest: Place::local(index),
                 op: BinOp::Add,
-                left: Place::local(induction),
+                left: Place::local(index),
                 right: Place::local(one),
                 span: stmt_span.clone(),
             });

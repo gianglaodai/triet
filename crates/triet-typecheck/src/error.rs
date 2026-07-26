@@ -944,6 +944,50 @@ pub enum TypeError {
         span: Span,
     },
 
+    /// E1053: `for x in v` where `v : Vector<T>` and `T` is not one of the
+    /// element shapes the lowerer's ADR-0089 §AMEND Slice 2a desugar
+    /// actually handles — scalar or a bare copy-struct. By-value iteration
+    /// over `Vector` is currently supported only for scalar and bare
+    /// copy-struct elements; Enum, Nullable, and heap-bearing elements are
+    /// deferred. Heap-bearing elements are refused because copying one out
+    /// of the container by value would alias the container's heap pointer —
+    /// a double-free once both the loop variable and the container drop
+    /// (the "chốt chặn thép" hazard §2a.2 calls out). Enum and
+    /// `Nullable(T)` (even `Nullable(scalar)`) are refused too: not a
+    /// soundness risk, but the lowerer has no desugar shim for them yet
+    /// (§2a.6 out-of-scope) — refusing here at typecheck keeps that a clean
+    /// user-facing E1053 instead of a silent fall-through to lower's
+    /// internal-invariant refuse. 2026-07-26 CLEANUP renamed this variant
+    /// from `HeapVectorByValueIterationUnsupported` (it now also covers
+    /// Enum/Nullable, not just heap) — the error CODE (`E1053`) is
+    /// unchanged.
+    #[error(
+        "E1053: `for` iteration over `Vector<{element}>` by value is unsupported — \
+        only scalar and bare copy-struct elements are supported"
+    )]
+    #[diagnostic(
+        code(triet::typecheck::E1053),
+        help(
+            "By-value iteration over Vector is currently supported only for scalar \
+            and bare copy-struct elements; Enum, Nullable, and heap-bearing elements \
+            are deferred.\n\n\
+            [Fix 1] Iterate by index and borrow the element instead:\n\
+            Change `for x in v` to \
+            `for i in 0..length(v) {{ let x = get(&0 v, i); ... }}`\n\n\
+            A consuming `drain(v)` iterator is planned separately (Slice 2b, not yet \
+            implemented)."
+        )
+    )]
+    VectorElementByValueIterationUnsupported {
+        /// The Vector's element type (not a supported by-value shape).
+        element: String,
+        /// Source location of the Vector iterable expression.
+        #[label(
+            "`Vector<{element}>` element is not a supported by-value shape (scalar or bare copy-struct only)"
+        )]
+        span: Span,
+    },
+
     // === Warning-severity diagnostics (Q2-C: miette severity field) ===
     /// W2001: deprecated `null` keyword (use `~0` canonical literal).
     /// Severity: WARNING (does not block compile until v1.0 per
@@ -1174,6 +1218,7 @@ impl TypeError {
             | Self::BorrowedEnumPayloadBindUnsupported { span, .. }
             | Self::GetContainerNullableValueUnsupported { span, .. }
             | Self::NonRangeIterationUnsupported { span }
+            | Self::VectorElementByValueIterationUnsupported { span, .. }
             | Self::CapabilityLevelUnsupported { span, .. }
             | Self::CapabilityNotPossessable { span, .. }
             | Self::NullDeprecated { span } => span.clone(),

@@ -1,0 +1,15 @@
+// ERROR: E1053
+// ADR-0089 §AMEND Slice 2a — T2a-heap-refuse: `for s in <Vector<String>>`
+// must be refused at TYPECHECK (E1053), not fall through to lowering/JIT —
+// copying a String element out by value would alias the container's heap
+// pointer (double-free once both `s` and the container drop).
+function main() -> Integer {
+    let mutable xs: Vector<String> = vector_new();
+    xs = push(xs, "a");
+    xs = push(xs, "b");
+    let mutable total = 0;
+    for s in xs {
+        total = total + length(s);
+    }
+    return total;
+}

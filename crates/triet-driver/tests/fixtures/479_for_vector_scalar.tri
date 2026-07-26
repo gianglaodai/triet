@@ -1,0 +1,15 @@
+// EXPECT: 60
+// ADR-0089 §AMEND Slice 2a — T2a-scalar: `for x in v` on `Vector<Integer>`
+// (scalar element, Copy) sums the elements by value via the index-loop
+// desugar (raw `__triet_vector_get`, no Nullable wrap, no move-out).
+function main() -> Integer {
+    let mutable xs = vector_new();
+    xs = push(xs, 10);
+    xs = push(xs, 20);
+    xs = push(xs, 30);
+    let mutable sum = 0;
+    for x in xs {
+        sum = sum + x;
+    }
+    return sum;
+}

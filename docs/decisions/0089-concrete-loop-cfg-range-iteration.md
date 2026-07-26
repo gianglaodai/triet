@@ -220,11 +220,14 @@ Negative (guard typecheck — G mandate b):
 
 ## §AMEND — Slice 2a: `for item in <Vector>` copy/by-value sugar
 
-> Status phần này: **SIGNED (design, 2026-07-26) — O ✅ G ✅.** O recon-verify bằng code
-> (get-lower `lib.rs:3288`, predicate `is_scalar/is_copy_aggregate` `types.rs:147/238`,
-> `MirType::Vector` `mir:496`, probe `for i in 0..len(v)` chạy). G chốt scope (Slice 2a
-> trước, CẤM gộp 2b/drain) + duyệt E1053 + desugar-raw-shim + cảnh báo thép §2a.3.1
-> handle-aliasing double-free CONTAINER. **Impl-verify máu (teeth §2a.5) chạy sau khi D land.**
+> Status phần này: **SIGNED + IMPLEMENTED (2026-07-26) — O ✅ G ✅.** Land trọn: for-item
+> Vector by-value sugar (scalar + bare copy-Struct), desugar raw-shim infallible-get, guard
+> **E1053** thắt CHÍNH XÁC khớp lowerer (`is_scalar() || (UserStruct && is_copy_aggregate)` —
+> Enum/Nullable/heap refuse tại typecheck, KHÔNG lọt E1100 lower). O verify máu: gate
+> `0·clean·0·479·0`; poison ĐỎ (guard broad→485 E1100 trap tái mở; handle-alias→SIGABRT
+> D+O; guard E1053 load-bearing); counting container FREE=1 lvalue+rvalue (emit_shim_call
+> `lib.rs:1783` gánh ownership — dòng `if !is_lvalue push_owned` redundant ĐÃ xóa). §2a.3.1
+> handle double-free tránh bằng tái-dùng-local (không alias local mới).
 
 Mở `for item in v` với `v : Vector<T>` khi **T là Copy** (scalar hoặc copy-aggregate).
 Desugar về index-loop tái dùng TRỌN CFG Slice 1 — **KHÔNG generic trait, KHÔNG

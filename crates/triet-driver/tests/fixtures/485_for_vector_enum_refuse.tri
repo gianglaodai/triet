@@ -1,0 +1,24 @@
+// ERROR: E1053
+// ADR-0089 §AMEND Slice 2a CLEANUP — T2a-enum-refuse: `for e in <Vector<Enum>>`
+// must be refused at TYPECHECK (E1053), NOT typecheck-pass into lower's
+// E1100 "unsupported_stmt" refuse. `Color` is a scalar-only (unit-variant)
+// enum, so `is_copy_aggregate()` returns true for it — the pre-cleanup
+// typecheck guard (`inner.is_scalar() || inner.is_copy_aggregate()`) would
+// have let this through, but the lowerer's Vector-Copy for-loop desugar only
+// recognizes scalar and BARE `MirType::Struct(_)` elements
+// (`triet-lower/src/lib.rs` `is_struct_elem` check) — Enum was never wired,
+// so this used to silently fall through to lower-time E1100, a coverage gap
+// disguised as an internal error rather than a clean E1053 refuse.
+enum Color {
+    Red,
+    Green,
+    Blue,
+}
+
+function main() -> Integer {
+    let mutable v: Vector<Color> = vector_new();
+    v = push(v, Color::Red);
+    for e in v {
+    }
+    return 0;
+}

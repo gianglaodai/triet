@@ -708,6 +708,36 @@ impl<'p> Checker<'p> {
                         Type::Range(inner) => (**inner).clone(),
                         _ => Type::Unknown,
                     }
+                } else if let Type::Vector(inner) = &iter_ty {
+                    // ADR-0089 §AMEND Slice 2a §2a.2: `for x in v` on a
+                    // `Vector<T>` is opened for by-value iteration IFF the
+                    // LOWERER actually desugars `T` (`triet-lower/src/lib.rs`
+                    // `Stmt::For` Vector arm) — scalar, or a BARE copy-struct
+                    // (`MirType::Struct(_)`, checked via `is_struct_elem` in
+                    // the lowerer). `is_copy_aggregate()` alone is broader
+                    // than that (it also matches CopyEnum and
+                    // `Nullable(Struct/Enum)`), so gating on it here would
+                    // typecheck-pass an iterable the lowerer has no shim for
+                    // → silent fall-through to lower's E1100
+                    // "unsupported_stmt" refuse (a coverage gap disguised as
+                    // an internal error, not a clean user-facing E1053).
+                    // 2026-07-26 CLEANUP tightens the gate to match the
+                    // lowerer exactly: Enum and Nullable(T) (even
+                    // Nullable(scalar)) now refuse E1053 here too —
+                    // over-refuse/fail-closed, not a soundness fix (they
+                    // were never a double-free risk, just unimplemented).
+                    if inner.is_scalar()
+                        || (matches!(**inner, Type::UserStruct { .. }) && inner.is_copy_aggregate())
+                    {
+                        (**inner).clone()
+                    } else {
+                        self.errors
+                            .push(TypeError::VectorElementByValueIterationUnsupported {
+                                element: inner.to_string(),
+                                span: self.arena.expression(iterable).span.clone(),
+                            });
+                        Type::Unknown
+                    }
                 } else {
                     self.errors.push(TypeError::NonRangeIterationUnsupported {
                         span: self.arena.expression(iterable).span.clone(),

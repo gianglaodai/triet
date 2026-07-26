@@ -1,0 +1,23 @@
+// EXPECT: 15
+// ADR-0089 §AMEND Slice 2a — T2a-rvalue: `for x in <Call>` — the iterable is
+// an RVALUE (not a named local), so `lower_expr` returns a fresh temp that
+// nothing else registers for Drop. The for-Vector desugar must
+// `push_owned` it itself (Bước-0 map-trace), so the container drops exactly
+// once at the enclosing scope's exit (FREE==1, proven separately by
+// `vector_iter_container_free_counting.rs`) — not zero (leak) and not two
+// (double-free).
+function make_vector() -> Vector<Integer> {
+    let mutable v = vector_new();
+    v = push(v, 4);
+    v = push(v, 5);
+    v = push(v, 6);
+    return v;
+}
+
+function main() -> Integer {
+    let mutable sum = 0;
+    for x in make_vector() {
+        sum = sum + x;
+    }
+    return sum;
+}

@@ -1,0 +1,16 @@
+// EXPECT: 2
+// ADR-0089 §AMEND Slice 2a — T2a-intact: `for x in v {}` reads by COPY, not
+// move — `v` must be unchanged after the loop (len(v) == 2, not 0), and the
+// container must free exactly once at scope exit (a double-free from
+// §2a.3.1 handle-aliasing, or a leak, would abort/leak — the fixture-level
+// EXPECT is len non-destructiveness; the container FREE==1 counting proof
+// lives in `vector_iter_container_free_counting.rs`).
+function main() -> Integer {
+    let mutable v = vector_new();
+    v = push(v, 1);
+    v = push(v, 2);
+    for x in v {
+        // body intentionally does nothing with x
+    }
+    return len(v);
+}

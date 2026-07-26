@@ -1,0 +1,18 @@
+// EXPECT: 4
+// ADR-0089 §AMEND Slice 2a — T2a-copy-struct: `for p in pts` on a
+// `Vector<Point>` (Copy struct, no heap leaf) reads each element by value
+// via the `__triet_vector_get_copy` sret shim (wrap-in-`Nullable`/unwrap-
+// via-Assign trick for the tag-prepend +8 slot sizing — §2a.3), bind
+// `p : Point` directly (no Nullable exposed).
+struct Point { x: Integer, y: Integer }
+
+function main() -> Integer {
+    let mutable pts: Vector<Point> = vector_new();
+    pts = push(pts, Point { x: 1, y: 1 });
+    pts = push(pts, Point { x: 3, y: -1 });
+    let mutable sum = 0;
+    for p in pts {
+        sum = sum + p.x;
+    }
+    return sum;
+}

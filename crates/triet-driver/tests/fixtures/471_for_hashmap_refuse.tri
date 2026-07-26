@@ -1,0 +1,23 @@
+// ERROR: E1052
+// ADR-0089 §2: iteration over a non-Range iterable must be refused at
+// typecheck (E1052), NOT fall through silently to Type::Unknown and crash
+// later in the lowerer (E1100).
+//
+// ADR-0089 §AMEND Slice 2a: `for x in <Vector<Integer>>` is now OPENED
+// (scalar element is Copy) — the ORIGINAL body of this fixture (iterating a
+// `Vector<Integer>`) no longer errors under Slice 2a, so this negative test
+// is repurposed to a `HashMap` iterable, which stays refused unchanged
+// (§2a.2 only opens `Vector`; `HashMap`/`String` iteration is still
+// deferred). The Vector-scalar positive case now lives in
+// `479_for_vector_scalar.tri`; the Vector-heap negative case (still
+// refused, but as E1053 not E1052) lives in `481_for_vector_heap_refuse.tri`.
+function main() -> Integer {
+    let mutable m: HashMap<Integer, Integer> = hashmap_new();
+    m = insert(m, 1, 10);
+    m = insert(m, 2, 20);
+    let mutable sum = 0;
+    for x in m {
+        sum = sum + x;
+    }
+    return sum;
+}

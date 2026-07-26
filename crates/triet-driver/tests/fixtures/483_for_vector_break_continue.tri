@@ -1,0 +1,23 @@
+// EXPECT: 40
+// ADR-0089 §AMEND Slice 2a — T2a-break/continue: break/continue inside a
+// `for item in <Vector>` loop use the SAME loop-context stack as for-Range
+// (break_bb=ext, continue_bb=step) — `continue` skips 20, `break` stops
+// before reaching 100. Sum = 10 + 30 (20 skipped, 100 never reached) = 40.
+function main() -> Integer {
+    let mutable xs = vector_new();
+    xs = push(xs, 10);
+    xs = push(xs, 20);
+    xs = push(xs, 30);
+    xs = push(xs, 100);
+    let mutable sum = 0;
+    for x in xs {
+        if x == 20 {
+            continue;
+        }
+        if x == 100 {
+            break;
+        }
+        sum = sum + x;
+    }
+    return sum;
+}
