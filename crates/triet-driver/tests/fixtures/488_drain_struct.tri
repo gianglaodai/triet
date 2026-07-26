@@ -1,0 +1,21 @@
+// EXPECT: 5
+// ADR-0089 §AMEND Slice 2b — T2b-heap-struct (điều kiện thép G #3): drain
+// on `Vector<User>` where `User` has a heap-bearing `String` field — the
+// popped struct is bound by value (move-out, tag-prepend `Nullable(Struct)`
+// slot per ADR-0082 §AMEND-2.2 marshal). The field is read inside the
+// body, then the struct (and its `String` field) drops at the end of each
+// iteration.
+struct User { name: String }
+
+function main() -> Integer {
+    let mutable xs: Vector<User> = vector_new();
+    let a = User { name: "aa" };
+    xs = push(xs, a);
+    let b = User { name: "bbb" };
+    xs = push(xs, b);
+    let mutable total = 0;
+    for u in xs.drain() {
+        total = total + length(u.name);
+    }
+    return total;
+}

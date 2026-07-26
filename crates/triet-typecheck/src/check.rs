@@ -693,64 +693,7 @@ impl<'p> Checker<'p> {
                 variable,
                 iterable,
                 body,
-            } => {
-                let iter_ty = self.infer_expression(iterable);
-                // ADR-0089 §2: only an INLINE `Expr::Range` literal is
-                // lowerable (Slice 1 desugars for→CFG straight off the
-                // AST start/end/inclusive fields — no Range runtime
-                // value). Check the expr-kind, not just the static type,
-                // since a Range-typed *variable* would type-check fine
-                // here but still can't lower.
-                let is_inline_range =
-                    matches!(self.arena.expression(iterable).node, Expr::Range { .. });
-                let element_ty = if is_inline_range {
-                    match &iter_ty {
-                        Type::Range(inner) => (**inner).clone(),
-                        _ => Type::Unknown,
-                    }
-                } else if let Type::Vector(inner) = &iter_ty {
-                    // ADR-0089 §AMEND Slice 2a §2a.2: `for x in v` on a
-                    // `Vector<T>` is opened for by-value iteration IFF the
-                    // LOWERER actually desugars `T` (`triet-lower/src/lib.rs`
-                    // `Stmt::For` Vector arm) — scalar, or a BARE copy-struct
-                    // (`MirType::Struct(_)`, checked via `is_struct_elem` in
-                    // the lowerer). `is_copy_aggregate()` alone is broader
-                    // than that (it also matches CopyEnum and
-                    // `Nullable(Struct/Enum)`), so gating on it here would
-                    // typecheck-pass an iterable the lowerer has no shim for
-                    // → silent fall-through to lower's E1100
-                    // "unsupported_stmt" refuse (a coverage gap disguised as
-                    // an internal error, not a clean user-facing E1053).
-                    // 2026-07-26 CLEANUP tightens the gate to match the
-                    // lowerer exactly: Enum and Nullable(T) (even
-                    // Nullable(scalar)) now refuse E1053 here too —
-                    // over-refuse/fail-closed, not a soundness fix (they
-                    // were never a double-free risk, just unimplemented).
-                    if inner.is_scalar()
-                        || (matches!(**inner, Type::UserStruct { .. }) && inner.is_copy_aggregate())
-                    {
-                        (**inner).clone()
-                    } else {
-                        self.errors
-                            .push(TypeError::VectorElementByValueIterationUnsupported {
-                                element: inner.to_string(),
-                                span: self.arena.expression(iterable).span.clone(),
-                            });
-                        Type::Unknown
-                    }
-                } else {
-                    self.errors.push(TypeError::NonRangeIterationUnsupported {
-                        span: self.arena.expression(iterable).span.clone(),
-                    });
-                    Type::Unknown
-                };
-                self.env.push_frame();
-                self.bind_pattern(variable, &element_ty);
-                // v0.9.x.atomic.7d: for-body may iterate 0 or N times;
-                // same join semantics as while/loop.
-                let _ = self.infer_expression(body);
-                self.env.pop_frame();
-            }
+            } => self.check_for_stmt(variable, iterable, body),
             Stmt::While {
                 condition,
                 body,
@@ -772,6 +715,130 @@ impl<'p> Checker<'p> {
                 let _ = self.infer_expression(expr);
             }
         }
+    }
+
+    /// `Stmt::For` check — extracted from `check_statement` (`too_many_lines`).
+    /// ADR-0089 §2/§AMEND Slice 2a/§AMEND Slice 2b: decides `element_ty` for
+    /// the loop variable across three iterable shapes, in this precedence
+    /// order:
+    ///
+    /// 1. `receiver.drain()` `MethodCall` (Slice 2b) — checked FIRST, before
+    ///    any generic inference on the whole `iterable` node. `drain` is a
+    ///    for-guard-ONLY pseudo-method (not registered in
+    ///    `builtin_method_type`/trait dispatch) — running
+    ///    `infer_expression` on the whole `MethodCall` would walk into
+    ///    `check_method_call`, fail to resolve `drain`, and push a
+    ///    spurious "no such member" error before this branch even ran.
+    ///    Match the node shape directly and infer ONLY the receiver, so a
+    ///    standalone `v.drain()` (outside a `for`) still goes through the
+    ///    ordinary `MethodCall` path (refused there, untouched by this).
+    /// 2. An inline `Expr::Range` literal (Slice 1).
+    /// 3. A `Vector<T>` with a Copy element (Slice 2a).
+    /// 4. Anything else → E1052 (deferred trait-based iteration).
+    fn check_for_stmt(&mut self, variable: PatternId, iterable: ExprId, body: ExprId) {
+        let drain_receiver: Option<ExprId> = match &self.arena.expression(iterable).node {
+            Expr::MethodCall {
+                receiver,
+                method,
+                arguments,
+            } if method == "drain" && arguments.is_empty() => Some(*receiver),
+            _ => None,
+        };
+
+        let element_ty = if let Some(receiver) = drain_receiver {
+            let receiver_ty = self.infer_expression(receiver);
+            let receiver_span = self.arena.expression(receiver).span.clone();
+            // §2b.3 guard order: reference receiver refuses first
+            // (consuming drain cannot run through a borrow), regardless of
+            // what it borrows.
+            if matches!(receiver_ty, Type::Reference(..)) {
+                self.errors
+                    .push(TypeError::DrainBorrowedReceiverUnsupported {
+                        span: receiver_span,
+                    });
+                Type::Unknown
+            } else if let Type::Vector(inner) = &receiver_ty {
+                if matches!(**inner, Type::Nullable(_)) {
+                    self.errors
+                        .push(TypeError::DrainNullableElementUnsupported {
+                            element: inner.to_string(),
+                            span: receiver_span,
+                        });
+                    Type::Unknown
+                } else {
+                    // Slice 2b: MOVE-OUT (unlike Slice 2a's copy), so every
+                    // element shape is allowed — scalar, copy-aggregate, or
+                    // heap-bearing (String, Vector, HashMap, heap-bearing
+                    // Struct/Enum). No alias risk: ownership transfers to
+                    // `item`.
+                    (**inner).clone()
+                }
+            } else {
+                // HashMap/String/other receiver, or a non-Vector type that
+                // happens to have a `.drain()`-shaped call — deferred like
+                // any other non-Range iteration (§2b.3.3).
+                self.errors.push(TypeError::NonRangeIterationUnsupported {
+                    span: receiver_span,
+                });
+                Type::Unknown
+            }
+        } else {
+            let iter_ty = self.infer_expression(iterable);
+            // ADR-0089 §2: only an INLINE `Expr::Range` literal is
+            // lowerable (Slice 1 desugars for→CFG straight off the AST
+            // start/end/inclusive fields — no Range runtime value). Check
+            // the expr-kind, not just the static type, since a Range-typed
+            // *variable* would type-check fine here but still can't lower.
+            let is_inline_range =
+                matches!(self.arena.expression(iterable).node, Expr::Range { .. });
+            if is_inline_range {
+                match &iter_ty {
+                    Type::Range(inner) => (**inner).clone(),
+                    _ => Type::Unknown,
+                }
+            } else if let Type::Vector(inner) = &iter_ty {
+                // ADR-0089 §AMEND Slice 2a §2a.2: `for x in v` on a
+                // `Vector<T>` is opened for by-value iteration IFF the
+                // LOWERER actually desugars `T` (`triet-lower/src/lib.rs`
+                // `Stmt::For` Vector arm) — scalar, or a BARE copy-struct
+                // (`MirType::Struct(_)`, checked via `is_struct_elem` in
+                // the lowerer). `is_copy_aggregate()` alone is broader than
+                // that (it also matches CopyEnum and
+                // `Nullable(Struct/Enum)`), so gating on it here would
+                // typecheck-pass an iterable the lowerer has no shim for →
+                // silent fall-through to lower's E1100 "unsupported_stmt"
+                // refuse (a coverage gap disguised as an internal error,
+                // not a clean user-facing E1053). 2026-07-26 CLEANUP
+                // tightens the gate to match the lowerer exactly: Enum and
+                // Nullable(T) (even Nullable(scalar)) now refuse E1053
+                // here too — over-refuse/fail-closed, not a soundness fix
+                // (they were never a double-free risk, just
+                // unimplemented).
+                if inner.is_scalar()
+                    || (matches!(**inner, Type::UserStruct { .. }) && inner.is_copy_aggregate())
+                {
+                    (**inner).clone()
+                } else {
+                    self.errors
+                        .push(TypeError::VectorElementByValueIterationUnsupported {
+                            element: inner.to_string(),
+                            span: self.arena.expression(iterable).span.clone(),
+                        });
+                    Type::Unknown
+                }
+            } else {
+                self.errors.push(TypeError::NonRangeIterationUnsupported {
+                    span: self.arena.expression(iterable).span.clone(),
+                });
+                Type::Unknown
+            }
+        };
+        self.env.push_frame();
+        self.bind_pattern(variable, &element_ty);
+        // v0.9.x.atomic.7d: for-body may iterate 0 or N times; same join
+        // semantics as while/loop.
+        let _ = self.infer_expression(body);
+        self.env.pop_frame();
     }
 
     /// Shared logic for `let` / `const` initializers: resolve the

@@ -1,0 +1,15 @@
+// ERROR: E1052
+// ADR-0089 §AMEND Slice 2b — T2b-nondrain-method-refuse: a MethodCall
+// iterable whose method is NOT `drain` (`.enumerate()`) does not match the
+// drain for-guard shape at all (§2b.2's node-kind check requires
+// `method == "drain"`) — it falls through to the ordinary non-Range
+// iteration refuse (E1052), same as any other unsupported iterable.
+function main() -> Integer {
+    let mutable xs = vector_new();
+    xs = push(xs, 1);
+    let mutable sum = 0;
+    for x in xs.enumerate() {
+        sum = sum + 1;
+    }
+    return sum;
+}

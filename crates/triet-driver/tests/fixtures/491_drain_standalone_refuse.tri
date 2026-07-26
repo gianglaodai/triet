@@ -1,0 +1,21 @@
+// ERROR: no field or method named `drain`
+// ADR-0089 §AMEND Slice 2b — T2b-standalone-refuse (điều kiện thép G #1):
+// `drain` is a FOR-GUARD-ONLY pseudo-method (§2b.2) — it is not registered
+// in `builtin_method_type`/trait dispatch, so a standalone `v.drain()`
+// (outside a `for` iterable position) falls through the ordinary
+// MethodCall path to `TypeError::UnknownMember` (E1015 — the SAME code any
+// other unrecognized method name would hit; its `Display` text embeds no
+// literal "E1015" string, so this fixture matches the message text
+// instead, same convention as fixtures 51/52/55/56/57/470). MEASURED, not
+// guessed: the ADR text describes this generically as a "method not
+// found"/E1041 refuse, but E1041 `NoMatchingOverload` is reserved for
+// Call-style overloaded builtins (`push`/`pop_front`/`len`/`get`) resolved
+// through `resolve_overload` — a path a MethodCall receiver never reaches.
+// This discrepancy is flagged to O/G in the WO report (D, ADR-0089 Slice
+// 2b) — the fixture asserts the CODE'S ACTUAL behavior, not the ADR prose.
+function main() -> Integer {
+    let mutable xs = vector_new();
+    xs = push(xs, 1);
+    let x = xs.drain();
+    return 0;
+}

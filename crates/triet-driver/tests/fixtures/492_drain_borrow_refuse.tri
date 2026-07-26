@@ -1,0 +1,17 @@
+// ERROR: E1053
+// ADR-0089 §AMEND Slice 2b — T2b-borrow-refuse (điều kiện thép G #2):
+// `drain()` is a CONSUMING move-out — it cannot run through a borrowed
+// receiver. `v: &0 Vector<Integer>` refuses at typecheck (E1053), not a
+// silent compile-through to lower/JIT.
+function drain_it(v: &0 Vector<Integer>) -> Integer {
+    let mutable sum = 0;
+    for x in v.drain() {
+        sum = sum + x;
+    }
+    return sum;
+}
+function main() -> Integer {
+    let mutable xs = vector_new();
+    xs = push(xs, 1);
+    return drain_it(&0 xs);
+}

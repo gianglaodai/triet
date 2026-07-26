@@ -988,6 +988,66 @@ pub enum TypeError {
         span: Span,
     },
 
+    /// E1053: `for item in v.drain()` where `v : Vector<T?>` — draining a
+    /// Nullable-element Vector would produce `pop_front : (T?)? =
+    /// Nullable(Nullable(_))`, a double-nullable the outer "key/slot found"
+    /// state and the inner "stored value is null" state would collide (the
+    /// same double-nullable hazard `get`/`get_ref` already refuse under
+    /// E1051). ADR-0088 tracks the double-nullable design gap; ADR-0089
+    /// §AMEND Slice 2b §2b.3 fails closed here rather than guessing a
+    /// flattening semantics. Reuses the E1053 code introduced by Slice 2a
+    /// (`VectorElementByValueIterationUnsupported`) — same code, different
+    /// message/context (drain, not copy-by-value).
+    #[error(
+        "E1053: `for` iteration over `Vector<{element}>.drain()` is unsupported — \
+        draining a nullable element would produce a double-nullable `(T?)?`"
+    )]
+    #[diagnostic(
+        code(triet::typecheck::E1053),
+        help(
+            "Draining a `Vector<T?>` would produce `pop_front : (T?)? = T??` — the \
+            outer \"element present\" state and the inner \"stored value is null\" \
+            state would collide. See ADR-0088 (double-nullable, not yet supported).\n\n\
+            [Fix] Restructure the element type to avoid a nested `T?` (e.g. a \
+            wrapper Struct with an explicit \"present\" flag instead of `T?`)."
+        )
+    )]
+    DrainNullableElementUnsupported {
+        /// The Vector's nullable element type (`T?`) being drained.
+        element: String,
+        /// Source location of the `.drain()` receiver expression.
+        #[label(
+            "`Vector<{element}>` element is itself nullable — draining would be double-nullable"
+        )]
+        span: Span,
+    },
+
+    /// E1053: `v.drain()` where `v`'s static type is a reference
+    /// (`&0 Vector<T>` / `&0 mutable Vector<T>` / `&mutable Vector<T>`), not
+    /// an owned local or rvalue. `drain` is a CONSUMING move-out — it hands
+    /// ownership of every element to the loop variable and leaves the
+    /// container's buffer emptied. Draining through a borrow would let the
+    /// borrowed-from owner's later reads/drop observe a container it never
+    /// authorized to be emptied — ADR-0089 §AMEND Slice 2b §2b.3 refuses
+    /// this outright (fail-closed) rather than reasoning through whether a
+    /// future `&mutable`-only carve-out would be sound. Reuses the E1053
+    /// code (same code, drain/reference-specific message).
+    #[error("E1053: `drain()` cannot consume a Vector through a borrowed receiver")]
+    #[diagnostic(
+        code(triet::typecheck::E1053),
+        help(
+            "`drain()` moves every element out of the Vector and empties its \
+            buffer — it requires an OWNED receiver (a named local or an rvalue), \
+            not a borrow. Change the receiver to the owned Vector itself (drop the \
+            `&0`/`&0 mutable`/`&mutable` reference)."
+        )
+    )]
+    DrainBorrowedReceiverUnsupported {
+        /// Source location of the `.drain()` receiver expression.
+        #[label("borrowed receiver — `drain()` requires ownership")]
+        span: Span,
+    },
+
     // === Warning-severity diagnostics (Q2-C: miette severity field) ===
     /// W2001: deprecated `null` keyword (use `~0` canonical literal).
     /// Severity: WARNING (does not block compile until v1.0 per
@@ -1219,6 +1279,8 @@ impl TypeError {
             | Self::GetContainerNullableValueUnsupported { span, .. }
             | Self::NonRangeIterationUnsupported { span }
             | Self::VectorElementByValueIterationUnsupported { span, .. }
+            | Self::DrainNullableElementUnsupported { span, .. }
+            | Self::DrainBorrowedReceiverUnsupported { span, .. }
             | Self::CapabilityLevelUnsupported { span, .. }
             | Self::CapabilityNotPossessable { span, .. }
             | Self::NullDeprecated { span } => span.clone(),

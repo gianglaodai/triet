@@ -1,0 +1,25 @@
+// EXPECT: 40
+// ADR-0089 §AMEND Slice 2b — T2b-break/continue: break/continue inside
+// `for item in v.drain()` use the SAME loop-context mechanism as
+// for-Range/for-Vector (§2b.4) — `continue` jumps to `hdr` directly (no
+// step block: `pop_front` self-advances the container each call), `break`
+// jumps to `ext`. Sum = 10 + 30 (20 skipped via continue, 100 never
+// reached via break) = 40.
+function main() -> Integer {
+    let mutable xs = vector_new();
+    xs = push(xs, 10);
+    xs = push(xs, 20);
+    xs = push(xs, 30);
+    xs = push(xs, 100);
+    let mutable sum = 0;
+    for x in xs.drain() {
+        if x == 20 {
+            continue;
+        }
+        if x == 100 {
+            break;
+        }
+        sum = sum + x;
+    }
+    return sum;
+}

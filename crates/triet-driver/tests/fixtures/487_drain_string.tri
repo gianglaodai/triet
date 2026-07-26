@@ -1,0 +1,18 @@
+// EXPECT: 5
+// ADR-0089 §AMEND Slice 2b — T2b-heap-string (điều kiện thép G #3): drain
+// consumes a `Vector<String>` element-by-element via MOVE-OUT — unlike
+// Slice 2a's copy-by-value sugar, which refuses a heap element as E1053,
+// drain transfers ownership so there is no alias. `s` is read (length)
+// inside the body, then drops at the end of each iteration. Runs through
+// the REAL allocator (the fixture harness registers the real
+// `__triet_string_free`, not a counting stub).
+function main() -> Integer {
+    let mutable xs: Vector<String> = vector_new();
+    xs = push(xs, "hi");
+    xs = push(xs, "bb!");
+    let mutable total = 0;
+    for s in xs.drain() {
+        total = total + length(s);
+    }
+    return total;
+}

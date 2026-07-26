@@ -363,3 +363,157 @@ Quy tắc chịu lực:
   + borrowck CFG-generic (`checker.rs:552/563`) + While-shape (`lib.rs:2100`) bằng code. Verify
   máu sẽ chạy sau khi D implement (teeth poison hai chiều §5).
 - **G: ✅ (2026-07-26)** — duyệt kiến trúc §2/§4, phát hiện + lệnh §2b break-value reject.
+
+## §AMEND — Slice 2b: `for item in <Vector>.drain()` consuming iteration (move-out)
+
+> Status phần này: **🚧 O ĐỀ (2026-07-26) — chờ G + Giang ký ban hành.** CHƯA một dòng
+> code. Scope Giang/G chốt 2026-07-26: **Vector<T>.drain() ONLY** (HashMap.drain() BÁC —
+> "từng pháo đài một"). Kiến trúc G duyệt: **desugar về vòng `pop_front`** (0 shim JIT mới,
+> 100% mảnh proven), chấp nhận O(N²) correctness-first.
+
+Mở `for item in v.drain()` — **tiêu thụ** `v` phần tử một, move-out **by-value** từng
+`item : T` cho **MỌI T** (kể cả heap: `Vector<String>`, `Vector<User{String}>`). Đây là
+đường consume mà Slice 2a REFUSE (E1053 copy=alias): drain **chuyển quyền sở hữu** → hết
+alias → heap-element hợp lệ. Continuation move-out ADR-0082 §AMEND-2, **KHÔNG ADR-nền mới**.
+
+### §2b.1 — Phát hiện (O recon 2026-07-26, file:line)
+
+`drain` = **100% mảnh ĐÃ PROVEN**, không cần shim JIT/borrowck/schema mới:
+
+| Mảnh | Trạng thái | Bằng chứng |
+|---|---|---|
+| loop/break/continue CFG | ✅ Slice 1 | `lib.rs:2325` for-arm, `loop_stack` |
+| `pop_front(v)` move-out + **len-- tombstone** | ✅ ADR-0082 §AMEND-2 | shim `mir_lower.rs:4491`; `mutates_arg:Some(0)`, `arg_consumes:[false]` (`triet-mir/lib.rs:1194`) |
+| `pop_front → T?` + `match ~+/~0` trên **String** | ✅ end-to-end | fixture **347** `vector_string_pop_front_run`; **351** shift nhiều phần tử |
+| pop trên `Vector<UserStruct-heap-bearing>` (String bên trong) | ✅ allocator THẬT | fixture **338** `vector_userstruct_pop_run` |
+| `v.drain()` parse | ✅ `Expr::MethodCall{receiver,method,args}` | `expr.rs:965` |
+
+### §2b.2 — `.drain()` là FOR-GUARD ĐẶC QUYỀN (điều kiện thép G #1)
+
+`drain` **KHÔNG đăng ký thành method chung** trong symbol table. Nó chỉ có nghĩa ở vị trí
+for-iterable. `Stmt::For` arm (`check.rs:692`) kiểm **expr-kind TRƯỚC** khi infer generic:
+- iterable là `Expr::MethodCall { receiver, method == "drain", arguments == [] }` →
+  infer **CHỈ `receiver`** (né E1041 no-matching-overload), rồi guard §2b.3.
+- `v.drain()` đứng độc lập (`let x = v.drain();` / `v.drain();`) → đi đường MethodCall
+  thường → **E1041** (method not found). CẤM lọt.
+
+### §2b.3 — Typecheck guards (fail-closed, refuse-over-guess)
+
+Trong nhánh drain, sau khi infer `receiver`:
+1. `receiver_ty == Type::Vector(inner)` **và `receiver` KHÔNG là reference** →
+   - **`inner == Type::Nullable(_)`** → **REFUSE E1053** (điều kiện thép G #4): `Vector<T?>`
+     drain đẻ `pop_front : (T?)? = Nullable(Nullable(_))` = **double-nullable** — vùng cấm
+     ADR-0088 (get-family V=Nullable đã refuse E1051). Message trỏ ADR-0088 defer, KHÔNG thả
+     rông. **SOUNDNESS-TRƯỚC-SYNTAX**: chưa có bằng chứng an toàn ⇒ refuse.
+   - else → **CHO PHÉP** MỌI `inner` (scalar / copy-agg / **heap** String/Vector/HashMap /
+     heap-bearing struct/enum); element-type = `(*inner).clone()`; bind `item : inner`.
+2. `receiver_ty` là **reference** (`&0 Vector` / `&0 mutable Vector` / `&mutable Vector`) →
+   **REFUSE E1053** (điều kiện thép G #2): drain = consuming mutation, KHÔNG được qua
+   mượn-chia-sẻ. Slice 2b chỉ nhận **owned local hoặc rvalue** Vector. Borrow-receiver drain
+   = mở rộng sạch tương lai (`&mutable` có thể mở sau; refuse cả hai lúc này = fail-closed).
+3. receiver là **HashMap / String / kiểu khác**, hoặc method **≠ "drain"** (`v.other()`) →
+   **E1052** (như Slice 1/2a — non-Range/non-drain iteration defer).
+
+### §2b.4 — Lowering desugar (`Stmt::For`, nhánh drain — TRƯỚC nhánh Range/Vector)
+
+Match `Expr::MethodCall{method=="drain"}` ở đầu `Stmt::For`. Lower `receiver` thành
+`iter_local` (lvalue → own local sẵn; rvalue → owned temp — **owned-track đúng 1 lần**, y
+hệt kỷ luật §2a.3.1 handle-container). Emit CFG:
+```
+cur → Goto hdr
+hdr: __opt = pop_front(iter_local)   // Nullable(inner); len-- (tombstone) mỗi vòng
+     <present-test>                  // reuse Nullable match tag-test (scalar sentinel PA-3c
+     If present → bdy else ext       //   vs tag-prepend struct/String) — D map-trace routine
+bdy: item = <present-unwrap __opt>   // reuse match ~+ present-arm bind (proven 319/347/338)
+     <body>                          // break→ext, continue→hdr (KHÔNG step block —
+     Goto hdr                        //   pop_front TỰ advance; né vô hạn khác for-Range)
+ext:                                 // iter_local (rỗng, len==0) drop ở scope-exit: buffer-only
+```
+- loop-context: `break_bb = ext`, `continue_bb = hdr`.
+- **Né "match-arm diverges"**: emit `Terminator::If` trên present-tag TRỰC TIẾP (không dùng
+  match-expr với arm `~0 => break`). Present-test + unwrap = TÁI DÙNG routine lowering của
+  `match nullable { ~+ x => .., ~0 => .. }` — D **map-trace** (luật 20) chỉ ra chính xác điểm
+  reuse; refuse-nếu-không-rõ (luật 4), KHÔNG tái phát minh tag-test.
+
+### §2b.5 — Soundness (hợp đồng AMEND-2.1 thoả MIỄN PHÍ)
+
+- **Tombstone per-element (🔩 DOUBLY LOAD-BEARING — O đo 2026-07-26)**: `pop_front` `len--`
+  mỗi vòng → tại MỌI điểm break/return/fall-through, `v.len` = **đúng số phần tử CHƯA drain**.
+  `Drop(v)` free đúng survivors `0..len` + buffer. Phần tử đã drain owned bởi `item` (drop
+  trong body). ⇒ **mỗi leaf free đúng 1 lần** — 0 leak, 0 double-free, kể cả break giữa chừng.
+  **PHÁT HIỆN VÀNG (O poison độc lập):** tháo dòng `len--` khỏi `__triet_vector_pop_front`
+  gây HAI failure-mode phân biệt — (a) **full-drain HANG VÔ HẠN** vì `pop_front` không bao giờ
+  báo empty (len đứng nguyên) → present-test không bao giờ dừng vòng; (b) **break-giữa-chừng
+  FAILED** survivor re-free mismatch (Drop re-walk slot đã move-out). Nên `len--` mang **tải
+  trọng KÉP**: vừa là **điều kiện DỪNG** của CFG loop, vừa là **chốt chống double-free** cho
+  survivor. Teeth `drain_iter_counting.rs` canh cả hai (full-drain hang + break-mid count).
+- **Heap-element mở an toàn**: move-out chuyển sở hữu (khác Slice 2a copy=alias) ⇒ không hai
+  chủ một allocation.
+- **Rvalue temp**: `for x in make_vec().drain()` — container rỗng sau vòng, buffer drop đúng
+  **1 lần** (không leak buffer FREE=0, không double FREE=2).
+- **Borrowck KHÔNG chạm**: `pop_front.mutates_arg=Some(0)` → E2440 tự bắt nếu `v` có loan
+  sống; CFG chuẩn Goto/If.
+- **O(N²)**: `pop_front` shift → drain N = O(N²). **Chấp nhận correctness-first** (tái dùng
+  100% hạ tầng proven >> shim cursor O(N) mới mang nguy cơ off-by-one/dangling). O(N)
+  cursor-drain = **nợ kỹ thuật, ADR performance tương lai**.
+
+### §2b.6 — Teeth (O verify máu — cp-snapshot, KHÔNG git checkout; 6 điều kiện thép G)
+
+Positive:
+- **T2b-scalar** (EXPECT): `for x in v.drain()` `Vector<Integer>` → tổng đúng.
+- **T2b-heap-string** ⭐ (điều kiện G #3, EXPECT): `Vector<String>` drain — string đọc được
+  trong body, exit 0 sạch (allocator THẬT), free sạch sau vòng.
+- **T2b-heap-struct** ⭐ (điều kiện G #3, EXPECT): `Vector<User{name:String}>` drain — field
+  String đọc được, drop sạch.
+- **T2b-empty** (EXPECT): `v.drain()` vector rỗng → 0 vòng, v drop sạch.
+- **T2b-break/continue** (EXPECT): break/continue trong drain hoạt động (loop-context).
+
+Soundness (counting/subprocess — FREE dedup con-trỏ):
+- **T2b-tombstone** ⭐ (điều kiện G #5): drain N heap → FREE = N (element) + 1 (buffer).
+  **Poison** (O): phá lệ thuộc len-- (giả lập tombstone hỏng) → popped cell double-free →
+  **SIGABRT tcache**. Đo THẬT, không bịa.
+- **T2b-break-mid** ⭐ (điều kiện G #5): drain 5, `break` sau 2 → FREE = 2 (item) + 3
+  (survivor qua `Drop(v)`) + buffer; KHÔNG double (134), KHÔNG leak (FREE thiếu).
+- **T2b-rvalue** ⭐ (điều kiện G #6): `for x in make_vec().drain()` — buffer FREE=1 (không
+  leak FREE=0, không double FREE=2).
+
+Negative (guard — fail-closed):
+- **T2b-standalone-refuse** ⭐ (điều kiện G #1, ERROR E1041): `let x = v.drain();` → **E1041**
+  tại typecheck (drain KHÔNG là method chung). Poison: đăng ký drain thành method → mất E1041.
+- **T2b-borrow-refuse** ⭐ (điều kiện G #2, ERROR E1053): drain trên `&0 Vector` param →
+  **E1053** tại typecheck (KHÔNG compile ngầm → KHÔNG UB/crash). Poison: gỡ guard reference →
+  lọt lower/JIT.
+- **T2b-nullable-refuse** ⭐ (điều kiện G #4, ERROR E1053): `Vector<String?>` / `Vector<Integer?>`
+  drain → **E1053** (double-nullable ADR-0088 defer). Fail-closed, KHÔNG đoán.
+- **T2b-nondrain-method-refuse** (ERROR E1052): `for x in v.enumerate()` → **E1052**.
+
+### §2b.7 — Sites
+1. **Typecheck** `check.rs:692` (`Stmt::For` arm — thêm nhánh drain MethodCall TRƯỚC
+   inline-Range check; guards §2b.3). `error.rs` — tái dùng E1041/E1052/E1053 (KHÔNG mã mới;
+   E1053 message drain-context-aware cho reference vs nullable).
+2. **Lower** `lib.rs` `Stmt::For` (thêm nhánh drain MethodCall TRƯỚC nhánh Range `:2337` &
+   Vector `:2484`; desugar pop_front-loop §2b.4; reuse Nullable present-test/unwrap; loop-context).
+3. **Borrowck / Schema / JIT shim** — KHÔNG chạm (tái dùng `__triet_vector_pop_front`/present-test).
+
+### §2b.8 — Out of scope (Slice 2b)
+- **HashMap.drain()** — BÁC (G): đụng `emit_hashmap_value_free_loop` + state-gate bucket riêng →
+  pháo đài RIÊNG. Refuse E1052.
+- String iterate, `.enumerate()`/`.iter()` adapter — E1052 (trait defer §1).
+- `Vector<T?>` drain (double-nullable) → E1053, đợi ADR-0088.
+- Borrow-receiver drain (`&mutable Vector`) → E1053, mở rộng sạch tương lai.
+- O(N) cursor-drain shim → nợ perf ADR tương lai.
+
+### §2b — Signatures
+- **O: ✅ VERIFY MÁU XONG (2026-07-26)** — recon 5 mảnh proven (fixture 347/351/338) + verify
+  độc lập: gate sạch `0·clean·0·488·0`; poison tombstone `len--` ĐỎ hai chiều (full-drain HANG
+  vô hạn + break-mid FAILED count) → doubly-load-bearing (§2b.5); present-test fat-Nullable đúng
+  (487/488 total=5 allocator thật); guard 491-494 đúng mã (E1041/E1053/E1053/E1052); Deinit=zero
+  không free; sentinel-collision bất khả (PA-3c ngoài dải Integer). **D bị cắt ngang mid-verify:**
+  O restore code-poison D để lại (`mir_lower:6164` về HEAD `da3a0d80`, KHÔNG vào commit) + sửa
+  docstring giả-thuyết-sai của D (`STR_FREES==6` → thực tế hang vô hạn) về đúng đo thật; code
+  logic của D (check.rs/lib.rs/error.rs) NGUYÊN VẸN.
+- **G: ✅ BAN HÀNH + CO-SIGN (2026-07-26)** — duyệt scope Vector-only (BÁC HashMap.drain() —
+  "từng pháo đài một") + kiến trúc pop_front-desugar zero-shim + 6 điều kiện thép. Co-sign sau
+  verify: chấp nhận Option-1 (O ký+commit, không recall D — "bằng chứng là vua, không thờ cúng
+  thủ tục"); lệnh khắc "Tombstone DOUBLY LOAD-BEARING" vào §2b.5.
+- **Giang: ✅ BAN HÀNH (2026-07-26)** — chốt scope Vector-only, lệnh xuất quân.

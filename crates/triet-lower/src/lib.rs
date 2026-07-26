@@ -2327,6 +2327,187 @@ fn lower_stmt(stmt: &Stmt, stmt_span: Span, arena: &Arena, c: &mut Ctx) -> Resul
             iterable,
             body,
         } => {
+            // ── ADR-0089 §AMEND Slice 2b: `for item in <Vector>.drain()`
+            // consuming move-out — checked FIRST, before the inline-Range
+            // arm (§2b.4/§2b.7). Typecheck (E1041/E1052/E1053) already
+            // refuses everything except a `receiver.drain()` MethodCall
+            // over an owned (non-reference) `Vector<T>` with non-nullable
+            // `T` — re-check the node shape defensively (never panic;
+            // never assume the upstream guard blindly ran).
+            if let Expr::MethodCall {
+                receiver,
+                method,
+                arguments,
+            } = &arena.expression(*iterable).node
+                && method == "drain"
+                && arguments.is_empty()
+            {
+                let receiver_id = *receiver;
+
+                // §2a.3.1 HANDLE-ALIASING discipline reused verbatim: the
+                // receiver's ownership registration is byte-identical to
+                // Slice 2a's — no separate lvalue/rvalue branch needed.
+                // `emit_shim_call`'s own `push_owned` on the FIRST shim
+                // call that takes `iter_local` as an unconsumed arg
+                // (`__triet_vector_pop_front` arg 0 — `arg_consumes:
+                // [false]`, `mutates_arg: Some(0)` per
+                // `triet-mir/src/lib.rs:1194`) registers a NAMED-local
+                // iterable's OWN existing local as a no-op dedup (already
+                // registered by its `let`/param binding) and an RVALUE
+                // temp for the first time (drops exactly once at the
+                // enclosing scope's exit either way).
+                let iter_local = lower_expr(receiver_id, None, arena, c)?;
+
+                let MirType::Vector(inner) = c.local_decls[iter_local.0].ty.clone() else {
+                    return Err(LowerError::unsupported_stmt(stmt, stmt_span));
+                };
+                let inner = *inner;
+
+                // Defense-in-depth mirror of typecheck's §2b.3
+                // double-nullable guard: a `Nullable(T)` element
+                // (typecheck bypassed) refuses here rather than
+                // desugaring `pop_front`'s `Nullable(Nullable(T))`
+                // double-wrap.
+                if matches!(inner, MirType::Nullable(_)) {
+                    return Err(LowerError::unsupported_stmt(stmt, stmt_span));
+                }
+
+                let hdr = c.alloc_bb();
+                let bdy = c.alloc_bb();
+                let ext = c.alloc_bb();
+
+                let cur = c.cur;
+                c.term(
+                    cur,
+                    Terminator::Goto {
+                        target: hdr,
+                        span: DUMMY_SPAN,
+                    },
+                );
+
+                // hdr: __opt = pop_front(iter_local) — Nullable(inner);
+                // `len--` tombstones every call (ADR-0082 §AMEND-2.1).
+                // Byte-identical shim invocation to the Call-style
+                // `pop_front(v)` builtin's own lowering (`lib.rs:3706`).
+                c.cur = hdr;
+                let opt_ty = MirType::Nullable(Box::new(inner.clone()));
+                let opt_local = emit_shim_call(
+                    c,
+                    "__triet_vector_pop_front",
+                    vec![iter_local],
+                    opt_ty.clone(),
+                    stmt_span.clone(),
+                );
+
+                // <present-test> — reuse the Nullable-match tag-test
+                // EXACTLY (`lib.rs`, the `Expr::Match` Nullable-scrutinee
+                // branch's NULL_SENTINEL comparison + 3-way
+                // `Terminator::If`, `zero_bb: None` since an Integer-
+                // register Eq never yields Trilean Unknown). We do NOT
+                // build a synthetic `Expr::Match` AST node here — a
+                // `~0 => break` arm body would have to be an `ExprId`,
+                // but `break` is a `Stmt`, not an `Expr` (the
+                // match-arm-diverges shape the general match routine
+                // can't represent) — this reproduces the identical MIR
+                // statement sequence directly instead.
+                let sentinel = c.alloc_local();
+                c.push(Statement::StorageLive(sentinel, stmt_span.clone()));
+                c.push(Statement::Const {
+                    dest: Place::local(sentinel),
+                    value: ConstValue::Integer(i128::from(triet_mir::NULL_SENTINEL)),
+                    span: stmt_span.clone(),
+                });
+                let cmp = c.alloc_local();
+                c.push(Statement::StorageLive(cmp, stmt_span.clone()));
+                c.push(Statement::BinaryOp {
+                    dest: Place::local(cmp),
+                    op: BinOp::Eq,
+                    left: Place::local(opt_local),
+                    right: Place::local(sentinel),
+                    span: stmt_span.clone(),
+                });
+                let hdr_end = c.cur;
+                c.term(
+                    hdr_end,
+                    Terminator::If {
+                        cond: cmp,
+                        positive_bb: ext, // empty (~0) → loop done
+                        zero_bb: None,
+                        negative_bb: bdy, // present (~+) → process element
+                        span: arena.expression(*iterable).span.clone(),
+                    },
+                );
+
+                // bdy: item = <present-unwrap __opt> — reuse the SAME
+                // "PA-3c identity" present-arm bind the general Nullable
+                // match uses (`lib.rs`, `~+` present-branch: scrutinee IS
+                // the payload — plain Assign, no separate load — then
+                // Deinit the scrutinee when it's not Copy so its niche
+                // tag can't be mistaken for a live value by anything
+                // reading `opt_local` again — defense-in-depth; `opt_local`
+                // is a fresh shim temp here, never itself owned-tracked or
+                // read again).
+                c.cur = bdy;
+                c.push_scope();
+                // Capture the drop range BEFORE `item` is registered so
+                // BOTH the structural exit below (`pop_scope`, drains)
+                // AND `break`/`continue` (loop-context `drop_snapshot`,
+                // emit-without-clear per ADR-0089 §4) cover `item` — a
+                // `break` mid-iteration must still free the element it
+                // already popped (§2b.6 T2b-break-mid).
+                let drop_snapshot = c.owned_locals.len();
+                let item_local = c.alloc_local_ty(inner.clone());
+                c.push(Statement::StorageLive(item_local, stmt_span.clone()));
+                c.push(Statement::Assign {
+                    dest: Place::local(item_local),
+                    source: Place::local(opt_local),
+                    span: stmt_span.clone(),
+                });
+                match &arena.pattern(*variable).node {
+                    triet_syntax::Pattern::Variable(name) => {
+                        c.vars.insert(name.clone(), item_local);
+                        c.local_names.insert(item_local, name.clone());
+                    }
+                    triet_syntax::Pattern::Wildcard => {}
+                    _ => return Err(LowerError::unsupported_stmt(stmt, stmt_span)),
+                }
+                c.push_owned(item_local);
+                if !ctx_is_copy(&opt_ty, c) {
+                    c.push(Statement::Deinit(opt_local, stmt_span.clone()));
+                }
+
+                // <body> — break→ext, continue→hdr. NO step block: unlike
+                // for-Range's manual induction increment, `pop_front`
+                // self-advances the container each call.
+                c.loop_stack.push(LoopContext {
+                    break_bb: ext,
+                    continue_bb: hdr,
+                    drop_snapshot,
+                });
+                lower_block(*body, arena, c)?;
+                c.loop_stack.pop();
+                // Structural (non-break) exit: drop `item` exactly once
+                // per iteration before looping back — mirrors
+                // `pop_scope`'s normal scope-exit drop. `break`/`continue`
+                // already covered `item` via `drop_snapshot`
+                // (emit-without-clear) on their OWN paths; this drains the
+                // same range a second, harmless time only into a dead
+                // block on whichever path was actually taken (ADR-0089
+                // §4 — exactly one drop per owned local on any one path).
+                c.pop_scope();
+                let bdy_end = c.cur;
+                c.term(
+                    bdy_end,
+                    Terminator::Goto {
+                        target: hdr,
+                        span: DUMMY_SPAN,
+                    },
+                );
+
+                c.cur = ext;
+                return Ok(());
+            }
+
             // ADR-0089 §2/§3: typecheck (E1052) already refuses any
             // iterable that isn't an inline `Expr::Range` literal or a
             // Copy-element `Vector` (§AMEND Slice 2a) — but it does NOT

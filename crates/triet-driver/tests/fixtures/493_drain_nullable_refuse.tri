@@ -1,0 +1,16 @@
+// ERROR: E1053
+// ADR-0089 §AMEND Slice 2b — T2b-nullable-refuse (điều kiện thép G #4):
+// draining a `Vector<Integer?>` would produce `pop_front : (Integer?)? =
+// Integer??` — a double-nullable ADR-0088 defers (the outer "element
+// present" state and the inner "stored value is null" state would
+// collide). Fail-closed refuse at typecheck, not a silent flatten.
+function main() -> Integer {
+    let mutable xs: Vector<Integer?> = vector_new();
+    let elem: Integer? = ~+ 9;
+    xs = push(xs, elem);
+    let mutable sum = 0;
+    for x in xs.drain() {
+        sum = sum + 1;
+    }
+    return sum;
+}

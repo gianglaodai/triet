@@ -1,0 +1,12 @@
+// EXPECT: 0
+// ADR-0089 §AMEND Slice 2b — T2b-empty: draining an empty `Vector` runs 0
+// iterations (`pop_front` returns `~0` on the very FIRST call) and the
+// container drops cleanly (empty buffer, no elements to free).
+function main() -> Integer {
+    let mutable xs: Vector<Integer> = vector_new();
+    let mutable sum = 0;
+    for x in xs.drain() {
+        sum = sum + x;
+    }
+    return sum;
+}
