@@ -1,0 +1,29 @@
+// EXPECT: 8
+// ADR-0089 §AMEND Slice 2d — T2d-heap: `&0 mutable Vector<String>`
+// borrow-receiver drain. Same container-survives proof as 505 but with a
+// heap-bearing element (String move-out per element, mirrors Slice 2b's
+// String coverage). `len(Vector<String>)` has no builtin overload, so
+// container-survives is proven instead by pushing a NEW element into `xs`
+// AFTER the drain and popping it back out — a corrupted/freed buffer
+// handle would not tolerate a further push/pop cleanly.
+function drain_it(v: &0 mutable Vector<String>) -> Integer {
+    let mutable total = 0;
+    for item in v.drain() {
+        total = total + length(item);
+    }
+    return total;
+}
+function main() -> Integer {
+    let mutable xs: Vector<String> = vector_new();
+    xs = push(xs, "aa");
+    xs = push(xs, "bb");
+    xs = push(xs, "cc");
+    let total = drain_it(&0 mutable xs);
+    xs = push(xs, "zz");
+    let popped: String? = pop(xs);
+    let extra = match popped {
+        ~+ s => length(s),
+        ~0 => -1,
+    };
+    return total + extra;
+}

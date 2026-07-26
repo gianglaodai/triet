@@ -1,0 +1,37 @@
+// EXPECT: 3
+// ADR-0089 §AMEND Slice 2d §2d.3 — T2d-break-mid canary: `&0 mutable
+// Vector<String>` drain breaks after the FIRST element. `drain_it` returns
+// having popped exactly 1 of 3 elements (tombstone `len--` leaves the
+// buffer's `len == 2`, survivors "b"/"c"). `main` then pops the 2
+// survivors back out via `pop_front` — `len(Vector<String>)` has no
+// builtin overload, so this both proves the buffer wasn't corrupted/freed
+// by the borrow-receiver drain AND counts the exact survivor set (must be
+// "b" then "c", not a leftover "a" or a missing element). `n + extra`
+// (1 + 1 + 1 = 3) combines the break-mid count with the survivor proof.
+function drain_it(v: &0 mutable Vector<String>) -> Integer {
+    let mutable count = 0;
+    for item in v.drain() {
+        count = count + 1;
+        break;
+    }
+    return count;
+}
+function main() -> Integer {
+    let mutable xs: Vector<String> = vector_new();
+    xs = push(xs, "a");
+    xs = push(xs, "b");
+    xs = push(xs, "c");
+    let n = drain_it(&0 mutable xs);
+    let mutable extra = 0;
+    let p1: String? = pop_front(xs);
+    extra = extra + match p1 {
+        ~+ s => length(s),
+        ~0 => -1,
+    };
+    let p2: String? = pop_front(xs);
+    extra = extra + match p2 {
+        ~+ s => length(s),
+        ~0 => -1,
+    };
+    return n + extra;
+}

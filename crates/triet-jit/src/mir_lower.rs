@@ -3906,7 +3906,19 @@ impl JitContext {
                             || callee_name.as_str() == "__triet_vector_pop_front")
                             && {
                                 let vty = &body.local_decls[args[0].0].ty;
-                                match vty.nullable_payload().unwrap_or(vty) {
+                                let eff = vty.nullable_payload().unwrap_or(vty);
+                                // ADR-0089 §AMEND Slice 2d: `args[0]` may now be
+                                // a `&0 mutable Vector<T>` reference receiver
+                                // (BorrowExclusiveMutable), not just an owned
+                                // `Vector<T>` — unwrap it first, mirroring the
+                                // `_get_copy` idiom above (:3966-3970), or a
+                                // fat (String) element mis-detects as thin
+                                // here and the marshal below hard-fails.
+                                let eff = match eff {
+                                    MirType::Reference { inner, .. } => inner.as_ref(),
+                                    other => other,
+                                };
+                                match eff {
                                     MirType::Vector(inner) => {
                                         Self::vector_elem_size(body, inner).is_ok_and(|s| s > 8)
                                     }
