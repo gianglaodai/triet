@@ -517,3 +517,74 @@ Negative (guard — fail-closed):
   verify: chấp nhận Option-1 (O ký+commit, không recall D — "bằng chứng là vua, không thờ cúng
   thủ tục"); lệnh khắc "Tombstone DOUBLY LOAD-BEARING" vào §2b.5.
 - **Giang: ✅ BAN HÀNH (2026-07-26)** — chốt scope Vector-only, lệnh xuất quân.
+
+---
+
+## §AMEND — Slice 2d: `for item in <&0 mutable Vector>.drain()` borrow-receiver drain
+
+Mở §2b.8 dòng "Borrow-receiver drain → mở rộng sạch tương lai". Slice 2b tiêu thụ owner
+by-value; **Slice 2d drain QUA mượn-độc-quyền-mutable — caller GIỮ container**.
+
+### §2d.1 — Scope (G chốt 2026-07-27)
+- **CHỈ `&0 mutable Vector<T>`** (`ReferenceForm::BorrowExclusiveMutable`). Mọi form khác —
+  `&0` read-only (`BorrowReadOnly`), `&+`/`&+ mutable` (`StrongFrozen`/`StrongMutable`),
+  `&-` (`WeakObserver`) — **TIẾP TỤC refuse E1053** (DrainBorrowedReceiverUnsupported).
+- **T non-nullable.** `&0 mutable Vector<T?>` → E1051/E1053 (double-nullable, đợi ADR-0088).
+- **KHÔNG ADR-nền mới.** Mirror desugar Slice 2b (`pop_front` loop) TRỪ buffer-drop cuối vòng.
+
+### §2d.2 — Container-Survives semantics (khác BẢN CHẤT Slice 2b)
+Runtime repr của `Vector<T>` = **buffer-pointer handle** single-i64 (`{len@0, cap@8, data@16}`).
+`&0 mutable Vector` reference-value = **cùng buffer-pointer** (đo: `__triet_vector_get(vec)` =
+`vec as *const u8`, fixture 168 `&0 xs`→get→15 ✅). Do đó:
+- `pop_front(handle)` `len--` mutate **buffer header CHUNG** → caller quan sát được drain
+  (khác `String` — `len` ở stack fat-slot nên `clear` cần slot-ptr; Vector `len` ở heap buffer).
+- Receiver là `MirType::Reference{..}` → `is_reference()==true`/`is_copy()==true` (mir/lib.rs:736)
+  → **KHÔNG `push_owned`, KHÔNG `Statement::Drop`** → buffer **BẢO TOÀN** cho caller. Sau vòng
+  caller thấy `Vector` **rỗng-hợp-lệ** (`len==0`, cap giữ) — re-push/len/drop bình thường.
+
+### §2d.3 — Break-Mid Caller-Drop soundness (câu hỏi (B), O verify cơ học)
+Break-mid: `buffer.len` đã giảm đúng số item đã pop (tombstone `len--` mỗi `pop_front`). Survivors
+nằm `0..len`. Caller drop `v` SAU vòng → `emit_vector_element_free_loop` đọc `len=load(ptr,0)`
+buffer-header + loop `i<len` (mir_lower.rs:1873/1880) → free **CHỈ survivors**, KHÔNG đụng item
+đã pop (đã move-out + consume trong body). `__triet_vector_free` dealloc buffer block theo `cap`
+(mir_lower.rs:5828). **Tombstone `len--` trong buffer chung = chốt chống double-free — nay gánh
+CẢ caller-later-drop** (Slice 2b gánh owner-consumed-drop; cùng cơ chế, tương tác MỚI). Teeth
+break-mid trên `Vector<String>` bắt buộc chứng minh FREE khớp, no-leak, no-double-free.
+
+### §2d.4 — Điểm chạm (2, contained)
+1. **typecheck `check.rs:754`** — refuse mù `matches!(Type::Reference(..))` → **form-aware**:
+   `Type::Reference(ReferenceForm::BorrowExclusiveMutable, inner)` nơi `inner=Type::Vector(T)`,
+   `T` không `Nullable` → ALLOW, element=`T`. Mọi form/`T?` khác → E1053/E1051 (giữ nguyên).
+   (Typecheck `Type::Reference` = **tuple** `(ReferenceForm, Box<Self>)`, types.rs:117.)
+2. **lower `lib.rs:2361`** — hiện `let MirType::Vector(inner) = ty else Err`. Mở rộng nhận
+   `MirType::Reference { form: BorrowExclusiveMutable, inner }` nơi `*inner = MirType::Vector(elem)`;
+   unwrap lấy elem, iter_local = reference-value (buffer handle); phần desugar pop_front loop
+   GIỮ NGUYÊN Slice 2b (is_reference tự bỏ drop). (MIR `MirType::Reference` = **struct**
+   `{ form, inner }`, mir/lib.rs:507 — KHÔNG phải tuple.)
+3. **borrowck** — `&0 mutable` exclusive loan span cả loop (NLL E2440 sẵn có, không sửa).
+
+### §2d.5 — Out of scope (Slice 2d)
+`&+ mutable`/BYOS drain · HashMap.drain() (pháo đài riêng) · `Vector<T?>` (ADR-0088) ·
+O(N) cursor-drain perf. Đều giữ refuse hiện hành.
+
+### §2d — Signatures
+- **O: ✅ VERIFY MÁU XONG (2026-07-27)** — recon file:line + verify 7/7 sự thật load-bearing
+  (ReferenceForm variants ✅ · Type::Reference tuple ✅ · MirType::Reference struct — **bắt lệch G
+  viết tuple** ✅ · reference=buffer-handle ✅ · pop_front len-- shared buffer ✅ · element-free-loop
+  quét 0..len ✅ · is_reference→no-drop ✅). **3 điểm chạm** (D `014442e`+`2dcc9b6`): typecheck
+  form-aware `check.rs:759` + lower Reference-unwrap `lib.rs:2373` + **JIT fat-detect Reference-unwrap
+  `mir_lower.rs:3909`** (lỗ D tự bắt ngoài scope phase-1 → phase-2 mở điểm chạm #3, mirror idiom
+  `_get_copy:3967`). Gate độc lập `0·clean·0·501·0`. **Poison máu:** (2) tháo form-guard → 492/507 hết
+  E1053 ĐỎ; (3) tháo JIT Reference-unwrap → heap drain 506 `unexpected String return` ĐỎ (scalar 505
+  vẫn OK — bán kính đúng); (1) push_owned KHÔNG đỏ → **phát hiện no-drop 2-lớp** (lowerer is_copy +
+  JIT Drop:3397 cùng qua `is_copy(Reference)==true` mir:736), escalate poison chokepoint → 506 `Drop
+  not supported` fail-closed + counting ĐỎ = container-survives load-bearing (fail-closed, KHÔNG silent
+  double-free). Fixtures 505-509 + counting teeth (full=3, break-mid=5) xanh, restore md5 4 file khớp.
+- **G: ✅ NGHIỆM THU CHIẾN DỊCH (2026-07-27)** — verify độc lập trên commit `2dcc9b6`: gate
+  `0·clean·0·501·0`, counting teeth (full=3, break-mid=5) sạch, canaries E1053 / break-mid survivor
+  drop chuẩn xác, 2 lớp no-drop (`is_copy(Reference)` lowerer + JIT Drop:3397) bảo vệ borrow an toàn
+  fail-closed.
+- **G: ✅ CHẤP THUẬN KIẾN TRÚC (2026-07-27)** — duyệt scope `&0 mutable`-only + T-non-nullable,
+  bắt buộc ADR-first, tự đo (E) Type::Reference/ReferenceForm cho O, khắc Container-Survives +
+  Break-Mid Caller-Drop soundness.
+- **Giang: ✅ CHỐT HƯỚNG (2026-07-27)** — chọn #6 trong 7 ứng viên ("đóng hòm cái nhanh gọn").
