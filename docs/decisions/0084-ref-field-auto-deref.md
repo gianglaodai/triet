@@ -1,6 +1,6 @@
 # ADR 0084 — Field projection through read-only reference (auto-deref member-access)
 
-> Status: **DRAFT** — chờ O verify + G ký. KHÔNG tự ký.
+> Status: **SIGNED (2026-07-26) — O ✅ G ✅.** O verify probe (CLI 2 lần) + thử máu poison-386-mới (E2450 biến mất + compile SẠCH = chase là sole-guard trên đường tới-runtime, không phải defense-in-depth). G nghiệm thu trọn ADR (Slice 1a + §AMEND 1b) + gate kim cương `0·clean·0·463·0`. Chiến dịch verify khép.
 
 > # 🩸 NGUYÊN LÝ CỐT LÕI (O author semantic)
 > # Member-access `e.f` khi `e : &0 T` (read-only reference tới UserStruct `T`)
@@ -100,6 +100,17 @@ container-handle / param). Vá: lấy `stack_addr` cho mọi slot-backed local.
 - **Read-only → không dính Cụm D / ADR-0081 (mutable-borrow FROZEN):** Slice 1a
   chỉ READ; write-path chưa tồn tại (parser gate).
 
+## Định lý phân tầng guard (G ký 2026-07-26)
+
+Hai tầng guard KHÔNG thay thế nhau — mỗi tầng có miền sole-guard riêng:
+- **Typecheck E2400** (BorrowLifetimeInferenceFailed) = guard sơ cấp cho **UNBOUND
+  return-escape** (return `&0` không tie được input). Chặn tại typecheck, không tới borrowck.
+- **Borrowck reborrow-chase** = **SOLE-GUARD** cho:
+  (a) **move-while-borrowed** (387 / E2440) — typecheck đứng im, chỉ borrowck bắt;
+  (b) **BOUND return-escape** (386 mới / E2450) — có param-tie né E2400, chỉ chase bắt
+  dangling sub-borrow của local.
+Tháo chase = UB thật (dangling ptr xuống JIT) cho CẢ (a) lẫn (b), KHÔNG chỉ bóng ma.
+
 ## Teeth (Slice 1a)
 
 - **381** (`381_ref_field_scalar_param.tri`, EXPECT 30) — scalar field qua `&0
@@ -114,9 +125,9 @@ container-handle / param). Vá: lấy `stack_addr` cho mọi slot-backed local.
 - **Không teeth âm mutation:** parser E0007 (`InvalidAssignmentTarget`) đã chặn
   mọi non-identifier assignment target ở tầng parse — vacuous với auto-deref.
 
-## §AMEND — Slice 1b landed (DRAFT, chờ O verify + G ký)
+## §AMEND — Slice 1b landed (SIGNED — O ✅ G ✅)
 
-> Status phần này: **DRAFT** — KHÔNG tự ký.
+> Status phần này: **SIGNED (2026-07-26) — O ✅ G ✅.** Cùng gói verify với top-level.
 
 Slice 1b thi công đúng phần DEFERRED của §CỐT LÕI (aggregate/heap field qua `&0`
 → `&0 F` sub-borrow zero-copy). KHÔNG semantic mới. 4 tầng:
@@ -163,10 +174,14 @@ Slice 1b thi công đúng phần DEFERRED của §CỐT LÕI (aggregate/heap fie
   offset-accumulation.)
 - **385** (`385_ref_field_nested_heap_sub_borrow.tri`, EXPECT 4) — chain 2 tầng
   tới heap: `o.trong.name` → `&0 String`. Poison JIT → 385 trả 2 (sai).
-- **386** (`386_ref_field_sub_borrow_dangling.tri`, ERROR E2450) — POISON dangling:
-  `(&0 h).name` return escape → E2450. Poison borrowck (bỏ reborrow-chase, plain
-  strip) → E2450 BIẾN MẤT (chỉ còn E2400 pre-existing return-tie ambiguity, một
-  chẩn đoán ĐỘC LẬP — xem Nghi ngờ §b).
+- **386** (`386_ref_field_sub_borrow_dangling.tri`, ERROR E2450) — **răng
+  load-bearing user-visible** (thay máu bản cũ vacuous, xem §b). `bad(dummy: &0
+  String) -> &0 String` — param `dummy` cho typecheck TIE return-borrow vào input
+  → NÉ E2400. Pipeline chạy tới borrowck; `Drop(h)` khi sub-borrow `(&0 h).name`
+  còn sống + được return → **E2450 (CLI thật, exit 3, không lỗi khác — đo 2 lần,
+  O verify độc lập)**. Poison reborrow-chase (checker.rs) → E2450 **biến mất VÀ
+  compile SẠCH** → dangling `&0 String` xuống JIT = UAF thật. Chase là **sole-guard
+  trên đường tới-runtime**, KHÔNG phải defense-in-depth sau lưng typecheck.
 - **387** (`387_ref_field_sub_borrow_move_while_borrowed.tri`, ERROR E2440) —
   POISON move-while-borrowed: `let s=(&0 h).name; let h2=h; length(s)` → move `h`
   khi `s` sub-borrow → E2440 (dùng move thay mutate vì `h.x=` không parse E0007).
@@ -178,12 +193,14 @@ Slice 1b thi công đúng phần DEFERRED của §CỐT LÕI (aggregate/heap fie
   reference (`h.name` và `h.other`) sẽ false-conflict (whole-object loan). Đây là
   GIÁ refuse-over-guess G chấp nhận. KHÔNG có fixture hợp lệ nào trong corpus
   hiện tại đụng ca này (chưa có surface đọc-2-field-đồng-thời qua `&0`).
-- **(b) Poison-386 KHÔNG "compile pass" hoàn toàn:** khi gỡ reborrow-chase, E2450
-  biến mất ĐÚNG (chứng minh chase load-bearing), NHƯNG một lỗi ĐỘC LẬP
-  E2400 "cannot infer which input the returned borrow ties to" vẫn chặn compile
-  (return-borrow tie-to-input ambiguity, pre-existing, không phải Slice 1b). Nên
-  poison-386 chứng minh chase-là-load-bearing-cho-E2450, KHÔNG chứng minh
-  "dangling chạy tới JIT". Ghi rõ để O không nhầm.
+- **(b) [RESOLVED 2026-07-26, G ký] 386 cũ VACUOUS — đã thay máu:** bản 386 cũ
+  (`bad() -> &0 String` KHÔNG param) nổ **E2400 typecheck** (BorrowLifetimeInferenceFailed,
+  typecheck/check.rs:532) — FATAL, CLI dừng trước borrowck (main.rs:58-64), user KHÔNG
+  BAO GIỜ thấy E2450. E2450 chỉ hiện qua harness gộp-đa-pha (integration_tests.rs:64
+  cố ý chạy tiếp sau typecheck-fatal) = **răng vacuous**: chứng minh chase *sinh* E2450
+  nhưng E2400 đã chặn dangling độc lập ⇒ chase không phải sole-guard cho ca đó. **Fix:**
+  thêm `dummy: &0 String` param → typecheck tie return vào dummy → né E2400 → E2450 thành
+  chốt chặn DUY NHẤT user-visible. §b cũ đóng.
 - **(c) Vector/HashMap-field stride:** đã xác nhận cả String-field (fat 24B inline
   → addr của `{ptr,len,cap}` tại field-offset) LẪN Vector/HashMap-field (thin 8B
   handle → addr của handle tại field-offset) đều trả đúng địa chỉ: JIT dùng CHUNG
