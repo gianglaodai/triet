@@ -506,3 +506,35 @@ Match `~+/~0` 2-arm cho `T?` (deferred từ Bậc A Q4) được implement ở B
 - **Fixtures:** 48–57 (10 fixtures: present, null, wildcard, wildcard-fallback×2,
   non-exhaustive E1026, `~-` rejection E1035, wildcard-not-last, duplicate-`~+`,
   literal-subpattern).
+
+---
+
+## §AMEND-Slice2c (2026-07-27, ADR-0089 Slice 2c) — `!!` ForceUnwrap Bậc-A lowering
+
+`!!` (force-unwrap on `T?` — historical primitive per ADR-0020 §hist, operator
+family per ADR-0039) lowers **isomorphic to Elvis `?:`** (§5 PA-3c identity,
+lowerer `lib.rs Expr::ElvisOp`). Front-half (lexer `BangBang`, parser
+`Expr::ForceUnwrap`, typecheck `check_force_unwrap`) was already wired; this
+amendment records the MIR lowering (`lib.rs Expr::ForceUnwrap` arm):
+
+1. **Trap-on-Null.** operand `== NULL_SENTINEL` → `Terminator::Trap` (SIGILL at
+   runtime). No fallback, no UB, no silent garbage. The null branch has **no
+   merge edge** — control never returns from it.
+2. **Present = PA-3c identity.** `result = operand` (single-i64 repr). For
+   non-Copy heap-scalar (`String?`/`Vector?`/`HashMap?`) the `Assign` consumes
+   the operand ⇒ borrowck marks the source `Moved` (checker.rs Δ1) ⇒ reuse of a
+   named-local operand is **E2420 UseAfterMove** — this is the signature that
+   proves `!!` is a move-out, eliminating the alias-double-free hazard. Copy
+   scalar (`Integer?`/`Trit?`/`Trilean?`) is non-consuming.
+3. **Scope Bậc-A (Slice 2c).** Scalar + heap-scalar (single-slot repr) ONLY.
+   Non-Copy Aggregate (`Struct?`/`Enum?`, multi-field sret) is **refused via
+   E1100** (`unsupported_expr`) until ownership projection lands. Fence predicate
+   keys off `matches!(payload, MirType::Struct(_) | MirType::Enum(_))` — verified
+   independently that `String`/`Vector`/`HashMap` are **distinct MirType variants**
+   (mir/lib.rs:490/530/532), NOT `Struct("String")`, so they pass the fence
+   naturally; an `is_string_repr()` belt is redundant-but-harmless (implementer's
+   choice).
+- **Fixtures:** 495–504 (present ×4 scalar+heap, Trap-on-null ×2, rvalue-temp
+  no-leak, canary E2420 move-out, fence E1100 Struct?/Enum? ×2) + counting teeth.
+
+Ký: O ✅ (2026-07-27, verify máu độc lập: poison Trap→trap teeth ĐỎ, poison fence→corpus 501/502 ĐỎ, canary E2420, MIR dump `move _0`, gate 0·clean·0·496·0) / G ✅ (2026-07-27, verify độc lập: counting teeth clean, null trap SIGILL clean, corpus 496 clean)
