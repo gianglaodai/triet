@@ -1,0 +1,23 @@
+// EXPECT: 6000
+// ADR-0089 §AMEND Slice 2d — T2d-scalar: `for item in v.drain()` through a
+// `&0 mutable Vector<Integer>` BORROW receiver (container-survives, §2d.2).
+// The caller (`main`) KEEPS `xs` — the reference-value IS the same
+// buffer-pointer handle `drain_it` mutates, so after the call `xs` is a
+// valid, empty (`len == 0`) Vector, not a dangling/consumed one. `s * 100 +
+// len(xs)` combines both proofs into a single return value: a bug that
+// leaves survivors un-drained (or corrupts `xs`) changes the low digits.
+function drain_it(v: &0 mutable Vector<Integer>) -> Integer {
+    let mutable sum = 0;
+    for item in v.drain() {
+        sum = sum + item;
+    }
+    return sum;
+}
+function main() -> Integer {
+    let mutable xs = vector_new();
+    xs = push(xs, 10);
+    xs = push(xs, 20);
+    xs = push(xs, 30);
+    let s = drain_it(&0 mutable xs);
+    return s * 100 + len(xs);
+}

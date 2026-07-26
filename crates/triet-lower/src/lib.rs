@@ -2358,10 +2358,29 @@ fn lower_stmt(stmt: &Stmt, stmt_span: Span, arena: &Arena, c: &mut Ctx) -> Resul
                 // enclosing scope's exit either way).
                 let iter_local = lower_expr(receiver_id, None, arena, c)?;
 
-                let MirType::Vector(inner) = c.local_decls[iter_local.0].ty.clone() else {
-                    return Err(LowerError::unsupported_stmt(stmt, stmt_span));
+                // ADR-0089 §AMEND Slice 2d §2d.4.2: accept EITHER an owned
+                // `Vector<T>` (Slice 2b, unchanged) OR a
+                // `&0 mutable Vector<T>` reference receiver (Slice 2d).
+                // `MirType::Reference` is a STRUCT `{ form, inner }` (NOT a
+                // tuple) — unwrap it defensively; typecheck already refused
+                // every other reference form (E1053), so only
+                // `BorrowExclusiveMutable` should reach here, but this is
+                // re-checked rather than assumed (never panic on user
+                // input). The reference-value IS the same buffer-pointer
+                // handle the owner holds (§2d.2) — `iter_local` itself
+                // needs no unwrap/deref, only its static element type does.
+                let receiver_ty = c.local_decls[iter_local.0].ty.clone();
+                let inner = match receiver_ty {
+                    MirType::Vector(elem) => *elem,
+                    MirType::Reference {
+                        form: triet_mir::ReferenceForm::BorrowExclusiveMutable,
+                        inner: ref_inner,
+                    } => match *ref_inner {
+                        MirType::Vector(elem) => *elem,
+                        _ => return Err(LowerError::unsupported_stmt(stmt, stmt_span)),
+                    },
+                    _ => return Err(LowerError::unsupported_stmt(stmt, stmt_span)),
                 };
-                let inner = *inner;
 
                 // Defense-in-depth mirror of typecheck's §2b.3
                 // double-nullable guard: a `Nullable(T)` element

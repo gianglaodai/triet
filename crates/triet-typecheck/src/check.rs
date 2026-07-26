@@ -748,15 +748,34 @@ impl<'p> Checker<'p> {
         let element_ty = if let Some(receiver) = drain_receiver {
             let receiver_ty = self.infer_expression(receiver);
             let receiver_span = self.arena.expression(receiver).span.clone();
-            // §2b.3 guard order: reference receiver refuses first
-            // (consuming drain cannot run through a borrow), regardless of
-            // what it borrows.
-            if matches!(receiver_ty, Type::Reference(..)) {
-                self.errors
-                    .push(TypeError::DrainBorrowedReceiverUnsupported {
-                        span: receiver_span,
-                    });
-                Type::Unknown
+            // §2b.3/§AMEND Slice 2d guard order: reference receivers are
+            // form-aware since Slice 2d — ONLY `&0 mutable Vector<T>`
+            // (`ReferenceForm::BorrowExclusiveMutable`, `T` non-nullable)
+            // is a container-survives drain (caller keeps the emptied
+            // buffer). Every other reference form (`&0` read-only, `&+`,
+            // `&+ mutable`, `&-`) still refuses first, exactly as Slice 2b
+            // did, regardless of what it borrows.
+            if let Type::Reference(form, inner) = &receiver_ty {
+                if matches!(form, ReferenceForm::BorrowExclusiveMutable)
+                    && let Type::Vector(elem) = &**inner
+                {
+                    if matches!(**elem, Type::Nullable(_)) {
+                        self.errors
+                            .push(TypeError::DrainNullableElementUnsupported {
+                                element: elem.to_string(),
+                                span: receiver_span,
+                            });
+                        Type::Unknown
+                    } else {
+                        (**elem).clone()
+                    }
+                } else {
+                    self.errors
+                        .push(TypeError::DrainBorrowedReceiverUnsupported {
+                            span: receiver_span,
+                        });
+                    Type::Unknown
+                }
             } else if let Type::Vector(inner) = &receiver_ty {
                 if matches!(**inner, Type::Nullable(_)) {
                     self.errors

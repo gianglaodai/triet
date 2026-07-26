@@ -1,0 +1,18 @@
+// ERROR: E1053
+// ADR-0089 §AMEND Slice 2d §2d.1/§2d.5 — T2d-strong-refuse: `&+ mutable
+// Vector<Integer>` (StrongMutable, a strong-owner reference form) is OUT OF
+// SCOPE — Slice 2d opens EXACTLY ONE form, `&0 mutable`
+// (BorrowExclusiveMutable). Every other reference form, including
+// `&+ mutable`, still refuses (DrainBorrowedReceiverUnsupported).
+function drain_it(v: &+ mutable Vector<Integer>) -> Integer {
+    let mutable sum = 0;
+    for item in v.drain() {
+        sum = sum + item;
+    }
+    return sum;
+}
+function main() -> Integer {
+    let mutable xs = vector_new();
+    xs = push(xs, 1);
+    return drain_it(&+ mutable xs);
+}

@@ -1022,24 +1022,29 @@ pub enum TypeError {
         span: Span,
     },
 
-    /// E1053: `v.drain()` where `v`'s static type is a reference
-    /// (`&0 Vector<T>` / `&0 mutable Vector<T>` / `&mutable Vector<T>`), not
-    /// an owned local or rvalue. `drain` is a CONSUMING move-out — it hands
-    /// ownership of every element to the loop variable and leaves the
-    /// container's buffer emptied. Draining through a borrow would let the
-    /// borrowed-from owner's later reads/drop observe a container it never
-    /// authorized to be emptied — ADR-0089 §AMEND Slice 2b §2b.3 refuses
-    /// this outright (fail-closed) rather than reasoning through whether a
-    /// future `&mutable`-only carve-out would be sound. Reuses the E1053
+    /// E1053: `v.drain()` where `v`'s static type is a reference form other
+    /// than `&0 mutable Vector<T>` (T non-nullable) — i.e. `&0 Vector<T>`
+    /// (read-only), `&+`/`&+ mutable Vector<T>` (strong owner forms), or
+    /// `&- Vector<T>` (weak observer). `drain` is a CONSUMING move-out — it
+    /// hands ownership of every element to the loop variable. A read-only
+    /// or weak borrow cannot authorize that; the strong-owner forms are
+    /// BYOS-adjacent and out of scope (ADR-0089 §AMEND Slice 2d §2d.5).
+    /// ADR-0089 §AMEND Slice 2d §2d.1 opens exactly ONE reference form —
+    /// `&0 mutable Vector<T>` (`ReferenceForm::BorrowExclusiveMutable`,
+    /// non-nullable `T`) — as a container-survives drain: the caller keeps
+    /// the (now emptied) buffer, since the reference IS the same
+    /// buffer-pointer handle the owner holds. Every other form still
+    /// refuses outright (fail-closed) per Slice 2b §2b.3. Reuses the E1053
     /// code (same code, drain/reference-specific message).
-    #[error("E1053: `drain()` cannot consume a Vector through a borrowed receiver")]
+    #[error("E1053: `drain()` cannot consume a Vector through this borrowed receiver")]
     #[diagnostic(
         code(triet::typecheck::E1053),
         help(
-            "`drain()` moves every element out of the Vector and empties its \
-            buffer — it requires an OWNED receiver (a named local or an rvalue), \
-            not a borrow. Change the receiver to the owned Vector itself (drop the \
-            `&0`/`&0 mutable`/`&mutable` reference)."
+            "`drain()` moves every element out of the Vector — it requires either \
+            an OWNED receiver (a named local or an rvalue) or a `&0 mutable \
+            Vector<T>` exclusive-mutable borrow (T non-nullable). Change the \
+            receiver's reference form to `&0 mutable`, or drop the reference and \
+            pass the owned Vector itself."
         )
     )]
     DrainBorrowedReceiverUnsupported {

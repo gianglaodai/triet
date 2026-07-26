@@ -1,0 +1,19 @@
+// ERROR: E1053
+// ADR-0089 §AMEND Slice 2d §2d.1 — T2d-nullable-refuse: `&0 mutable
+// Vector<Integer?>` still refuses (double-nullable, ADR-0088 deferred) even
+// though the reference FORM (`BorrowExclusiveMutable`) is otherwise opened
+// by Slice 2d. `T` must be non-nullable for the borrow-receiver drain to be
+// allowed.
+function drain_it(v: &0 mutable Vector<Integer?>) -> Integer {
+    let mutable sum = 0;
+    for item in v.drain() {
+        sum = sum + 1;
+    }
+    return sum;
+}
+function main() -> Integer {
+    let mutable xs: Vector<Integer?> = vector_new();
+    let elem: Integer? = ~+ 9;
+    xs = push(xs, elem);
+    return drain_it(&0 mutable xs);
+}
