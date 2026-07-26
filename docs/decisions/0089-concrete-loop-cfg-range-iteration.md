@@ -218,6 +218,124 @@ Negative (guard typecheck — G mandate b):
 - Increment overflow ở `..=` cận trần range: `i = i + 1` sau vòng cuối có thể trap per
   ADR-0044 — chấp nhận (nhất quán range-enforcement), ghi chú.
 
+## §AMEND — Slice 2a: `for item in <Vector>` copy/by-value sugar
+
+> Status phần này: **SIGNED (design, 2026-07-26) — O ✅ G ✅.** O recon-verify bằng code
+> (get-lower `lib.rs:3288`, predicate `is_scalar/is_copy_aggregate` `types.rs:147/238`,
+> `MirType::Vector` `mir:496`, probe `for i in 0..len(v)` chạy). G chốt scope (Slice 2a
+> trước, CẤM gộp 2b/drain) + duyệt E1053 + desugar-raw-shim + cảnh báo thép §2a.3.1
+> handle-aliasing double-free CONTAINER. **Impl-verify máu (teeth §2a.5) chạy sau khi D land.**
+
+Mở `for item in v` với `v : Vector<T>` khi **T là Copy** (scalar hoặc copy-aggregate).
+Desugar về index-loop tái dùng TRỌN CFG Slice 1 — **KHÔNG generic trait, KHÔNG
+consume, KHÔNG tombstone** (element đọc ra bằng Copy, `v` còn nguyên sau vòng).
+
+### §2a.1 — Phát hiện (O probe 2026-07-26)
+`for i in 0..len(v) { ... }` **ĐÃ CHẠY** trên Slice 1 (`len(v)` là `end` của inline
+`Expr::Range`, probe → đúng). Blocker của "đọc phần tử" là `get(v,i)` trả `T?` +
+`!!` (ForceUnwrap) **chưa lower** (E1100) — nhưng Slice 2a **KHÔNG cần `!!`**: desugar
+dùng **infallible internal get** (in-bounds nên OOB-null bất khả), bind `item : T`.
+`!!` là nợ độc lập (Slice 2c, KHÔNG đi ké — G lệnh).
+
+### §2a.2 — Typecheck guard (mở Vector-Copy, refuse Vector-heap)
+`Stmt::For` arm (`check.rs:704`, sau Slice 1): thứ tự quyết:
+1. iterable node là `Expr::Range` → luồng Slice 1 (Range element).
+2. else `iter_ty == Type::Vector(inner)` (`types.rs:40`):
+   - `inner.is_scalar()` (`types.rs:147`) **HOẶC** `inner.is_copy_aggregate()` (`types.rs:238`)
+     → **CHO PHÉP**; element-type = `(*inner).clone()`; bind `item : inner`.
+   - else (`inner.is_heap()` — String/Vector/HashMap — hoặc heap-bearing struct,
+     tức `!is_copy_aggregate()`) → **REFUSE** mã mới **`E1053
+     HeapVectorByValueIterationUnsupported`** (`triet::typecheck::E1053`; E1052 cao
+     nhất hiện dùng). Message trỏ drain (Slice 2b).
+3. else (HashMap, String, struct thường, Range-typed-variable, MethodCall như
+   `.drain()`/`.enumerate()`, …) → **E1052** (như Slice 1, không đổi).
+
+🚩 **CHỐT CHẶN THÉP (G):** by-value copy một phần tử heap = **alias con trỏ heap →
+DOUBLE FREE** khi cả `item` (owned) lẫn `v[i]` cùng drop. Nên Vector-heap PHẢI
+refuse tại typecheck, KHÔNG lọt xuống lower/JIT. `get`-builtin đã refuse heap-element
+(E1047 `exprs.rs:1179`) — nhưng `for` là bề mặt RIÊNG, cần guard riêng E1053 (thông
+điệp đúng ngữ cảnh iterate, trỏ drain).
+
+### §2a.3 — Lowering desugar (`Stmt::For`, nhánh Vector)
+Sau khi match `Expr::Range` thất bại, lower iterable thành 1 local; nếu
+`local_decls[iter_local].ty == MirType::Vector(inner)` (`mir:496`) → desugar:
+```
+iter_local = <base handle của iterable>   // §2a.3.1 — KHÔNG alias handle vào owned_local mới
+__len = len(iter_local)         // __triet_vector_len shim (i64) — tính MỘT lần trước vòng
+__i = 0
+cur → Goto hdr
+hdr: cond = __i < __len         // Lt → Trilean!
+     If cond → bdy else ext
+bdy: item = <infallible-get>(iter_local, __i)   // shim theo inner kind (dưới), bind item : inner (KHÔNG T?)
+     <body>                     // break→ext, continue→step (loop-context như Slice 1)
+     Goto step
+step: __i = __i + 1 ; Goto hdr
+ext:
+```
+
+#### §2a.3.1 — ⚠️ HANDLE-ALIASING = DOUBLE-FREE CONTAINER (cảnh báo thép G)
+Vector là **handle 8-byte**. Nếu desugar tạo một `owned_local __vec` MỚI rồi
+`Assign(__vec = v)` (copy handle), thì `__vec` VÀ `v` cùng nằm trong `owned_locals`
+→ `pop_scope`/scope-exit phát **HAI Drop lên CÙNG buffer** = **double-free CONTAINER**.
+Quy tắc chịu lực:
+- **iterable là lvalue có tên** (`Expr::Variable` → `for item in my_vec`): `iter_local`
+  = **chính local sẵn có của `my_vec`** (`c.vars[name]`). TUYỆT ĐỐI KHÔNG `alloc_local`
+  + `push_owned` thêm. `len`/`get` chỉ ĐỌC handle (read-use), không consume. `my_vec`
+  drop đúng 1 lần ở scope-exit CỦA NÓ, không phải của vòng lặp.
+- **iterable là rvalue** (`for item in make_vector()`): `iter_local` = temp từ
+  `lower_expr`; temp này PHẢI owned-tracked để drop **đúng 1 lần ở cuối vòng** (không
+  leak, không double). D phải MAP TRACE (luật 20): xác nhận `lower_expr` owned-track
+  temp heap-rvalue thế nào; nếu chưa → `push_owned(iter_local)` một lần, drop ở `ext`.
+- **Phân biệt bằng expr-kind:** `matches!(arena.expression(iterable).node, Expr::Variable(_))`
+  → nhánh lvalue; else → nhánh rvalue. (Param `&0 Vector`/`&0 mutable Vector` cũng là
+  Variable → lvalue, KHÔNG drop — đúng vì borrow không sở hữu.)
+**Infallible-get theo inner kind** (tái dùng shim `get` sẵn, KHÔNG shim mới):
+- `inner` scalar → `__triet_vector_get(__vec, __i)` (`mir_lower.rs:5936`, trả i64 raw),
+  bind `item : inner` trực tiếp (KHÔNG wrap Nullable — in-bounds bảo đảm ≠ NULL_SENTINEL).
+- `inner` copy-aggregate (Struct Copy) → `__triet_vector_get_copy` (`mir_lower.rs:4007`,
+  sret), bind `item : Struct`.
+- loop-context: `break_bb=ext`, `continue_bb=step` (giống for-Range).
+- **KHÔNG move-out, KHÔNG tombstone:** `__triet_vector_get`/`get_copy` COPY bytes, `v`
+  giữ nguyên len/buffer. `item` scalar/copy-agg KHÔNG owned-tracked (không heap) → không
+  Drop. Sau vòng, `v` vẫn owned bởi caller, drop bình thường 1 lần.
+
+### §2a.4 — Soundness
+- **Copy phần tử ⇒ không alias heap-element:** guard §2a.2 loại mọi phần tử heap;
+  scalar/copy-agg copy bytes thuần, không con trỏ heap chia sẻ ⇒ không double-free element.
+- **Không alias handle-CONTAINER (§2a.3.1):** lvalue → không owned_local mới; rvalue →
+  owned đúng 1 lần. Chống double-free CONTAINER (bãi mìn G).
+- **`v` bất biến:** không op nào chạm len/buffer của `v` ⇒ sau vòng `len(v)` không đổi.
+- **Borrowck:** KHÔNG chạm (CFG chuẩn Goto/If như §4; `v` chỉ đọc — read-use, không move).
+
+### §2a.5 — Teeth
+- **T2a-scalar** (EXPECT): `for x in v { sum += x }` trên `Vector<Integer>` → tổng đúng.
+- **T2a-copy-struct** (EXPECT): `for p in pts { sum += p.x }` trên `Vector<CopyStruct>` → đúng.
+- **T2a-intact** ⭐ (EXPECT): `let v=...; for x in v {}; return len(v)` — (1) len KHÔNG
+  đổi (copy-không-consume; poison: đổi infallible-get→pop → len giảm → đỏ); (2) **`v` ra
+  scope cuối main → exit 0 SẠCH, KHÔNG SIGABRT** (chống double-free CONTAINER §2a.3.1;
+  poison: alias handle vào owned_local mới → double-free → subprocess đỏ). **Counting tooth
+  (O verify):** `__triet_vector_free` đếm = 1 cho container, KHÔNG 2.
+- **T2a-rvalue** ⭐ (EXPECT + counting): `for x in make_vector() {}` — container rvalue
+  drop **đúng 1 lần** (FREE=1: không leak FREE=0, không double FREE=2). Chứng minh nhánh
+  rvalue owned-track đúng.
+- **T2a-heap-refuse** ⭐ (ERROR E1053): `for s in string_vector { }` → **E1053 tại
+  typecheck** (KHÔNG E1100 lower, KHÔNG JIT). **Poison (O verify):** gỡ nhánh refuse E1053
+  → for-loop lower→JIT→**double-free SIGABRT** (subprocess tooth) = refuse load-bearing.
+- **T2a-break/continue** (EXPECT): break/continue trong for-Vector hoạt động (loop-context).
+
+### §2a.6 — Out of scope (Slice 2a)
+- Vector-heap iterate (String/Struct-heap) → refuse E1053, **đường consume = drain (Slice 2b)**.
+- HashMap iterate, String iterate → E1052 (chưa mở).
+- `for item in v.drain()`/`.enumerate()` (MethodCall) → E1052 (Slice 2b/trait defer).
+- `!!` ForceUnwrap → nợ độc lập Slice 2c (G lệnh tách).
+- `item` mutable / ghi ngược vào `v[i]` (`set`) → KHÔNG (set-builtin không tồn tại).
+
+### §2a.7 — Sites
+1. **Typecheck** `check.rs:704` (For arm — thêm nhánh Vector) + `error.rs` (thêm E1053).
+2. **Lower** `lib.rs` `Stmt::For` (thêm nhánh MirType::Vector sau khi Range-match fail;
+   infallible-get theo inner kind; loop-context như for-Range).
+3. **Borrowck / Schema / JIT shim** — KHÔNG chạm (tái dùng `__triet_vector_get`/`_copy`/`_len`).
+
 ## Open questions
 1. ~~`break x` parse thành gì?~~ **ĐÓNG (O verify `stmt.rs:169-184`):** silent-discard →
    unit `Stmt::Break`. Quyết: parser ném E0009 (§2b). Không còn open.
