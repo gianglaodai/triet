@@ -588,3 +588,102 @@ O(N) cursor-drain perf. Đều giữ refuse hiện hành.
   bắt buộc ADR-first, tự đo (E) Type::Reference/ReferenceForm cho O, khắc Container-Survives +
   Break-Mid Caller-Drop soundness.
 - **Giang: ✅ CHỐT HƯỚNG (2026-07-27)** — chọn #6 trong 7 ứng viên ("đóng hòm cái nhanh gọn").
+
+## §AMEND — HashMap.drain() Deferral (hai-bức-tường, fail-closed E1054)
+
+Formalize dòng §2d.5 out-of-scope "HashMap.drain() (pháo đài riêng)". Giang mở
+campaign HashMap.drain() (2026-07-27); O recon-trước **BÁC nhãn backlog "mirror
+Vector.drain / bucket state-gate riêng"** — nhãn bỏ sót bức tường lớn hơn (Tuple).
+Quyết định: **KHÔNG land feature; refuse fail-closed bằng E-code RIÊNG.**
+
+### §HM-drain.1 — Hai bức tường kỹ thuật (O verify file:line, 2026-07-27)
+
+**🧱 Bức tường 1 — YIELD SHAPE cần Tuple `(K,V)`, mà Tuple CHƯA lower.**
+Ngữ nghĩa đúng của `for (k, v) in m.drain()` yield `(K, V)`. Tuple tồn tại ở
+AST + typecheck + parser (`Type::Tuple` `types.rs:49`; `Pattern::Tuple`
+`parser/pattern.rs:173`; test `parses_for_with_tuple_destructuring`
+`parser/stmt.rs:450`) — **nhưng grep `Tuple` trên `triet-lower` / `triet-mir` /
+`triet-jit` = 0 hit CẢ BA CRATE**. Tuple chưa có MIR-repr, chưa lower, chưa JIT
+layout. ⇒ yield `(K,V)` đòi **xây tuple-lowering từ đầu** (MIR + JIT) = campaign
+prerequisite RIÊNG, nặng hơn drain, mở khóa nhiều thứ ngoài drain (multi-value
+return, destructuring). HashMap.drain **bị gate SAU** campaign đó.
+
+**🧱 Bức tường 2 — không có primitive enumerate-entry key-less.**
+HashMap layout (`mir_lower.rs:6444`): open-addressing, slot = `key_stride +
+value_stride + 1 state-byte`, body = `[len@0, cap@8, slots@16…]`, state==0 =
+empty (enumerate-được về nguyên tắc: walk 0..cap skip empty). Shim inventory:
+`alloc/free/len/insert/get/get_ref/get_ref_agg/get_copy/remove/contains` — grep
+`hashmap_keys/values/iter/next/pop/drain/entries` = **0 hit**. Vector.drain tái
+dùng `pop_front` (shim proven); HashMap **không có analog** — `remove(key)` đòi
+biết key trước. ⇒ desugar-loop kiểu Slice 2b BẤT KHẢ; cần **shim mới**
+(`__triet_hashmap_drain_next` cursor / bucket-walker) hoặc phơi bucket internals
+cho lowerer. Đây là "bucket state-gate" nhãn nhắc — nhưng nhãn bỏ sót Bức tường 1.
+
+### §HM-drain.2 — Quyết định: DEFER, refuse fail-closed (KHÔNG lossy)
+
+PA-B (values-only) / PA-C (keys-only) **BỊ CẤM** (Giang phán 2026-07-27): drain
+mà vứt câm key/value = lossy, phi đối xứng, phản trực giác — thuốc độc semantic,
+vi phạm Bài học #6 ([[mentor_o_persona]] luật 18: "shape có ĐƯỢC PHÉP tồn tại
+không, không đắp cơ chế vào chỗ thiếu"). Khi chưa có Tuple `(K,V)` lowering,
+`HashMap.drain()` **KHÔNG ĐƯỢC PHÉP TỒN TẠI**. Refuse sạch, fail-closed, KHÔNG
+silent error, KHÔNG panic vô hướng.
+
+### §HM-drain.3 — E-code RIÊNG: E1054 (KHÔNG rơi E1052 chung chung)
+
+Hiện `for x in m.drain()` (receiver HashMap) rơi vào `else` `check.rs:795-803`
+→ **E1052** `NonRangeIterationUnsupported` (generic "trait Iterator chưa impl").
+Che mất câu chuyện thật (2 cliff). Formalize code riêng:
+
+- **E1054 `DrainHashMapUnsupported`** (next free — E1050..E1053 đã dùng).
+- Header: `E1054: `for` iteration over `HashMap<{key}, {value}>.drain()` is unsupported`.
+- Body/help nêu ĐÍCH DANH 2 bức tường: (1) yield `(K,V)` cần Tuple lowering
+  (chưa có ở MIR/JIT) — trỏ prerequisite; (2) chưa có enumerate-entry shim.
+- `[Fix]` gợi ý: dùng `remove(m, k)` theo từng key đã biết, hoặc chờ Tuple
+  lowering + `HashMap.drain()` (deferred, ADR-0089 §AMEND HashMap.drain).
+- **Scope chốt: CHỈ `.drain()` receiver = `Type::HashMap(..)`.** Plain
+  `for x in m` (non-drain HashMap iterate) GIỮ E1052 — đó là deferral khác
+  (Iterator trait), không phải drain. (Điểm quyết-scope này O nêu cho G; refuse-
+  over-guess: không tự nới rộng E1054 sang plain-iterate.)
+
+### §HM-drain.4 — Điểm chạm (contained, 1 site typecheck)
+
+`check.rs` drain-branch: TRƯỚC `else` `:795`, thêm arm
+`if let Type::HashMap(k, v) = &receiver_ty` → push `DrainHashMapUnsupported`.
+String/other GIỮ NGUYÊN `NonRangeIterationUnsupported`. Không đụng lower/mir/jit
+(refuse ở typecheck ⇒ không bao giờ tới lowerer). Zero shim mới.
+
+### §HM-drain.5 — Teeth (fixture refuse + poison provable, D cắm)
+
+- Fixture: `for (k,v) in m.drain()` (hoặc `for x in m.drain()`) trên
+  `HashMap<Integer,Integer>` → EXPECT-ERROR **E1054** (không E1052, không panic,
+  không SIGILL).
+- **Poison chứng minh răng ở tầng harness** (luật 15): gỡ arm HashMap-detection
+  ở `check.rs` → fixture PHẢI đỏ (rơi lại E1052 `got E1052, expected E1054`).
+  Khôi phục byte-identical. (Đây là teeth tối thiểu cho một defer — chứng minh
+  code path fail-closed vào ĐÚNG E-code, không im lặng crash.)
+
+### §HM-drain.6 — Prerequisite / Out of scope
+
+- **Prerequisite thật của feature:** campaign "Tuple lowering (MIR + JIT)" PHẢI
+  land TRƯỚC khi HashMap.drain() có thể tồn tại đúng-chuẩn. Ghi vào backlog như
+  một pháo đài độc lập, KHÔNG đi ké amendment này.
+- Vẫn defer: enumerate-entry shim · O(N) cursor-drain · `HashMap<K, V?>`
+  (double-nullable value, ADR-0088) · plain `for x in m` HashMap iteration (E1052).
+
+### §HM-drain — Signatures
+- **O: ✅ RECON + DESIGN + VERIFY MÁU (2026-07-27)** — verify 2 bức tường
+  file:line (Tuple 0-hit lower/mir/jit; shim inventory không có enumerate
+  key-less); đề xuất E1054 + scope drain-only; soạn WO cho D (KHÔNG tự code, pen
+  D → `c001075`). **Verify độc lập:** đọc diff (E1054 variant + span arm `:1326`
+  + HashMap arm trước else; plain-iterate + Vector E1053 nguyên vẹn); gate độc
+  lập `0·clean·0·502·0`; **poison tự tay** (tắt HashMap arm `check.rs:795` →
+  fixture 510 `FAIL: expected E1054, got E1052` = răng thật tầng harness) →
+  restore byte-identical (md5 `bd8c08c4…`); scope-check 471 plain-iterate giữ
+  E1052 dưới poison.
+- **G: ✅ KÝ DUYỆT KIẾN TRÚC (2026-07-27)** — APPROVED PA-D (refuse-over-guess,
+  no lossy semantics); E1054 `DrainHashMapUnsupported` **strictly scoped to
+  `.drain()`** (KHÔNG gộp plain-iterate — "một E-code, một hợp đồng ngữ nghĩa";
+  gộp = diagnostic laziness); teeth poison E1052-vs-E1054 bắt buộc; gate target
+  `0·clean·0·502·0`. [G — RUTHLESS COMPILER GATEKEEPER].
+- **Giang: ✅ KÝ DUYỆT PA-D (2026-07-27)** — defer sạch, cấm PA-B/C lossy, đòi
+  ADR + E-code riêng + teeth fail-closed.
