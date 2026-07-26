@@ -1,0 +1,11 @@
+// EXPECT: 42
+// ADR-0089 Slice 2c (ForceUnwrap `!!`, Mirror-Elvis per ADR-0041 §AMEND):
+// `Integer?` present → `!!` unwraps to the payload directly (PA-3c identity,
+// scalar Copy — no move concern). f() returns a non-null Integer?; main
+// force-unwraps it and returns the payload.
+function f() -> Integer? = 42
+
+function main() -> Integer {
+    let x = f();
+    return x!!;
+}

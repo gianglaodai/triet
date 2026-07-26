@@ -1,0 +1,15 @@
+// ERROR: E2420
+// ADR-0089 Slice 2c CANARY: `x!!` on a named non-Copy `String?` local MUST
+// move `x` out (PA-3c Assign identity — source is a named local, non-Copy
+// payload ⇒ borrowck tracks it Moved, checker.rs:975). A second `x!!` reads
+// `x` again after the move → UseAfterMove (E2420). If this canary goes
+// green without the fix, ForceUnwrap silently reads-instead-of-moves —
+// double-free waiting to happen the moment the payload is heap-allocated.
+function f() -> String? = "hi"
+
+function main() -> Integer {
+    let x = f();
+    let y = x!!;
+    let z = x!!;
+    return len(y) + len(z);
+}

@@ -1,0 +1,19 @@
+// ERROR: ForceUnwrap
+// ADR-0089 Slice 2c / ADR-0041 §AMEND-Slice2c: design fence — `!!` on an
+// Aggregate (Enum) payload is refused (E1100 ConstructNotYetLowered), same
+// fence as the Struct case in 501.
+enum Box {
+    Empty,
+    Full(Integer),
+}
+
+function f() -> Box? = Box::Full(7)
+
+function main() -> Integer {
+    let n = f();
+    let b = n!!;
+    return match b {
+        Box::Empty => 0,
+        Box::Full(v) => v,
+    };
+}

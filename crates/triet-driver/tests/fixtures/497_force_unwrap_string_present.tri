@@ -1,0 +1,11 @@
+// EXPECT: 2
+// ADR-0089 Slice 2c: `String?` present → `!!` unwraps the heap payload
+// (Move — PA-3c Assign is a move for a named non-Copy local). The unwrapped
+// String is used via len() to confirm the value transferred correctly.
+function f() -> String? = "hi"
+
+function main() -> Integer {
+    let x = f();
+    let s = x!!;
+    return len(s);
+}

@@ -4505,6 +4505,84 @@ fn lower_expr(
             c.cur = merge_bb;
             Ok(result)
         }
+        Expr::ForceUnwrap { operand } => {
+            // `expr!!` — ADR-0041 §AMEND-Slice2c (Mirror-Elvis). If operand is
+            // null (NULL_SENTINEL), trap (SIGILL) — deliberately verbose,
+            // no silent recovery, per explicit-strictness convention.
+            // Otherwise, use the payload value directly (PA-3c identity).
+            let obj_val = lower_expr(*operand, None, arena, c)?;
+
+            let obj_ty = c.local_decls[obj_val.0].ty.clone();
+            let payload_ty = obj_ty
+                .nullable_payload()
+                .ok_or_else(|| {
+                    LowerError::unsupported_expr(&arena.expression(expr_id).node, expr_span.clone())
+                })?
+                .clone();
+
+            // Design fence: non-Copy Aggregate (Struct/Enum) payload not yet
+            // supported — E1100, defer per ADR-0041 §AMEND-Slice2c.
+            if matches!(payload_ty, MirType::Struct(_) | MirType::Enum(_)) {
+                return Err(LowerError::unsupported_expr(
+                    &arena.expression(expr_id).node,
+                    expr_span,
+                ));
+            }
+
+            let sentinel = c.alloc_local();
+            c.push(Statement::StorageLive(sentinel, expr_span.clone()));
+            c.push(Statement::Const {
+                dest: Place::local(sentinel),
+                value: ConstValue::Integer(i128::from(triet_mir::NULL_SENTINEL)),
+                span: expr_span.clone(),
+            });
+
+            let cmp = c.alloc_local();
+            c.push(Statement::StorageLive(cmp, expr_span.clone()));
+            c.push(Statement::BinaryOp {
+                dest: Place::local(cmp),
+                op: triet_mir::BinOp::Eq,
+                left: Place::local(obj_val),
+                right: Place::local(sentinel),
+                span: expr_span.clone(),
+            });
+
+            // Branch: positive → null (trap), negative → present (unwrap).
+            // No merge_bb — the null arm terminates the block, it never
+            // rejoins control flow (unlike Elvis).
+            let null_bb = c.alloc_bb();
+            let present_bb = c.alloc_bb();
+            let cur = c.cur;
+            c.term(
+                cur,
+                Terminator::If {
+                    cond: cmp,
+                    positive_bb: null_bb,
+                    zero_bb: None,
+                    negative_bb: present_bb,
+                    span: expr_span.clone(),
+                },
+            );
+
+            c.cur = null_bb;
+            c.term(
+                null_bb,
+                Terminator::Trap {
+                    span: expr_span.clone(),
+                },
+            );
+
+            // ── Present path: result type = T (payload), NOT T? (ADR-0040) ──
+            c.cur = present_bb;
+            let result = c.alloc_local_ty(payload_ty);
+            c.push(Statement::StorageLive(result, expr_span.clone()));
+            c.push(Statement::Assign {
+                dest: Place::local(result),
+                source: Place::local(obj_val),
+                span: expr_span,
+            });
+            Ok(result)
+        }
         Expr::NullableMap {
             inner,
             bind_var,

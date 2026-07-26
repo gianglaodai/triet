@@ -1,0 +1,14 @@
+// EXPECT: 1
+// ADR-0089 Slice 2c: `HashMap<Integer, Integer>?` present → `!!` unwraps the
+// heap handle (Move), mirroring the Vector? case.
+function f() -> HashMap<Integer, Integer>? = {
+    let mutable m = hashmap_new();
+    m = insert(m, 1, 100);
+    m
+}
+
+function main() -> Integer {
+    let x = f();
+    let m = x!!;
+    return len(m);
+}

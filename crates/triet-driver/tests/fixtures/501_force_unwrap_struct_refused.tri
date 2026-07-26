@@ -1,0 +1,14 @@
+// ERROR: ForceUnwrap
+// ADR-0089 Slice 2c / ADR-0041 §AMEND-Slice2c: design fence — `!!` on an
+// Aggregate (Struct) payload is refused (E1100 ConstructNotYetLowered).
+// Mirror-Elvis only proves the scalar/heap-scalar payload path; Aggregate
+// unwrap is deferred, not silently miscompiled.
+struct Pt { x: Integer, y: Integer }
+
+function f() -> Pt? = Pt { x: 1, y: 2 }
+
+function main() -> Integer {
+    let n = f();
+    let p = n!!;
+    return p.x + p.y;
+}

@@ -1,0 +1,16 @@
+// EXPECT: 2
+// ADR-0089 Slice 2c: `Vector<Integer>?` present → `!!` unwraps the heap
+// handle (Move). Vector is a single i64 handle so the ptr-sentinel lives in
+// the handle itself, same as Elvis/match on Vector?.
+function f() -> Vector<Integer>? = {
+    let mutable v = vector_new();
+    v = push(v, 5);
+    v = push(v, 6);
+    v
+}
+
+function main() -> Integer {
+    let x = f();
+    let v = x!!;
+    return len(v);
+}

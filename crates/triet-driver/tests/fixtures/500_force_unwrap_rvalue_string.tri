@@ -1,0 +1,10 @@
+// EXPECT: 2
+// ADR-0089 Slice 2c: rvalue `!!` — force-unwrap directly on a call result
+// (no named local binding the nullable first). The temp produced by `f()`
+// is force-unwrapped and consumed by len() in the same expression; no leak
+// or double-free (counting teeth: force_unwrap_counting.rs).
+function f() -> String? = "hi"
+
+function main() -> Integer {
+    return len(f()!!);
+}
