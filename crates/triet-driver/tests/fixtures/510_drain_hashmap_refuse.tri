@@ -1,0 +1,20 @@
+// ERROR: E1054
+// ADR-0089 §AMEND HashMap.drain() §HM-drain.3: `for x in m.drain()` where
+// `m : HashMap<K, V>` must be refused with a DEDICATED code (E1054), not the
+// generic E1052 `NonRangeIterationUnsupported` that plain `for x in m`
+// (471_for_hashmap_refuse.tri) still uses unchanged. HashMap drain has its
+// own semantic contract (would yield `(K, V)` pairs) and is blocked by two
+// walls: (a) `Tuple` has no MIR/JIT lowering yet, so the yielded pair has no
+// layout; (b) there is no enumerate-entry shim — every `HashMap` shim today
+// is key-indexed (`get`/`insert`/`remove`), none can walk entries key-less.
+// This fixture stays a fail-closed refuse — it does NOT land the feature.
+function main() -> Integer {
+    let mutable m: HashMap<Integer, Integer> = hashmap_new();
+    m = insert(m, 1, 10);
+    m = insert(m, 2, 20);
+    let mutable sum = 0;
+    for x in m.drain() {
+        sum = sum + x;
+    }
+    return sum;
+}

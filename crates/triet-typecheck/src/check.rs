@@ -792,10 +792,23 @@ impl<'p> Checker<'p> {
                     // `item`.
                     (**inner).clone()
                 }
+            } else if let Type::HashMap(k, v) = &receiver_ty {
+                // ADR-0089 §AMEND HashMap.drain() §HM-drain.3: refuse with a
+                // DEDICATED code (E1054), not the generic E1052 — draining a
+                // HashMap has its own semantic contract (yields `(K, V)`
+                // pairs) and its own two walls (no Tuple lowering, no
+                // enumerate-entry shim), distinct from plain `for x in m`
+                // (still E1052 below) and from `Vector<T>.drain()` (E1053).
+                self.errors.push(TypeError::DrainHashMapUnsupported {
+                    key: k.to_string(),
+                    value: v.to_string(),
+                    span: receiver_span,
+                });
+                Type::Unknown
             } else {
-                // HashMap/String/other receiver, or a non-Vector type that
-                // happens to have a `.drain()`-shaped call — deferred like
-                // any other non-Range iteration (§2b.3.3).
+                // String/other receiver, or a non-Vector/non-HashMap type
+                // that happens to have a `.drain()`-shaped call — deferred
+                // like any other non-Range iteration (§2b.3.3).
                 self.errors.push(TypeError::NonRangeIterationUnsupported {
                     span: receiver_span,
                 });

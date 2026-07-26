@@ -1053,6 +1053,43 @@ pub enum TypeError {
         span: Span,
     },
 
+    /// E1054: `for x in m.drain()` where `m : HashMap<K, V>` — refused
+    /// fail-closed (ADR-0089 §AMEND `HashMap.drain()` §HM-drain.3), NOT folded
+    /// into the generic E1052 `NonRangeIterationUnsupported`. `HashMap`
+    /// drain would need to yield `(K, V)` pairs, and two walls block that
+    /// today: (a) the yielded pair is a `Tuple`, and `Tuple` has no MIR/JIT
+    /// lowering yet (no stack slot layout, no shim ABI); (b) there is no
+    /// enumerate-entry shim — the existing `HashMap` shims are all
+    /// key-indexed (`get`/`insert`/`remove`), none can walk entries
+    /// key-less. This is a distinct semantic contract from plain
+    /// `for x in m` (still E1052, `NonRangeIterationUnsupported` —
+    /// unchanged) and from `Vector<T>.drain()` (E1053) — one E-code, one
+    /// contract, no gluing unrelated refusals together.
+    #[error("E1054: `for` iteration over `HashMap<{key}, {value}>.drain()` is unsupported")]
+    #[diagnostic(
+        code(triet::typecheck::E1054),
+        help(
+            "`HashMap.drain()` would yield `(K, V)` pairs, but two things are \
+            missing: (a) `Tuple` has no lowering to MIR/JIT yet, so the \
+            yielded pair has no layout; (b) there is no enumerate-entry shim — \
+            every `HashMap` shim today is key-indexed (`get`/`insert`/`remove`), \
+            none can walk entries without a key.\n\n\
+            [Fix] Iterate over a known set of keys and call `remove(m, k)` for \
+            each one instead of draining the whole map."
+        )
+    )]
+    DrainHashMapUnsupported {
+        /// The `HashMap`'s key type (`K`).
+        key: String,
+        /// The `HashMap`'s value type (`V`).
+        value: String,
+        /// Source location of the `.drain()` receiver expression.
+        #[label(
+            "`HashMap<{key}, {value}>` drain is unsupported — no Tuple lowering, no enumerate-entry shim"
+        )]
+        span: Span,
+    },
+
     // === Warning-severity diagnostics (Q2-C: miette severity field) ===
     /// W2001: deprecated `null` keyword (use `~0` canonical literal).
     /// Severity: WARNING (does not block compile until v1.0 per
@@ -1286,6 +1323,7 @@ impl TypeError {
             | Self::VectorElementByValueIterationUnsupported { span, .. }
             | Self::DrainNullableElementUnsupported { span, .. }
             | Self::DrainBorrowedReceiverUnsupported { span, .. }
+            | Self::DrainHashMapUnsupported { span, .. }
             | Self::CapabilityLevelUnsupported { span, .. }
             | Self::CapabilityNotPossessable { span, .. }
             | Self::NullDeprecated { span } => span.clone(),
