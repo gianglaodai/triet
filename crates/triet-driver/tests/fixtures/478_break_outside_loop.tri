@@ -1,0 +1,11 @@
+// ERROR: E1143
+// ADR-0089 §3 cleanup: `break;` with no enclosing `loop`/`while`/`for` must
+// be refused with its own E1143 code (Track B rule #1 — never panic on user
+// input), not mis-borrow E1140 UndefinedLocal. Neither the parser
+// (`E0006 BreakValueOutsideLoop` has zero construction sites — unreachable
+// dead code) nor typecheck (`Stmt::Break` is a no-op) bars this; the
+// lowerer's loop-context stack is the sole guard.
+function f() -> Integer {
+    break;
+    return 0;
+}

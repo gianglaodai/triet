@@ -179,6 +179,13 @@ fn parse_break(parser: &mut Parser<'_>, head_span: Span) -> Result<StmtId, Parse
     let _ = parser.eat(&Token::Semi);
     let end = value.map_or(head_span.end, |id| parser.arena.expression(id).span.end);
     let span = head_span.start..end;
+    // ADR-0089 §2b: break-with-value is deferred for all of Slice 1.
+    // Refuse it here rather than silently discarding `value` — the old
+    // behavior parsed the expression and then dropped it on the floor,
+    // turning `break 42;` into a plain `break;` with no diagnostic.
+    if value.is_some() {
+        return Err(ParseError::BreakWithValueNotSupported { span });
+    }
     Ok(parser
         .arena
         .alloc_statement(Spanned::new(Stmt::Break, span)))
@@ -417,12 +424,14 @@ mod tests {
     }
 
     #[test]
-    fn parses_break_with_value() {
-        let (parser, id) = parse_stmt("break 42");
-        // `Stmt::Break` is a unit variant in the schema AST — `break <expr>`
-        // parses without error but carries no value (break-with-value is not
-        // modeled). This asserts the statement parses to a Break.
-        assert!(matches!(parser.arena.statement(id).node, Stmt::Break));
+    fn break_with_value_is_refused() {
+        // ADR-0089 §2b: `break <expr>` used to parse silently to a
+        // value-less `Stmt::Break`, dropping the expression on the floor
+        // with no diagnostic. Slice 1 refuses it outright instead.
+        match try_parse_stmt("break 42") {
+            Err(err) => assert!(matches!(err, ParseError::BreakWithValueNotSupported { .. })),
+            Ok(_) => panic!("expected BreakWithValueNotSupported, parse succeeded"),
+        }
     }
 
     #[test]

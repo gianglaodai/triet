@@ -1,0 +1,9 @@
+// EXPECT: 10
+// ADR-0089 §5 T-for-range: `for i in 0..5 { sum = sum + i }` → 10 (exclusive).
+function main() -> Integer {
+    let mutable sum = 0;
+    for i in 0..5 {
+        sum = sum + i;
+    }
+    return sum;
+}

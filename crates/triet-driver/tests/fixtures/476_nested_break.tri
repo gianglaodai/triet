@@ -1,0 +1,16 @@
+// EXPECT: 6
+// ADR-0089 §5 T-nested-break: `break` in the inner loop only exits the inner
+// loop (loop-context stack scoping) — outer runs 3 times, inner adds 2 each
+// time before breaking → 3*2 = 6.
+function main() -> Integer {
+    let mutable total = 0;
+    for i in 0..3 {
+        for j in 0..10 {
+            if j == 2 {
+                break;
+            }
+            total = total + 1;
+        }
+    }
+    return total;
+}

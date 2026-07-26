@@ -882,6 +882,23 @@ Xem [ADR-0021](docs/decisions/0021-trilean-refinement.md) cho design lock đầy
 
 ### 7.2 Loops: `for`, `while`, `loop`
 
+> **Trạng thái hiện tại (ADR-0089, Scope B Slice 1, 2026-07-26):** phần dưới
+> mô tả thiết kế NGÔN NGỮ đầy đủ (bao gồm cả phần chưa cài). Backend hiện
+> tại (`triet-lower`/`triet-jit`) mới lower **`for i in <Range literal>`**
+> (`0..100` / `0..=100`, trực tiếp inline — không qua biến `Range`),
+> `while`/`while?`, `loop`, và `break`/`continue` KHÔNG mang giá trị, bằng
+> CFG desugar tường minh (không qua trait). **`for item in <collection>`**
+> (Vector/HashMap/String/…), adapter kiểu `.enumerate()`/`.map()`/`.filter()`
+> (trait `Iterator<T>`/`Iterable<T>` của ADR-0003, chưa bao giờ land) và
+> `break expr` (break-with-value) là **DEFERRED, chưa chạy**:
+> - iterate trên non-Range → refuse tại typecheck, `E1052
+>   NonRangeIterationUnsupported`.
+> - `break expr` → refuse tại parser, `E0009 BreakWithValueNotSupported`.
+>
+> Trait-protocol iteration bị defer vô thời hạn tới khi generic trait
+> dispatch trưởng thành (ADR-0089 §1/§6). Đừng suy ra từ SPEC là các ví dụ
+> `for item in items`/`.enumerate()`/`break x` dưới đây đã chạy được.
+
 Triết cung cấp ba dạng loop cho ba nhu cầu khác nhau:
 
 #### `for` — primary, iterate trên collection/range
@@ -889,8 +906,8 @@ Triết cung cấp ba dạng loop cho ba nhu cầu khác nhau:
 ```triet
 for i in 0..100 { ... }                    // range
 for i in 0..=100 { ... }                   // inclusive range
-for item in items { ... }                  // iterator
-for (idx, item) in items.enumerate() { ... }
+for item in items { ... }                  // iterator — DEFERRED, xem note ở trên (E1052)
+for (idx, item) in items.enumerate() { ... }  // DEFERRED, xem note ở trên (E1052)
 ```
 
 `for` là form được khuyến nghị khi biết trước số lần lặp hoặc có collection.
@@ -910,17 +927,17 @@ Giống `if`/`if?`, Triết phân biệt `while` (cần điều kiện chắc ch
 ```triet
 let result = loop {
     let x = read_input()
-    if x.is_valid() { break x }
+    if x.is_valid() { break x }  // break-with-value — DEFERRED, xem note ở trên (E0009)
 }
 ```
 
-`loop` chạy vô hạn, thoát bằng `break expr` (truyền giá trị ra ngoài). Dùng cho event loop, retry logic, search-until-found.
+`loop` chạy vô hạn, thoát bằng `break expr` (truyền giá trị ra ngoài). Dùng cho event loop, retry logic, search-until-found. **`break expr` (giá trị) hiện DEFERRED** — xem note trạng thái ở đầu §7.2; `loop { ... break; ... }` (không giá trị) đã chạy.
 
 #### `break` và `continue`
 
 Cả ba dạng loop hỗ trợ:
 - `break` — thoát loop
-- `break expr` — chỉ trong `loop`, truyền giá trị ra
+- `break expr` — chỉ trong `loop`, truyền giá trị ra — **DEFERRED** (E0009, xem note đầu §7.2)
 - `continue` — sang lượt tiếp
 
 ### 7.3 match

@@ -124,6 +124,25 @@ pub enum ParseError {
         span: Span,
     },
 
+    /// `break <expr>;` — break-with-value is deferred for all of Slice 1
+    /// (ADR-0089 §2b). The parser used to read the expression and then
+    /// silently discard it, producing a plain `Stmt::Break` — a silent
+    /// data-loss bug. Refuse it outright instead.
+    #[error("E0009: `break` with a value is not supported")]
+    #[diagnostic(
+        code(triet::parse::E0009),
+        help(
+            "break-with-value is deferred (ADR-0089 §2b/§6). \
+             [Fix] Use plain `break;` and communicate the result through a \
+             `mutable` variable declared before the loop instead."
+        )
+    )]
+    BreakWithValueNotSupported {
+        /// Span of the `break` keyword (and its discarded value).
+        #[label("`break` with a value here")]
+        span: Span,
+    },
+
     /// Underlying lexer error encountered before parsing finished.
     #[error(transparent)]
     #[diagnostic(transparent)]
@@ -141,6 +160,7 @@ impl ParseError {
             | Self::InvalidInterpolation { span, .. }
             | Self::InvalidLiteral { span, .. }
             | Self::BreakValueOutsideLoop { span }
+            | Self::BreakWithValueNotSupported { span }
             | Self::InvalidAssignmentTarget { span, .. }
             | Self::ReservedItemName { span, .. } => span.clone(),
             Self::Lex(_) => 0..0,

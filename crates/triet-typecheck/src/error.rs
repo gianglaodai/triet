@@ -918,6 +918,32 @@ pub enum TypeError {
         span: Span,
     },
 
+    /// E1052: `for x in <iterable>` where `<iterable>` is not an inline
+    /// `Expr::Range` literal (ADR-0089 §2). Trait-based iteration
+    /// (`Iterator<T>`/`Iterable<T>`, ADR-0003) is deferred indefinitely —
+    /// pending mature generic trait dispatch — so any non-Range iterable
+    /// (Vector, `HashMap`, String, struct/enum, or a Range-typed variable)
+    /// is refused here rather than silently binding the loop variable to
+    /// `Type::Unknown` and letting it crash later in the lowerer.
+    #[error(
+        "E1052: `for` iteration over non-Range types is deferred (trait Iterator<T> not yet implemented)"
+    )]
+    #[diagnostic(
+        code(triet::typecheck::E1052),
+        help(
+            "Iteration over non-Range types is deferred (trait Iterator<T> \
+            not yet implemented — see ADR-0089 §1/§6, ADR-0003).\n\n\
+            [Fix 1] Use a Range loop over an index:\n\
+            Change `for x in <collection>` to \
+            `for i in 0..length(<collection>) {{ ... get(i) ... }}`"
+        )
+    )]
+    NonRangeIterationUnsupported {
+        /// Source location of the non-Range iterable expression.
+        #[label("not an inline `start..end` / `start..=end` Range literal")]
+        span: Span,
+    },
+
     // === Warning-severity diagnostics (Q2-C: miette severity field) ===
     /// W2001: deprecated `null` keyword (use `~0` canonical literal).
     /// Severity: WARNING (does not block compile until v1.0 per
@@ -1147,6 +1173,7 @@ impl TypeError {
             | Self::GetAggregateByValueRequiresClone { span, .. }
             | Self::BorrowedEnumPayloadBindUnsupported { span, .. }
             | Self::GetContainerNullableValueUnsupported { span, .. }
+            | Self::NonRangeIterationUnsupported { span }
             | Self::CapabilityLevelUnsupported { span, .. }
             | Self::CapabilityNotPossessable { span, .. }
             | Self::NullDeprecated { span } => span.clone(),

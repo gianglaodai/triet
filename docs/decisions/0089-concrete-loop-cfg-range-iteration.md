@@ -1,8 +1,11 @@
 # ADR 0089 — Concrete Loop CFG & Range Iteration (Amending ADR-0003)
 
-> Status: **SIGNED (2026-07-26) — O ✅ G ✅.** G duyệt kiến trúc (§2 Typecheck Guard
-> + §4 Drop-Model anchor `flush_all_for_return`) + lệnh bổ sung §2b (cấm silent-drop
-> break-value). O soạn + verify claim parse_break bằng code. Xuất WO 0089-SLICE-1 sau dấu này.
+> Status: **SIGNED + IMPLEMENTED (2026-07-26) — O ✅ G ✅.** Slice 1 land trọn:
+> `loop`/`break`/`continue` (CFG primitives) + `for i in <Range>` desugar + guard
+> non-Range (E1052) + guard break-value (E0009) + guard break/continue-outside-loop
+> (E1143). O verify máu: gate `0·clean·0·472·0`; poison 3 mũi ĐỎ (break-drop permanent
+> counting FREE 3→2, guard E1052→E1100, guard E0009→silent-discard); E1143 fresh-binary
+> confirmed (stale-binary E1140 caught per luật #12). SPEC §7.2 + ADR-0086 đồng bộ honest.
 
 > Scope quyết bởi G (2026-07-26): **Scope B — Slice 1**. Pragmatic engineering:
 > ship `loop`/`break`/`continue` + `for i in <Range>` bằng CFG desugar tường minh,
@@ -124,8 +127,14 @@ hdr, tránh vô hạn). `break_bb = ext`. `inclusive` đọc TRỰC TIẾP từ 
 (KHÔNG mang trong `Type::Range`); iterable là inline `Expr::Range` nên start/end lấy
 được từ AST — **không cần Range runtime value** (Range vẫn không lower như standalone Expr).
 
-**`break`** (top loop-context bắt buộc tồn tại, else = ICE/bug — nhưng parser đã ràng
-break trong loop): emit drops cho `owned_locals[drop_snapshot..]` theo THỨ TỰ pop_scope
+**`break`** (top loop-context bắt buộc tồn tại — **ĐÍNH CHÍNH (cleanup pass,
+2026-07-26): parser KHÔNG ràng break/continue trong loop.** `E0006
+BreakValueOutsideLoop` có 0 điểm dựng trong parser (dead code, chưa từng
+enforce) và typecheck no-op `Stmt::Break`/`Stmt::Continue` — nên top-level
+`break;`/`continue;` NGOÀI mọi loop thực sự lọt tới lowerer. Guard phòng thủ
+tại đây (Track B rule #1: never panic on user input) refuse bằng mã riêng
+**`E1143 BreakContinueOutsideLoop`** thay vì coi else-nhánh là ICE/bug):
+emit drops cho `owned_locals[drop_snapshot..]` theo THỨ TỰ pop_scope
 (reference trước, rồi LIFO `.rev()`), rồi `Goto break_bb`; đặt `c.cur` = block chết mới.
 
 **`continue`**: giống break nhưng `Goto continue_bb`.
@@ -172,9 +181,13 @@ Positive:
 - **T-nested-break** (EXPECT): loop lồng, `break` chỉ thoát loop trong (loop-context stack đúng).
 
 Soundness (counting-harness, FREE dedup con-trỏ):
-- **T-break-drop** ⭐ (G mandate a): `loop { let s = "x"; if cond { break; } }` — FREE=1
-  (s drop đúng 1 lần trên đường break). **Poison:** bỏ emit-drops của break → leak
-  (FREE=0) hoặc structural double → counting bắt. Poison hai chiều.
+- **T-break-drop** ⭐ (G mandate a) — **CHỐT permanent, CLEANUP pass 2026-07-26**:
+  fixture 477 (`// EXPECT: 3`, value-only) là VACUOUS cho soundness (leak không đổi
+  exit code); tooth thật là `crates/triet-driver/tests/break_drop_counting.rs`
+  (`break_path_frees_heap_local_each_iteration`) — `loop { let s = "x"; i+=1; if i==3
+  { break } }` 3 vòng, FREE=3 (2 structural back-edge + 1 break-path). **Poison
+  verify (D, trước khi cắm assert):** bỏ `emit_scope_drops` ở arm `Stmt::Break` →
+  FREE=2 (đo thật, không bịa) → test đỏ.
 - **T-break-borrow** (G cảnh báo dangling): break ra khỏi loop có borrow local → borrowck
   thấy drop ở exit-edge, không lọt UAF, không false-E2450.
 
@@ -186,6 +199,12 @@ Negative (guard typecheck — G mandate b):
   **E0009 tại PARSER** (`// ERROR: E0009`), KHÔNG nuốt câm thành `break;`. **Poison:**
   revert `parse_break` về silent-discard (bỏ nhánh ném E0009) → `break 42;` parse lọt
   thành unit `Stmt::Break` = giá trị bị nuốt câm ⇒ fixture đỏ (expected E0009, got no-error).
+- **T-break-outside-loop-refuse** ⭐ (CLEANUP pass, honesty item b): `break;` top-level
+  ngoài mọi loop → **E1143 tại lower** (KHÔNG mượn E1140 UndefinedLocal). Fixture 478
+  `// ERROR: E1143` + `crates/triet-lower/tests/diagnostics.rs::e1143_break_continue_outside_loop_code_via_fixture_478`
+  (khóa `err.code()`). **Poison verify (D):** đổi `#[diagnostic(code(...))]` sang mã
+  giả → `diagnostics.rs` đỏ (message-substring fixture KHÔNG đỏ theo poison này —
+  message field hardcode literal "E1143:" độc lập với thuộc tính `code()`, xem báo cáo).
 
 ### §6 — Out of scope (defer, ghi rõ để không câm)
 
@@ -211,7 +230,10 @@ Negative (guard typecheck — G mandate b):
 2. **Typecheck** `check.rs:692` (`Stmt::For` arm) + `error.rs` (thêm E1052 variant).
 3. **Lower** `crates/triet-lower/src/lib.rs`: state loop-context stack; arm `Stmt::Loop`,
    `Stmt::Break`, `Stmt::Continue`, `Stmt::For` (thay E1100 catch-all `:2144`); wire
-   break/continue vào `Stmt::While` `:2100`; helper `emit_scope_drops`.
+   break/continue vào `Stmt::While` `:2100`; helper `emit_scope_drops`. `break`/`continue`
+   với loop-context stack rỗng (top-level, ngoài mọi loop — xem đính chính §3) → mã riêng
+   **`E1143 BreakContinueOutsideLoop`** (`LowerError::break_continue_outside_loop`, ADR-0086
+   amend), KHÔNG mượn `E1140 UndefinedLocal`.
 4. **Borrowck** — KHÔNG chạm (§4).
 5. **Schema** — For/Loop/Break/Continue đã có (schema:1329-1353); KHÔNG đổi schema.
 

@@ -1,0 +1,14 @@
+// EXPECT: 10
+// ADR-0089 §3/§5 T-loop-basic: `loop { ...; if cond { break; } }` counts to 10.
+function main() -> Integer {
+    let mutable sum = 0;
+    let mutable i = 0;
+    loop {
+        if i == 10 {
+            break;
+        }
+        sum = sum + 1;
+        i = i + 1;
+    }
+    return sum;
+}

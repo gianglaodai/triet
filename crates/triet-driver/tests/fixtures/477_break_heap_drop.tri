@@ -1,0 +1,16 @@
+// EXPECT: 3
+// ADR-0089 §5 T-break-drop: `loop { let s = "x"; ...; if cond { break; } }` —
+// `s` (heap String) must be dropped exactly once on the break path
+// (emit_scope_drops, ADR-0089 §4). O's poison-verify checks the FREE count
+// separately; this fixture only needs to RUN and return the right value.
+function main() -> Integer {
+    let mutable i = 0;
+    loop {
+        let s = "x";
+        i = i + 1;
+        if i == 3 {
+            break;
+        }
+    }
+    return i;
+}

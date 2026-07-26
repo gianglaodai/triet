@@ -164,6 +164,25 @@ pub enum LowerError {
         span: Span,
     },
 
+    /// `break`/`continue` was used with no enclosing `loop`/`while`/`for`
+    /// body on the loop-context stack (ADR-0089 §3, cleanup pass). The
+    /// parser does not bar this (`E0006 BreakValueOutsideLoop` is
+    /// unreachable dead code — zero construction sites) and typecheck
+    /// no-ops `Stmt::Break`/`Stmt::Continue`, so this is the sole guard —
+    /// a genuine user mistake, not an internal invariant violation.
+    #[error("{message}")]
+    #[diagnostic(
+        code(triet::lower::E1143),
+        help("remove the `break`/`continue`, or move it inside a `loop`/`while`/`for` body.")
+    )]
+    BreakContinueOutsideLoop {
+        /// Human-readable description naming the keyword and its location.
+        message: String,
+        /// Source location of the `break`/`continue` statement.
+        #[label]
+        span: Span,
+    },
+
     /// An internal invariant the lowerer relies on (name resolution,
     /// exhaustiveness scan, fixpoint convergence, …) was violated. This
     /// indicates a compiler bug, not a mistake in the user's program.
@@ -199,6 +218,7 @@ impl LowerError {
             | Self::UndefinedLocal { message, .. }
             | Self::NullLiteralWithoutExpectedType { message, .. }
             | Self::LiteralOutOfRange { message, .. }
+            | Self::BreakContinueOutsideLoop { message, .. }
             | Self::InternalInvariant { message, .. } => message,
         }
     }
@@ -304,6 +324,28 @@ impl LowerError {
         }
     }
 
+    /// `break`/`continue` reached the lowerer with no enclosing loop
+    /// context on the stack. ADR-0089 assumed the parser rejects
+    /// `break`/`continue` outside a loop (`E0006 BreakValueOutsideLoop`),
+    /// but that variant has zero construction sites in the current parser
+    /// — it is unreachable dead code, not an enforced guard. Typecheck's
+    /// `Stmt::Break`/`Stmt::Continue` arms are also no-ops. So a top-level
+    /// `break;`/`continue;` genuinely can reach here; refuse it (Track B
+    /// rule #1: never panic on user input) rather than trust an invariant
+    /// that isn't actually enforced upstream. Dedicated `E1143` code
+    /// (cleanup pass, ADR-0086 taxonomy) — this used to mis-borrow
+    /// `UndefinedLocal`/`E1140`, which would mislead a user reading `break;`
+    /// into thinking a variable lookup failed.
+    fn break_continue_outside_loop(keyword: &str, span: Span) -> Self {
+        Self::BreakContinueOutsideLoop {
+            message: format!(
+                "E1143: `{keyword}` used outside of any `loop`/`while`/`for` body — there is no \
+                 enclosing loop to {keyword} out of."
+            ),
+            span,
+        }
+    }
+
     fn null_literal_without_expected_type(span: Span) -> Self {
         Self::NullLiteralWithoutExpectedType {
             message: "Outcome/nullable constructor (`~+`/`~0`/`~-`) requires an expected \
@@ -345,6 +387,27 @@ pub(crate) struct LoweringInput<'a> {
     /// would be Copy → a silent non-copy bypass). Lát 3: `Expr::Mint` reads the
     /// level so a `defer` mint emits a `CapabilityCheck` runtime gate.
     pub capabilities: std::collections::HashMap<String, CapabilityLevel>,
+}
+
+/// A `break`/`continue` jump target, pushed when entering a `loop`/`while`/
+/// `for` body and popped on exit (ADR-0089 §3). `break`/`continue` read the
+/// top of the stack; a well-formed loop nest always has one, but the parser
+/// does not itself reject `break`/`continue` outside a loop (checked
+/// defensively at the use site instead — Track B rule #1, never panic).
+#[derive(Clone, Copy, Debug)]
+struct LoopContext {
+    /// Destination block for `break` (the loop's exit block).
+    break_bb: BasicBlock,
+    /// Destination block for `continue` — the loop header for
+    /// `loop`/`while`, the induction-variable step block for `for`
+    /// (continue must run the increment before re-testing, or the loop
+    /// never terminates).
+    continue_bb: BasicBlock,
+    /// `owned_locals.len()` at the moment the loop body's scope was
+    /// entered. `break`/`continue` drop every owned local from this index
+    /// to the end of `owned_locals` — everything introduced since loop-body
+    /// entry, across any still-open nested scopes (ADR-0089 §4).
+    drop_snapshot: usize,
 }
 
 /// Per-function lowering state: local/block allocation, variable scope,
@@ -389,6 +452,10 @@ struct Ctx {
     /// Human-readable names for let-bound locals. Populated by `Stmt::Let`;
     /// passed through to `Body::local_names` for borrowck diagnostics.
     local_names: BTreeMap<Local, String>,
+    /// Stack of enclosing loop contexts — `break`/`continue` jump to the
+    /// top entry's `break_bb`/`continue_bb`. Pushed on `loop`/`while`/`for`
+    /// body entry, popped on exit (ADR-0089 §3).
+    loop_stack: Vec<LoopContext>,
 }
 
 impl Ctx {
@@ -491,6 +558,7 @@ impl Ctx {
             owned_locals: Vec::new(),
             scope_snapshots: Vec::new(),
             local_names: BTreeMap::new(),
+            loop_stack: Vec::new(),
         };
         // ADR-0065 §14 Amend (WO-2 Lát A, 2026-07-20): B8 (§4) Copy-only gate
         // for `Nullable(Struct)` return, checked here (after `ctx` exists, so
@@ -553,10 +621,21 @@ impl Ctx {
         let Some(snapshot) = self.scope_snapshots.pop() else {
             return;
         };
-        // Collect indices with sort key, then emit Drop in sorted order.
-        // Avoids borrowing self.owned_locals and self.local_decls
-        // simultaneously (they're both fields of self).
-        let mut locals: Vec<Local> = self.owned_locals.drain(snapshot..).collect();
+        let locals: Vec<Local> = self.owned_locals.drain(snapshot..).collect();
+        self.emit_scope_drops(locals);
+    }
+
+    /// Sort `locals` per ADR-0046 (reference types drop before their
+    /// owners) and emit a `Drop` for each, in LIFO order within each group.
+    ///
+    /// Shared by `pop_scope` (which drains `owned_locals` before calling
+    /// this) and `break`/`continue` (ADR-0089 §4, ADR-0089-loop), which do
+    /// NOT drain — they emit-without-clearing so the structural `pop_scope`
+    /// that later runs at the loop body's own scope exit still sees the
+    /// same locals, drains them, and emits a second (harmless, since the
+    /// jump left `c.cur` pointing at a dead/unreachable block) round of
+    /// drops.
+    fn emit_scope_drops(&mut self, mut locals: Vec<Local>) {
         locals.sort_by_key(|&l| {
             let ty = &self.local_decls[l.0].ty;
             ty.is_reference()
@@ -2128,7 +2207,16 @@ fn lower_stmt(stmt: &Stmt, stmt_span: Span, arena: &Arena, c: &mut Ctx) -> Resul
             );
 
             c.cur = bdy;
+            // ADR-0089 §3: wire break/continue for `while` — same
+            // loop-context shape as `loop`/`for` (break→ext, continue→hdr).
+            let drop_snapshot = c.owned_locals.len();
+            c.loop_stack.push(LoopContext {
+                break_bb: ext,
+                continue_bb: hdr,
+                drop_snapshot,
+            });
             lower_block(*body, arena, c)?;
+            c.loop_stack.pop();
             let bdy_end = c.cur;
             c.term(
                 bdy_end,
@@ -2140,7 +2228,207 @@ fn lower_stmt(stmt: &Stmt, stmt_span: Span, arena: &Arena, c: &mut Ctx) -> Resul
 
             c.cur = ext;
         }
-        // Const / Break / Continue / For / Loop not yet lowered.
+        Stmt::Loop { body } => {
+            // ADR-0089 §3: 2-block desugar — hdr (body) / ext (after loop).
+            let hdr = c.alloc_bb();
+            let ext = c.alloc_bb();
+
+            let cur = c.cur;
+            c.term(
+                cur,
+                Terminator::Goto {
+                    target: hdr,
+                    span: DUMMY_SPAN,
+                },
+            );
+
+            c.cur = hdr;
+            let drop_snapshot = c.owned_locals.len();
+            c.loop_stack.push(LoopContext {
+                break_bb: ext,
+                continue_bb: hdr,
+                drop_snapshot,
+            });
+            lower_block(*body, arena, c)?;
+            c.loop_stack.pop();
+            let bdy_end = c.cur;
+            c.term(
+                bdy_end,
+                Terminator::Goto {
+                    target: hdr,
+                    span: DUMMY_SPAN,
+                },
+            );
+
+            c.cur = ext;
+        }
+        Stmt::Break => {
+            // ADR-0089 §4: drop every owned local introduced since loop-body
+            // entry (emit-without-clear — the structural `pop_scope` at the
+            // (now unreachable) end of the body drains the same range and
+            // emits a second, harmless round of drops into the dead block).
+            let Some(top) = c.loop_stack.last().copied() else {
+                return Err(LowerError::break_continue_outside_loop("break", stmt_span));
+            };
+            let locals: Vec<Local> = c.owned_locals[top.drop_snapshot..].to_vec();
+            c.emit_scope_drops(locals);
+            let cur = c.cur;
+            c.term(
+                cur,
+                Terminator::Goto {
+                    target: top.break_bb,
+                    span: stmt_span.clone(),
+                },
+            );
+            c.cur = c.alloc_bb();
+        }
+        Stmt::Continue => {
+            let Some(top) = c.loop_stack.last().copied() else {
+                return Err(LowerError::break_continue_outside_loop(
+                    "continue", stmt_span,
+                ));
+            };
+            let locals: Vec<Local> = c.owned_locals[top.drop_snapshot..].to_vec();
+            c.emit_scope_drops(locals);
+            let cur = c.cur;
+            c.term(
+                cur,
+                Terminator::Goto {
+                    target: top.continue_bb,
+                    span: stmt_span.clone(),
+                },
+            );
+            c.cur = c.alloc_bb();
+        }
+        Stmt::For {
+            variable,
+            iterable,
+            body,
+        } => {
+            // ADR-0089 §2/§3: typecheck (E1052) already refuses any
+            // iterable that isn't an inline `Expr::Range` literal — but it
+            // does NOT abort the pipeline on that error (so borrowck
+            // diagnostics can still surface). Re-check the expr-kind here
+            // defensively and refuse (never panic) rather than assume the
+            // upstream guard always ran.
+            let Expr::Range {
+                start,
+                end,
+                inclusive,
+            } = &arena.expression(*iterable).node
+            else {
+                return Err(LowerError::unsupported_stmt(stmt, stmt_span));
+            };
+            let (start, end, inclusive) = (*start, *end, *inclusive);
+
+            // `i = start` — induction local, Integer scalar/Copy, NOT
+            // owned-tracked (ADR-0089 §3).
+            let start_val = lower_expr(start, None, arena, c)?;
+            let elem_ty = c.local_decls[start_val.0].ty.clone();
+            let induction = c.alloc_local_ty(elem_ty.clone());
+            c.push(Statement::StorageLive(induction, stmt_span.clone()));
+            c.push(Statement::Assign {
+                dest: Place::local(induction),
+                source: Place::local(start_val),
+                span: stmt_span.clone(),
+            });
+
+            match &arena.pattern(*variable).node {
+                triet_syntax::Pattern::Variable(name) => {
+                    c.vars.insert(name.clone(), induction);
+                    c.local_names.insert(induction, name.clone());
+                }
+                triet_syntax::Pattern::Wildcard => {}
+                _ => return Err(LowerError::unsupported_stmt(stmt, stmt_span)),
+            }
+
+            let hdr = c.alloc_bb();
+            let bdy = c.alloc_bb();
+            let step = c.alloc_bb();
+            let ext = c.alloc_bb();
+
+            let cur = c.cur;
+            c.term(
+                cur,
+                Terminator::Goto {
+                    target: hdr,
+                    span: DUMMY_SPAN,
+                },
+            );
+
+            // hdr: cond = i < end (exclusive) / i <= end (inclusive)
+            c.cur = hdr;
+            let end_val = lower_expr(end, None, arena, c)?;
+            let cmp_op = if inclusive { BinOp::Le } else { BinOp::Lt };
+            let cond = c.alloc_local_ty(MirType::Trilean);
+            c.push(Statement::StorageLive(cond, stmt_span.clone()));
+            c.push(Statement::BinaryOp {
+                dest: Place::local(cond),
+                op: cmp_op,
+                left: Place::local(induction),
+                right: Place::local(end_val),
+                span: stmt_span.clone(),
+            });
+            let hdr_end = c.cur;
+            c.term(
+                hdr_end,
+                Terminator::If {
+                    cond,
+                    positive_bb: bdy,
+                    zero_bb: None,
+                    negative_bb: ext,
+                    span: arena.expression(*iterable).span.clone(),
+                },
+            );
+
+            // bdy: <body> — break→ext, continue→step.
+            c.cur = bdy;
+            let drop_snapshot = c.owned_locals.len();
+            c.loop_stack.push(LoopContext {
+                break_bb: ext,
+                continue_bb: step,
+                drop_snapshot,
+            });
+            lower_block(*body, arena, c)?;
+            c.loop_stack.pop();
+            let bdy_end = c.cur;
+            c.term(
+                bdy_end,
+                Terminator::Goto {
+                    target: step,
+                    span: DUMMY_SPAN,
+                },
+            );
+
+            // step: i = i + 1 (range-enforced trap per ADR-0044, same
+            // BinaryOp(Add) the JIT backend already traps on).
+            c.cur = step;
+            let one = c.alloc_local_ty(elem_ty);
+            c.push(Statement::StorageLive(one, stmt_span.clone()));
+            c.push(Statement::Const {
+                dest: Place::local(one),
+                value: ConstValue::Integer(1),
+                span: stmt_span.clone(),
+            });
+            c.push(Statement::BinaryOp {
+                dest: Place::local(induction),
+                op: BinOp::Add,
+                left: Place::local(induction),
+                right: Place::local(one),
+                span: stmt_span.clone(),
+            });
+            let step_end = c.cur;
+            c.term(
+                step_end,
+                Terminator::Goto {
+                    target: hdr,
+                    span: DUMMY_SPAN,
+                },
+            );
+
+            c.cur = ext;
+        }
+        // Const not yet lowered.
         other => return Err(LowerError::unsupported_stmt(other, stmt_span)),
     }
     Ok(())

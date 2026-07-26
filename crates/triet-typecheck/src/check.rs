@@ -4,8 +4,8 @@ mod exprs;
 mod methods;
 
 use triet_syntax::{
-    Arena, ExprId, FunctionBody, FunctionDefinition, Item, LiteralPattern, NumericSuffix, Pattern,
-    PatternId, Program, ReferenceForm, Span, Spanned, Stmt, StmtId, TypeExpr, TypeId,
+    Arena, Expr, ExprId, FunctionBody, FunctionDefinition, Item, LiteralPattern, NumericSuffix,
+    Pattern, PatternId, Program, ReferenceForm, Span, Spanned, Stmt, StmtId, TypeExpr, TypeId,
 };
 
 use crate::{
@@ -695,9 +695,24 @@ impl<'p> Checker<'p> {
                 body,
             } => {
                 let iter_ty = self.infer_expression(iterable);
-                let element_ty = match &iter_ty {
-                    Type::Range(inner) => (**inner).clone(),
-                    _ => Type::Unknown,
+                // ADR-0089 §2: only an INLINE `Expr::Range` literal is
+                // lowerable (Slice 1 desugars for→CFG straight off the
+                // AST start/end/inclusive fields — no Range runtime
+                // value). Check the expr-kind, not just the static type,
+                // since a Range-typed *variable* would type-check fine
+                // here but still can't lower.
+                let is_inline_range =
+                    matches!(self.arena.expression(iterable).node, Expr::Range { .. });
+                let element_ty = if is_inline_range {
+                    match &iter_ty {
+                        Type::Range(inner) => (**inner).clone(),
+                        _ => Type::Unknown,
+                    }
+                } else {
+                    self.errors.push(TypeError::NonRangeIterationUnsupported {
+                        span: self.arena.expression(iterable).span.clone(),
+                    });
+                    Type::Unknown
                 };
                 self.env.push_frame();
                 self.bind_pattern(variable, &element_ty);

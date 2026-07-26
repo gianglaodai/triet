@@ -1,0 +1,14 @@
+// EXPECT: 9
+// ADR-0089 §5 T-continue: `for i in 0..10 { if i==5 continue; sum+=1 }` — continue
+// runs the step (no infinite loop) and skips exactly one increment (no
+// double-count): 10 values, 1 skipped → 9.
+function main() -> Integer {
+    let mutable sum = 0;
+    for i in 0..10 {
+        if i == 5 {
+            continue;
+        }
+        sum = sum + 1;
+    }
+    return sum;
+}

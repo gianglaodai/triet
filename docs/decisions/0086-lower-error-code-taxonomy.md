@@ -6,6 +6,11 @@ Chuyển `LowerError` (`crates/triet-lower/src/lib.rs`) từ struct phẳng
 mã `triet::lower::E11XX` + `#[derive(miette::Diagnostic)]`, mirror
 `CapabilityError` (`crates/triet-typecheck/src/capability_check.rs`).
 
+> **AMEND (ADR-0089 §3 cleanup pass, 2026-07-26):** thêm biến thể thứ 9,
+> `E1143 BreakContinueOutsideLoop`, cùng lớp User error — xem hàng E1143
+> trong bảng dưới. Toàn bộ phần thân ADR bên dưới mô tả quyết định GỐC
+> (8 mã); không viết lại lịch sử, chỉ ghi amend tại đây + tại hàng bảng.
+
 **Issue:** `LowerError` là struct duy nhất trong pipeline compiler KHÔNG có
 mã lỗi và KHÔNG impl `miette::Diagnostic` — vi phạm CLAUDE.md §Error code
 namespace (mọi tầng khác đã có: lexer E0000, parser E000X, typecheck E10XX,
@@ -32,6 +37,7 @@ trong `crates/triet-lower/src/lib.rs`:
 | `E1140` | `UndefinedLocal` | User error | Biến local không tồn tại trong scope. |
 | `E1141` | `NullLiteralWithoutExpectedType` | User error | Constructor `~+`/`~0`/`~-` thiếu expected type từ ngữ cảnh để suy ra kiểu đích. |
 | `E1142` | `LiteralOutOfRange` | User error | Giá trị literal (Trit/Tryte/Long/Integer trong pattern match) vượt phạm vi biểu diễn được của kiểu. |
+| `E1143` | `BreakContinueOutsideLoop` | User error | **Bổ sung sau (ADR-0089 §3 cleanup pass, 2026-07-26), NGOÀI 8 mã gốc của ADR này** — `break`/`continue` không nằm trong `loop`/`while`/`for` nào. Trước đó helper `break_continue_outside_loop` mượn nhầm `E1140 UndefinedLocal` (sai danh tính: user thấy "Undefined Local" cho `break;` sẽ tưởng compiler lỗi biến). Parser KHÔNG chặn trường hợp này (`E0006 BreakValueOutsideLoop` là dead code, 0 điểm dựng) và typecheck no-op `Stmt::Break`/`Stmt::Continue`, nên lowerer là tuyến phòng thủ DUY NHẤT — mã riêng cho đúng. |
 | `E1190` | `InternalInvariant` | ICE (Internal Compiler Error) | Một bất biến nội bộ lowerer dựa vào (name resolution đã resolve, exhaustiveness scan, fixpoint hội tụ, …) bị vi phạm. Đây là **compiler bug**, không phải lỗi chương trình user — help text yêu cầu report kèm input tối thiểu. |
 
 ### Vì sao E1190 gom TẤT CẢ 35/47 site còn lại vào MỘT mã ICE

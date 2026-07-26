@@ -2,9 +2,11 @@
 //! `triet::lower::E11XX`).
 //!
 //! Mirrors `crates/triet-typecheck/tests/diagnostics_format.rs`: asserts
-//! every one of the 8 taxonomy codes renders its exact `miette::Diagnostic`
-//! code string. Where a real fixture already exercises the site
-//! (`triet-driver/tests/fixtures/`), the test runs the actual
+//! every one of the original 8 taxonomy codes plus `E1143`
+//! (`BreakContinueOutsideLoop`, added post-ADR-0086 by the ADR-0089 cleanup
+//! pass — see that ADR's amendment note) renders its exact
+//! `miette::Diagnostic` code string. Where a real fixture already exercises
+//! the site (`triet-driver/tests/fixtures/`), the test runs the actual
 //! parse → typecheck → lower pipeline against that fixture's source instead
 //! of hand-building the variant, proving the code fires for a real program —
 //! not just that the variant's `#[diagnostic]` attribute is well-formed.
@@ -122,4 +124,20 @@ fn e1190_internal_invariant_code() {
     };
     let code = err.code().unwrap().to_string();
     assert_eq!(code, "triet::lower::E1190");
+}
+
+/// Real trigger: fixture 478 has a top-level `break;` with no enclosing
+/// `loop`/`while`/`for`. Neither the parser (`E0006 BreakValueOutsideLoop`
+/// is unreachable dead code) nor typecheck (`Stmt::Break` is a no-op) bars
+/// this — the lowerer's loop-context stack is the sole guard.
+#[test]
+fn e1143_break_continue_outside_loop_code_via_fixture_478() {
+    let source = include_str!("../../triet-driver/tests/fixtures/478_break_outside_loop.tri");
+    let err = lower_err(source);
+    assert!(
+        matches!(err, LowerError::BreakContinueOutsideLoop { .. }),
+        "expected BreakContinueOutsideLoop, got: {err:?}"
+    );
+    let code = err.code().unwrap().to_string();
+    assert_eq!(code, "triet::lower::E1143");
 }

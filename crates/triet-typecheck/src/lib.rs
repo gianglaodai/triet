@@ -818,8 +818,17 @@ mod tests {
     // ===== Iterator: enumerate (SPEC §7.2) =====
 
     #[test]
-    fn checks_enumerate_on_range_with_tuple_destructuring() {
-        assert_ok(
+    fn for_over_enumerate_is_refused_pending_iterator_trait() {
+        // ADR-0089 §1/§2/§6: trait-based iteration (`Iterator<T>`/adapters
+        // like `.enumerate()`) is deferred indefinitely. Before ADR-0089,
+        // `for` over a non-inline-Range iterable silently bound the loop
+        // variable to `Type::Unknown` with no error — this test used to
+        // assert that silent pass-through (`assert_ok`). ADR-0089 §2
+        // requires the iterable to be an INLINE `Expr::Range` literal;
+        // `(0..5).enumerate()` is a `MethodCall`, not a `Range` node, so it
+        // must now be refused at typecheck (E1052) rather than reach the
+        // lowerer and crash there.
+        assert_has_error(
             r"
             function main() {
                 for (i, v) in (0..5).enumerate() {
@@ -827,6 +836,7 @@ mod tests {
                 }
             }
         ",
+            |e| matches!(e, TypeError::NonRangeIterationUnsupported { .. }),
         );
     }
 

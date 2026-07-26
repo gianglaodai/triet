@@ -1,0 +1,10 @@
+// ERROR: BreakWithValueNotSupported
+// ADR-0089 §2b: break-with-value is deferred for all of Slice 1. The old
+// parser silently discarded the expression after `break`, turning
+// `break 42;` into a plain `break;` with no diagnostic — refuse it instead.
+function main() -> Integer {
+    loop {
+        break 42;
+    }
+    return 0;
+}
