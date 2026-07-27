@@ -1,0 +1,42 @@
+// EXPECT: 1024
+// WO-Drain-FIFO-Teeth (O✅/G✅/Giang✅ 2026-07-27(f)): FIFO order + survivor
+// integrity canary for `&0 mutable Vector<String>.drain()` with a `break`
+// mid-loop (mirrors 509's borrow-receiver shape, but 509 used only
+// length-1 strings and a running COUNT, both order-blind). Here lengths
+// 1/2/4 are distinct and the oracle is position-weighted.
+//
+// `xs` = ["a"(1), "bb"(2), "cccc"(4)]. `drain_it` visits only the FIRST
+// element before `break`: acc = 0*10 + length("a") = 1, so n = 1 (a LIFO
+// drain would instead consume "cccc" first, giving n = 4). The tombstone
+// `len--` leaves survivors ["bb","cccc"] in the caller's buffer, in FIFO
+// order. `main` then pops them back out via `pop_front` TWICE, in order,
+// accumulating position-weighted: rest = (0*10+2)*10+4 = 24. Final
+// n*1000 + rest = 1*1000 + 24 = 1024 locks BOTH the break-mid FIFO position
+// AND the survivor order/identity in one number.
+function drain_it(v: &0 mutable Vector<String>) -> Integer {
+    let mutable acc = 0;
+    for item in v.drain() {
+        acc = acc * 10 + length(item);
+        break;
+    }
+    return acc;
+}
+function main() -> Integer {
+    let mutable xs: Vector<String> = vector_new();
+    xs = push(xs, "a");
+    xs = push(xs, "bb");
+    xs = push(xs, "cccc");
+    let n = drain_it(&0 mutable xs);
+    let mutable rest = 0;
+    let p1: String? = pop_front(xs);
+    rest = rest * 10 + match p1 {
+        ~+ s => length(s),
+        ~0 => -1,
+    };
+    let p2: String? = pop_front(xs);
+    rest = rest * 10 + match p2 {
+        ~+ s => length(s),
+        ~0 => -1,
+    };
+    return n * 1000 + rest;
+}

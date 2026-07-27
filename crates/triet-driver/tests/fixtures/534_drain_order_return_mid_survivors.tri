@@ -1,0 +1,46 @@
+// EXPECT: 1024
+// WO-Drain-FIFO-Teeth (O✅/G✅/Giang✅ 2026-07-27(f)): identical to 533 except
+// `break` is replaced with `return acc;` mid-loop.
+//
+// 🔑 This is the FIRST fixture in the whole corpus to exercise a `return`
+// INSIDE a `.drain()` loop body. Per Mentor O's MIR recon, that `return` is
+// a SEPARATE exit edge (`bb9`) that does NOT route through the loop's
+// normal `ext` block — this is exactly the edge that sank the proposed
+// O(N) cursor-drain optimization (an epilogue placed at `ext` would never
+// run on this path, so the cursor's tombstone bookkeeping would be skipped
+// and the caller's surviving buffer would be corrupted / double-freed on
+// drop). The current O(N^2) `pop_front`-loop desugar has no epilogue at
+// all — each iteration mutates `len` in place — so it is sound on this
+// edge for free. This fixture is the regression canary for that edge:
+// any future drain-lowering change MUST keep it green.
+//
+// Same computation as 533: `drain_it` returns after the first element
+// ("a", length 1) -> acc = 1 -> n = 1. Survivors ["bb","cccc"] popped in
+// FIFO order in `main` -> rest = (0*10+2)*10+4 = 24. n*1000 + rest = 1024.
+function drain_it(v: &0 mutable Vector<String>) -> Integer {
+    let mutable acc = 0;
+    for item in v.drain() {
+        acc = acc * 10 + length(item);
+        return acc;
+    }
+    return acc;
+}
+function main() -> Integer {
+    let mutable xs: Vector<String> = vector_new();
+    xs = push(xs, "a");
+    xs = push(xs, "bb");
+    xs = push(xs, "cccc");
+    let n = drain_it(&0 mutable xs);
+    let mutable rest = 0;
+    let p1: String? = pop_front(xs);
+    rest = rest * 10 + match p1 {
+        ~+ s => length(s),
+        ~0 => -1,
+    };
+    let p2: String? = pop_front(xs);
+    rest = rest * 10 + match p2 {
+        ~+ s => length(s),
+        ~0 => -1,
+    };
+    return n * 1000 + rest;
+}

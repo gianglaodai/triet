@@ -1,0 +1,20 @@
+// EXPECT: 124
+// WO-Drain-FIFO-Teeth (O✅/G✅/Giang✅ 2026-07-27(f)): FIFO order canary for
+// `Vector<String>.drain()` — the HEAP move-out path. Lengths 1/2/4 are
+// chosen DISTINCT on purpose: fixture 509 (`pop_front`/`pop` survivor probe)
+// used only length-1 strings ("a"/"b"/"c"), so it stayed blind to a
+// FIFO<->LIFO order swap. Oracle is position-weighted (`acc = acc*10 +
+// length(s)`), not a running sum. Pushed "a"(1), "bb"(2), "cccc"(4) — FIFO
+// visits 1 then 2 then 4: acc = ((0*10+1)*10+2)*10+4 = 124. LIFO would give
+// 421.
+function main() -> Integer {
+    let mutable xs: Vector<String> = vector_new();
+    xs = push(xs, "a");
+    xs = push(xs, "bb");
+    xs = push(xs, "cccc");
+    let mutable acc = 0;
+    for s in xs.drain() {
+        acc = acc * 10 + length(s);
+    }
+    return acc;
+}

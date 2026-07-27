@@ -1,0 +1,19 @@
+// EXPECT: 123
+// WO-Drain-FIFO-Teeth (O✅/G✅/Giang✅ 2026-07-27(f)): FIFO order canary for
+// `Vector<Integer>.drain()`. Oracle is POSITION-WEIGHTED (`acc = acc*10 + x`),
+// NOT a running sum — a sum is order-blind and would stay green under a
+// LIFO desugar (the exact blind spot Mentor O's pop_front->pop poison probe
+// found: 6 pre-existing drain fixtures stayed green under FIFO->LIFO flip).
+// Pushed in order 1, 2, 3 — a FIFO drain must visit 1 then 2 then 3, giving
+// acc = ((0*10+1)*10+2)*10+3 = 123. A LIFO drain would visit 3,2,1 -> 321.
+function main() -> Integer {
+    let mutable xs = vector_new();
+    xs = push(xs, 1);
+    xs = push(xs, 2);
+    xs = push(xs, 3);
+    let mutable acc = 0;
+    for x in xs.drain() {
+        acc = acc * 10 + x;
+    }
+    return acc;
+}

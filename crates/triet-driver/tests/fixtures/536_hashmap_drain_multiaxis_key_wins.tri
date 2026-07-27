@@ -1,0 +1,23 @@
+// ERROR: E1054
+// WO-Drain-FIFO-Teeth (O✅/G✅/Giang✅ 2026-07-27(f)): sibling canary to 535 —
+// locks the CASCADE ORDER of `check.rs`'s pattern -> key -> value fence,
+// this time with pattern FIXED so the check falls through to key vs value.
+// `for (k, v) in m.drain()` is a proper 2-tuple pattern (passes axis 1), but
+// BOTH remaining axes are still broken: `KP` (Struct) is not a valid key,
+// and `Integer?` is not a valid (non-nullable) value. Measured (O,
+// 2026-07-27(f)): the key check runs before the value check, so the error
+// is E1054 (`for iteration over HashMap<KP, _>.drain() is unsupported`) —
+// value is never reached/named. Together with 535 (pattern > key) and the
+// existing single-axis fixtures 529 (key alone) / 530 (value alone), this
+// pins the full cascade order pattern > key > value end to end.
+struct KP { a: Integer, b: Integer }
+function main() -> Integer {
+    let mutable m: HashMap<KP, Integer?> = hashmap_new();
+    let k = KP { a: 1, b: 2 };
+    m = insert(m, k, 10);
+    let mutable total = 0;
+    for (key, v) in m.drain() {
+        total = total + 1;
+    }
+    return total;
+}

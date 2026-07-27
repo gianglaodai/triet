@@ -1,0 +1,26 @@
+// ERROR: E1056
+// WO-Drain-FIFO-Teeth (O✅/G✅/Giang✅ 2026-07-27(f)): canary for the CASCADE
+// ORDER of `check.rs`'s pattern -> key -> value fence (lines ~839/844/850,
+// WO-Split-E1054-4-meanings, 2026-07-27(e)). Every existing fixture for
+// E1056/E1054/E1057 (510/527/528/529/530) exercises exactly ONE axis at a
+// time, so the corpus never actually locked WHICH axis wins when several
+// fail together. This file fails ALL THREE simultaneously:
+//   - pattern: `for x in m.drain()` is a bare variable, not `(k, v)`.
+//   - key: `KP` is a Struct (aggregate), not {scalar, String}.
+//   - value: `Integer?` is nullable.
+// Measured (O, 2026-07-27(f)): the pattern check runs FIRST, so the error
+// is E1056 (`HashMap.drain() loop pattern must be a 2-tuple (k, v)`) — the
+// message names ONLY the pattern shape, never mentioning key or value, even
+// though both are also broken. See 536 for the sibling canary that proves
+// key beats value once pattern is fixed.
+struct KP { a: Integer, b: Integer }
+function main() -> Integer {
+    let mutable m: HashMap<KP, Integer?> = hashmap_new();
+    let k = KP { a: 1, b: 2 };
+    m = insert(m, k, 10);
+    let mutable total = 0;
+    for x in m.drain() {
+        total = total + 1;
+    }
+    return total;
+}
