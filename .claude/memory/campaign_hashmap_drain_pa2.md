@@ -118,7 +118,66 @@ nhân là hình pattern. G tạm chấp nhận lát 1; tách sau nếu siết "m
 hợp đồng".
 
 **Nợ:** aggregate key/value drain (move-out key aggregate = ABI mới) ·
-`V=Nullable` (drain qua out-param KHÔNG bọc `Nullable` nên lý thuyết an toàn
-hơn `Vector<T?>` — **chưa đo** ⇒ giữ refuse) · tách E1054 · **PA-1 vẫn BỊ BÁC**.
+`V=Nullable` (xem 🩸 ĐÍNH CHÍNH bên dưới) · tách E1054 · **PA-1 vẫn BỊ BÁC**.
+
+## 🩸 ĐÍNH CHÍNH 2026-07-27(e) — G BÁC "UB double-free" của O (verify-don't-trust ngược)
+
+O recon `V=Nullable drain` (Giang chốt mặt trận), nới 2 fence probe →
+`HashMap<_,Integer?>`/`HashMap<_,Vector?>` + stored-null `~0` → **SIGABRT 134**;
+`String?` sạch. O **đoán** "double-free pre-existing ở drop-glue, độc lập drain"
+→ **SAI**. **G bác bằng file:line:** `__triet_hashmap_insert:6620` có
+`if v == NULL_SENTINEL { abort() }` = **canary D2 (ADR-0044 Q4)**. `insert(k, ~0)`
+với V **stride-8** (Integer?/Vector?/HashMap?) truyền `v = i64::MIN` by-value →
+đạp D2 → **abort TẠI INSERT, chưa tới drop**. `String?` lọt vì truyền POINTER
+24B (địa chỉ ≠ MIN); present Integer lọt vì ≠ MIN; drop Integer? skip
+(`aggregate_needs_drop`=false). **Một cơ chế giải trọn bảng — KHÔNG có
+double-free, KHÔNG có UB.** Đây là **giới hạn thiết kế (trap fail-closed)**,
+không phải memory corruption.
+
+🔑 **Sự thật ghi sổ (lệnh G):** `HashMap<K, V?>` với V stride-8 nổ 134 khi
+`insert(k, null)` = **D2 trap ADR-0044 Q4** (`__triet_hashmap_insert:6620`),
+KHÔNG phải drop-glue. Khi nào mở trọn `V=Nullable` cho HashMap **PHẢI có ADR**
+(amend ADR-0044/0083) phân xử gỡ/thay D2 cho đúng ngữ nghĩa Nullable.
+⚠️ **Latent (gated sau D2, chưa live):** nếu D2 gỡ, `Vector?` value drop chạy
+`emit_hashmap_value_free_loop` (aggregate_needs_drop(Vector)=true) →
+`emit_heap_free_at` trên sentinel-cell — cần kiểm nó skip NULL_SENTINEL. Hôm nay
+BẤT KHẢ ĐẠT (D2 chặn ở insert) ⇒ KHÔNG phải lỗ sống.
+
+**Bài học O (lần 12+ "hành động/đoán trước khi đo"):** thấy 134 → chọn ngay
+"double-free" thay vì "trap cố ý", dù CLAUDE.md ghi rõ "ADR-0044 shim traps →
+SIGABRT". Vi phạm feedback_failure_mode_precision (134 = double-free HOẶC abort;
+phải ĐỊNH VỊ site trước khi gọi tên). G VERIFY-DON'T-TRUST ngược O đúng lần này.
+
+## ✅ ĐÓNG 2026-07-27(e) — (C) TÁCH E1054 4-NGHĨA → PA-3-mã (`d4baf60`)
+
+Front (C) landed. `d4baf60` (D) + ADR §AMEND-3 (O soạn WO, D pre-fill sig).
+O✅/G✅. Gate `0·clean·0·522·0` (O tự chạy độc lập). **KHÔNG đụng soundness/JIT
+— thuần diagnostic taxonomy** (ADR-0086 một-mã-một-hợp-đồng).
+
+E1054 nhồi 3 trục vào 1 `if&&` → tách cascade **pattern→key→value**:
+| Mã | Variant | Trục | Fixture |
+|---|---|---|---|
+| **E1056** | `DrainHashMapPatternUnsupported` | pattern≠`(k,v)` — **message CẤM in key/value** | 510,527,528 |
+| **E1054** | `DrainHashMapKeyUnsupported` (thu hẹp, bỏ field `value`) | K aggregate — `HashMap<{key},_>` | 529 |
+| **E1057** | `DrainHashMapValueUnsupported` | V nullable/aggregate — `HashMap<_,{value}>` | 530 |
+
+5 điểm chạm typecheck (`check.rs` cascade + `error.rs` 3 variant + `error_span`
+3 arm) + 4 fixture header + ADR. **526 giữ E1015** (drain ngoài for-guard).
+
+🩸 **O VERIFY MÁU:** Poison A (flip 5 header→5/5 FAIL, "got:" lộ mã THẬT mỗi
+fixture — 510/527/528=E1056 no-key/value · 529=E1054 `<KP,_>` · 530=E1057
+`<_,Integer?>`) + cascade-order live probe (multi-axis sai-cả-3→E1056 pattern
+thắng; key+value sai→E1054 key-trước-value). Restore byte-identical md5.
+
+⚔ **VẾT O: recon-gap — quên nối fixture 510 vào WO** (đọc 510 đầu phiên rồi
+bỏ sót). **D DỪNG-và-báo đúng LUẬT 4**; O verify 510 (bare-var + K/V hợp lệ →
+chỉ vi phạm pattern → E1056 cơ giới 100%). WO nửa-map là lỗi O, D xử đúng.
+
+**Nợ follow-up nhẹ (G duyệt KHÔNG block):** thêm 1 fixture đa-trục
+(`HashMap<Struct,Integer?>`+`for x in`→E1056) khóa cứng cascade order trong
+corpus (nay chỉ verify live). 0 rủi ro (mọi trục fail-closed).
+
+**Nợ CÒN treo:** aggregate key/value drain (ABI mới) · V=Nullable drain (cần
+ADR gỡ/thay D2 canary) · PA-1 vẫn BỊ BÁC.
 
 [[campaign_iteration_slice2b_drain]] [[campaign_iteration_slice2d_borrow_drain]] [[campaign_adr0088_lane_a_nested_nullable]] [[mentor_o_persona]] [[colleague_d_persona]] [[feedback_poison_must_be_red]]
