@@ -1,0 +1,13 @@
+// ERROR: E1055
+// WO-ADR0088-LaneA item 4c (Layer B, inference via `remove`): `remove<K,V>
+// (HashMap<K,V>, K) -> V?` binds `V` from the map's value type. When the
+// value is itself nullable (`HashMap<Integer, Integer?>`), the substituted
+// return is `Nullable(Nullable(Integer))` — same inference-site guard as
+// pop/pop_front (514/515), exercised through the HashMap arm instead.
+function main() -> Integer {
+    let mutable m: HashMap<Integer, Integer?> = hashmap_new();
+    let elem: Integer? = ~+ 9;
+    m = insert(m, 1, elem);
+    let out = remove(m, 1);
+    return 0;
+}

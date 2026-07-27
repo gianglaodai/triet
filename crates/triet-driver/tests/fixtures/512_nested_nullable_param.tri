@@ -1,0 +1,8 @@
+// ERROR: E1055
+// WO-ADR0088-LaneA item 2 (Layer A, function parameter): `Integer??` as a
+// parameter annotation. Same `resolve_type` guard as the local-annotation
+// case (511) — params are resolved through the identical `declare_item`
+// path (crates/triet-typecheck/src/check.rs).
+function f(x: Integer??) -> Integer = 0
+
+function main() -> Integer = 0

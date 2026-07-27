@@ -594,12 +594,22 @@ fn resolve_type_expr_with_params(
                 .map(|t| resolve_type_expr_with_params(arena, *t, type_parameters, name_table))
                 .collect(),
         ),
-        TypeExpr::Nullable(inner) => Type::Nullable(Box::new(resolve_type_expr_with_params(
-            arena,
-            *inner,
-            type_parameters,
-            name_table,
-        ))),
+        TypeExpr::Nullable(inner) => {
+            let inner_ty =
+                resolve_type_expr_with_params(arena, *inner, type_parameters, name_table);
+            // ADR-0088 (WO-ADR0088-LaneA item 2, Layer A): nested/double
+            // nullable `T??` = `Nullable(Nullable(_))`. E1055 itself is
+            // fired by `check.rs`'s `Checker::resolve_type` at the
+            // original declaration site (single source of truth for
+            // error attribution — same pattern as the Atomic guard
+            // above); here we just refuse to propagate a malformed
+            // nested shape into the shared cross-module name_table.
+            if matches!(inner_ty, Type::Nullable(_)) {
+                Type::Unknown
+            } else {
+                Type::Nullable(Box::new(inner_ty))
+            }
+        }
         TypeExpr::Function {
             parameters,
             return_type,

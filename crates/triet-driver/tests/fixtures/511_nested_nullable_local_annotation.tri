@@ -1,0 +1,12 @@
+// ERROR: E1055
+// WO-ADR0088-LaneA item 1 (Layer A, local annotation): `Integer??` =
+// `Nullable(Nullable(Integer))` written directly as a local's type
+// annotation. Refused by the `resolve_type` guard (crates/triet-typecheck/
+// src/check.rs) — the outer "present" state and the inner "stored value is
+// null" state would collide (ADR-0088). Before this WO there was no
+// dedicated guard for this shape at all; it fell through to whatever the
+// lowerer/MIR did with an unflattened `Nullable(Nullable(_))` local.
+function main() -> Integer {
+    let x: Integer?? = ~0;
+    return 0;
+}

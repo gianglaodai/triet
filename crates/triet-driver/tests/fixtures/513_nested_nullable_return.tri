@@ -1,0 +1,7 @@
+// ERROR: E1055
+// WO-ADR0088-LaneA item 3 (Layer A, function return type): `Integer??` as
+// a function's return-type annotation. Same `resolve_type` guard, function
+// return-type resolution path (crates/triet-typecheck/src/check.rs).
+function mk() -> Integer?? = ~0
+
+function main() -> Integer = 0

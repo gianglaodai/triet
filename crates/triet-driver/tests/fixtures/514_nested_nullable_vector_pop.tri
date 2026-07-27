@@ -1,0 +1,15 @@
+// ERROR: E1055
+// WO-ADR0088-LaneA item 4a (Layer B, inference via `pop`): `pop<T>(Vector<T>)
+// -> T?` binds `T` from the Vector's element type. When the element is
+// itself nullable (`Vector<Integer?>`), the substituted return is
+// `Nullable(Nullable(Integer))` — no explicit `T??` annotation appears
+// anywhere in this source, so the Layer A guard (resolve_type) never sees
+// it; refused instead at the generic-call substitution site
+// (crates/triet-typecheck/src/check/exprs.rs, check_call).
+function main() -> Integer {
+    let mutable v: Vector<Integer?> = vector_new();
+    let elem: Integer? = ~+ 7;
+    v = push(v, elem);
+    let out = pop(v);
+    return 0;
+}

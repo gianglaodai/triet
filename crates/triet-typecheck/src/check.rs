@@ -1362,7 +1362,26 @@ impl<'p> Checker<'p> {
             TypeExpr::Tuple(elements) => {
                 Type::Tuple(elements.iter().map(|t| self.resolve_type(*t)).collect())
             }
-            TypeExpr::Nullable(inner) => Type::Nullable(Box::new(self.resolve_type(inner))),
+            TypeExpr::Nullable(inner) => {
+                let inner_ty = self.resolve_type(inner);
+                // ADR-0088 (WO-ADR0088-LaneA item 2, Layer A): nested/double
+                // nullable `T??` = `Nullable(Nullable(_))` is a fail-closed
+                // refusal, not flattening — the outer "present" state and
+                // the inner "stored value is null" state would collide
+                // (same hazard already refused for get/get_ref via E1051).
+                // Covers every `resolve_type` chokepoint: local annotation,
+                // param, return, struct field, enum payload.
+                if matches!(inner_ty, Type::Nullable(_)) {
+                    let outer = Type::Nullable(Box::new(inner_ty.clone())).to_string();
+                    self.errors.push(TypeError::NestedNullableUnsupported {
+                        outer,
+                        inner: inner_ty.to_string(),
+                        span,
+                    });
+                    return Type::Unknown;
+                }
+                Type::Nullable(Box::new(inner_ty))
+            }
             TypeExpr::Function {
                 parameters,
                 return_type,

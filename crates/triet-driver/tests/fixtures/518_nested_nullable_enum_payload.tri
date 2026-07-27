@@ -1,0 +1,15 @@
+// ERROR: E1055
+// WO-ADR0088-LaneA item 6 (Layer A, enum payload): `enum E { A(Integer??) }`
+// — before this WO, a nested-nullable enum payload slipped past typecheck
+// unguarded and surfaced downstream as E1141 (a triet-lower error code, not
+// typecheck's taxonomy) for syntactically valid user input. Must now refuse
+// at typecheck with E1055, NOT E1141.
+enum E { A(Integer??), B }
+
+function main() -> Integer = {
+    let e = E::A(~0);
+    return match e {
+        E::A(x) => 0,
+        E::B => 1,
+    };
+}

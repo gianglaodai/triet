@@ -1090,6 +1090,52 @@ pub enum TypeError {
         span: Span,
     },
 
+    /// E1055: nested/double nullable `T??` = `Nullable(Nullable(_))` —
+    /// refused fail-closed (ADR-0088 double-nullable design gap, not yet
+    /// supported). Two independent sources can produce this shape:
+    ///
+    /// - **Layer A (annotation):** an explicit `T??` written at any
+    ///   `resolve_type` chokepoint — local `let` annotation, function
+    ///   parameter, function return type, struct field, or enum variant
+    ///   payload.
+    /// - **Layer B (inference):** a generic container accessor
+    ///   (`pop`/`pop_front`/`remove`) whose return type is `Nullable(T)`,
+    ///   called on a container whose element/value type is itself
+    ///   `Nullable(_)` (e.g. `pop(v)` where `v : Vector<Integer?>`) — no
+    ///   `T??` annotation appears anywhere in the source, so the shape
+    ///   only exists after generic-parameter substitution at the call
+    ///   site.
+    ///
+    /// Reuses the same "outer present-state vs. inner stored-null-state"
+    /// collision already refused for `get`/`get_ref` (E1051, ADR-0088
+    /// original scope) and `Vector<T?>.drain()` (E1053) — one dedicated
+    /// code so the concept stops scattering across unrelated codes (WO-
+    /// ADR0088-LaneA recon measured FIVE different codes for the same
+    /// `T??` concept on the release binary, including E1190 — the ICE
+    /// "please report this as a compiler bug" code — for syntactically
+    /// valid user input, violating the ADR-0086 taxonomy).
+    #[error("E1055: nested nullable `{outer}` is unsupported")]
+    #[diagnostic(
+        code(triet::typecheck::E1055),
+        help(
+            "`{inner}` is itself nullable, so wrapping it again produces a double nullable \
+            `T??` — the outer \"present\" state and the inner \"stored value is null\" state \
+            would collide. See ADR-0088 (double-nullable, not yet supported).\n\n\
+            [Fix] Restructure the type to avoid a nested `T?` (e.g. a wrapper Struct with an \
+            explicit \"present\" flag instead of `T?`)."
+        )
+    )]
+    NestedNullableUnsupported {
+        /// The full nested type as written or inferred (`T??`, e.g. `Integer??`).
+        outer: String,
+        /// The inner nullable type being wrapped again (`T?`, e.g. `Integer?`).
+        inner: String,
+        /// Source location of the nested-nullable type annotation, or the
+        /// call expression that inferred it (Layer B).
+        #[label("`{outer}` is a nested nullable — `{inner}` is itself nullable")]
+        span: Span,
+    },
+
     // === Warning-severity diagnostics (Q2-C: miette severity field) ===
     /// W2001: deprecated `null` keyword (use `~0` canonical literal).
     /// Severity: WARNING (does not block compile until v1.0 per
@@ -1324,6 +1370,7 @@ impl TypeError {
             | Self::DrainNullableElementUnsupported { span, .. }
             | Self::DrainBorrowedReceiverUnsupported { span, .. }
             | Self::DrainHashMapUnsupported { span, .. }
+            | Self::NestedNullableUnsupported { span, .. }
             | Self::CapabilityLevelUnsupported { span, .. }
             | Self::CapabilityNotPossessable { span, .. }
             | Self::NullDeprecated { span } => span.clone(),

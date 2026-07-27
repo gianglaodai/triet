@@ -1,0 +1,12 @@
+// ERROR: E1055
+// WO-ADR0088-LaneA item 4b (Layer B, inference via `pop_front`): same
+// collision as `pop` (514), exercised through `pop_front<T>(Vector<T>) ->
+// T?` instead — byte-identical signature shape, only the extraction end
+// differs.
+function main() -> Integer {
+    let mutable v: Vector<Integer?> = vector_new();
+    let elem: Integer? = ~+ 7;
+    v = push(v, elem);
+    let out = pop_front(v);
+    return 0;
+}

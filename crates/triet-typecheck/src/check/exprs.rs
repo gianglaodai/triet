@@ -1037,7 +1037,30 @@ impl Checker<'_> {
                     ));
                 }
             }
-            return return_type.substitute(&sub_map);
+            let substituted_return = return_type.substitute(&sub_map);
+            // ADR-0088 (WO-ADR0088-LaneA item 3, Layer B): a generic
+            // function whose return type is `Nullable(T)` (`pop`/
+            // `pop_front`/`remove`) binds `T` from an already-nullable
+            // container element/value (`Vector<Integer?>`, `HashMap<K,
+            // Integer?>`) — the substituted return becomes
+            // `Nullable(Nullable(_))` = nested `T??`. No `T??` annotation
+            // appears anywhere in the source for this path (unlike Layer A
+            // in `resolve_type`) — the shape only exists after
+            // substitution, so it must be caught HERE, at the single
+            // chokepoint where every generic call's return type is
+            // substituted. Not name-gated: any generic function shaped
+            // this way hits the same collision the Layer A guard refuses.
+            if let Type::Nullable(inner) = &substituted_return
+                && matches!(inner.as_ref(), Type::Nullable(_))
+            {
+                self.errors.push(TypeError::NestedNullableUnsupported {
+                    outer: substituted_return.to_string(),
+                    inner: inner.to_string(),
+                    span,
+                });
+                return Type::Unknown;
+            }
+            return substituted_return;
         }
 
         // Try qualified enum variant construction: `CD.SomeInt(5)`.

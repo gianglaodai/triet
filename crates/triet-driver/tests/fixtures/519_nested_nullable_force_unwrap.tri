@@ -1,0 +1,11 @@
+// ERROR: E1055
+// WO-ADR0088-LaneA item 7 (ForceUnwrap `!!` on `T??`): `x!!` where `x`'s
+// declared type is `Integer??`. The Layer A guard already refuses the
+// `Integer??` local annotation itself (same code as fixture 511) — proves
+// `!!` cannot be used as a side door around the Layer A refuse (the
+// operand's static type collapses to `Unknown` before `check_force_unwrap`
+// ever runs, so it never sees the nested shape either).
+function main() -> Integer {
+    let x: Integer?? = ~0;
+    return x!!;
+}

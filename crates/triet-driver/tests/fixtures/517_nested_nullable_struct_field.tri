@@ -1,0 +1,16 @@
+// ERROR: E1055
+// WO-ADR0088-LaneA item 5 (Layer A, struct field): `struct S { v: Integer?? }`
+// — before this WO, a nested-nullable struct field slipped past typecheck
+// unguarded and surfaced downstream as E1190 (InternalInvariant / ICE) — a
+// "please report this as a compiler bug" code for syntactically valid user
+// input, violating the ADR-0086 taxonomy. Must now refuse at typecheck with
+// E1055, NOT E1190.
+struct S { v: Integer?? }
+
+function main() -> Integer {
+    let s = S { v: ~0 };
+    return match s.v {
+        ~+ x => x,
+        ~0 => 0,
+    };
+}

@@ -2817,6 +2817,34 @@ impl fmt::Display for MirError {
                     "MIR verification error: Outcome projection on local {local} with non-Outcome type '{found_type}'"
                 )
             }
+            // WO-ADR0088-LaneA item 4: `inner_type` being ITSELF `Nullable`
+            // means the offending shape is a nested/double nullable `T??`
+            // (ADR-0088), not a heap-bearing aggregate — the ADR-0065 §4
+            // (B8) wording below is about `Struct?`/`Enum?` Copy-only
+            // restrictions, which is a completely different (and wrong)
+            // diagnosis for a plain `Integer??`. Typecheck's Layer A/B
+            // guards (E1055, crates/triet-typecheck) refuse every `.tri`
+            // construct that could reach this shape — this arm is
+            // defense-in-depth only, exercised by a direct unit test
+            // (`nested_nullable_refused_with_correct_message` below), not
+            // by any fixture.
+            Self::HeapNullableNotLowered {
+                inner_type,
+                position,
+                ..
+            } if matches!(inner_type, MirType::Nullable(_)) => {
+                write!(
+                    f,
+                    "nested nullable T?? not supported (at {position}) — T = {inner_type} is \
+                     itself nullable. A double nullable would collide the outer \"present\" \
+                     state with the inner \"stored value is null\" state (ADR-0088). Typecheck \
+                     refuses this shape at the source level; reaching MIR with it means the \
+                     nested shape was constructed some other way than through typecheck's \
+                     `resolve_type`. \
+                     [Fix 1] Restructure the type to avoid a nested `T?` (e.g. a wrapper Struct \
+                     with an explicit \"present\" flag instead of `T?`)."
+                )
+            }
             Self::HeapNullableNotLowered {
                 inner_type,
                 position,
@@ -4091,5 +4119,51 @@ mod tests {
         // bb0 stays as Return — no reference to bb1.
         body.verify()
             .expect("unreferenced Unreachable block is fine");
+    }
+
+    /// WO-ADR0088-LaneA item 4: nested/double nullable `T?? =
+    /// Nullable(Nullable(_))` is refused by the SAME allow-list machinery
+    /// (`is_lowerable_nullable_payload` / `find_refused_nullable`) as any
+    /// other unsupported `Nullable` inner shape — `Nullable(_)` was never
+    /// added to the allow-list, so this has always been fail-closed.
+    /// Typecheck's Layer A/B guards (E1055) now refuse every `.tri`
+    /// construct that could reach this shape, so no fixture exercises this
+    /// MIR-level path anymore — a direct unit test is the only thing that
+    /// still proves (a) the allow-list still refuses it and (b) the
+    /// Display message correctly describes "nested nullable" rather than
+    /// reusing the unrelated heap-nullable / ADR-0065 §4 (B8) Struct?/Enum?
+    /// wording (which was the WRONG diagnosis this WO closed).
+    #[test]
+    fn nested_nullable_refused_with_correct_message() {
+        let nested = MirType::Nullable(Box::new(MirType::Nullable(Box::new(MirType::Integer))));
+
+        // Allow-list itself: an inner that is Nullable is not in the
+        // scalar/heap/Enum/Struct/Reference allow-list.
+        assert!(
+            !is_lowerable_nullable_payload(&MirType::Nullable(Box::new(MirType::Integer))),
+            "a Nullable inner must not be accepted by is_lowerable_nullable_payload"
+        );
+
+        let refused = find_refused_nullable(&nested, is_lowerable_nullable_payload);
+        assert!(
+            matches!(refused, Some(MirType::Nullable(_))),
+            "Nullable(Nullable(Integer)) must be refused — got {refused:?}"
+        );
+
+        let err = MirError::HeapNullableNotLowered {
+            inner_type: refused.expect("refused above").clone(),
+            position: "local _0".to_string(),
+            span: DUMMY_SPAN,
+        };
+        let message = err.to_string();
+        assert!(
+            message.contains("nested nullable"),
+            "message must describe nested-nullable, not heap-nullable: {message}"
+        );
+        assert!(
+            !message.contains("Struct?"),
+            "message must not reuse the Struct?/Enum? ADR-0065 §4 (B8) wording for a plain \
+             Integer?? shape: {message}"
+        );
     }
 }
