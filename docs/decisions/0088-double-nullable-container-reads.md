@@ -1,8 +1,11 @@
 # ADR 0088 — Double-Nullable Container Reads (`T??` on `get`-family)
 
-**Trạng thái:** Deferred / Backlog (Mentor G ký defer 2026-07-25). KHÔNG áp
-dụng cho bất kỳ version nào — refuse tường minh (E1051) giữ chỗ cho tới khi
-`T??` được thiết kế đầy đủ.
+**Trạng thái:** **Lane A ĐÓNG** (O✅/G✅/Giang✅ 2026-07-27, `d9b659a` — xem
+**§AMEND-1**: hàng rào `E1055` 2 tầng / 2 lớp nguồn + 9 răng cưa 511-519).
+**Lane B (thiết kế `T??` thật) HOÃN VÔ THỜI HẠN.** Thân bài dưới đây là bản
+gốc 2026-07-25 (defer `get`-family qua E1051) — nó CHỈ phủ `get`/`get_ref`,
+và §Quyết định của nó có **một nhận định sai về `contains`** đã được §AMEND-1
+§88A.4 đính chính. Đọc §AMEND-1 trước khi hành động theo thân bài.
 
 **Issue:** `get`/`get_ref` trên container (`Vector<T>`/`HashMap<K,T>`) trả về
 `T?` — outer `?` mã hoá "key/index có tồn tại hay không". Khi `T` bản thân đã
@@ -98,3 +101,140 @@ theo may mắn).
   defer thiết kế đầy đủ).
 - Mở lại khi có campaign riêng cho `T??` semantics (AST/typecheck/MIR/JIT/
   match đồng bộ) — ADR này là điểm neo tham chiếu, không phải thiết kế đó.
+
+---
+
+## §AMEND-1 — Lane A: hàng rào `E1055` 2 tầng / 2 lớp nguồn + 9 răng cưa
+
+**Trạng thái:** Lane A ĐÓNG (O✅/G✅/Giang✅, 2026-07-27, `d9b659a`).
+**Lane B (thiết kế `T??` thật) HOÃN VÔ THỜI HẠN** — G chốt: khi chưa có
+use-case thật đòi phân biệt "key không tồn tại" vs "giá trị lưu là null",
+thiết kế repr 3-trạng-thái là xây cầu khi chưa có sông.
+
+### §88A.1 — Recon lật khung: thân bài ADR này CHỈ phủ `get`-family
+
+Thân bài trên chỉ nói về `get`/`get_ref`. O recon 20 probe trên binary
+release (2026-07-27) đo ra bức tranh rộng hơn: **`T??` viết TRỰC TIẾP** (ngoài
+`get`-family) chưa từng được ai đo. Kết quả: **KHÔNG có UB** — mọi đường
+fail-closed — nhưng chẩn đoán VỠ: cùng một khái niệm `T??` đẻ ra **5 mã lỗi
+khác nhau**, trong đó:
+
+- 🔴 `struct S { v: Integer?? }` + match → **E1190** — mã **ICE**
+  ("please report this as a compiler bug") cho chương trình user hợp lệ cú
+  pháp. Vi phạm taxonomy ADR-0086 (E1190 dành riêng cho compiler bug).
+- ⚠️ local/param/return/`pop`/`pop_front`/`remove`/`!!` → message MIR verifier
+  nói *"heap-nullable… ADR-0065 §4 (B8) Struct?/Enum? Copy-only… [Fix 1]
+  Remove the heap field from the struct/enum"* — **sai hướng hoàn toàn**:
+  `Integer??` không có heap, không có struct. Vi phạm ADR-0027
+  machine-fixable.
+- ⚠️ `enum E { A(Integer??) }` → E1141 "đòi annotate" (sai nguyên nhân).
+- ⚠️ `Integer??~E` → E0001 parse (lexer `?~` compound token).
+
+**Cơ chế đang giữ trước Lane A:** `is_lowerable_nullable_payload`
+(`crates/triet-mir/src/lib.rs:1796`) là một **allow-list** (scalar / heap /
+Enum / Struct / Reference); `Nullable(_)` không có tên trong đó nên `T??` rơi
+ra ngoài → refuse **by default**. Đây là **may mắn cấu trúc**, không phải hàng
+rào chủ động — và **0 fixture nào canh giữ** (grep `??` trong dòng code của
+toàn bộ corpus = 0 hit). Ai thêm arm `Nullable` vào allow-list đó — chính là
+việc đầu tiên Lane B sẽ làm — thì 7 đường lọt xuống JIT cùng lúc, **câm, gate
+vẫn xanh**. Đây là hình dạng SPOF-một-lớp đã bịt ở WO-SPOF-1.
+
+### §88A.2 — HAI lớp nguồn sinh `T??` (lý do WO không thể "một điểm chạm")
+
+| Lớp | Nơi sinh `Nullable(Nullable(_))` | Phủ |
+|---|---|---|
+| **A — khai báo** | `resolve_type`, **HAI bản sao**: `check.rs:1365` + `check_resolved.rs:597` | local annotation · param · return · struct field · enum payload · `!!` trên local có annotation |
+| **B — suy diễn** | `check_call`, sau `return_type.substitute(&sub_map)` (`check/exprs.rs`) | `pop` / `pop_front` / `remove` trên container `<T?>` |
+
+`let x = pop(v)` **không có annotation nào** để đi qua `resolve_type` — shape
+chỉ tồn tại SAU substitution. Guard đặt ở Lớp A sẽ bỏ lọt trọn đường này.
+
+⚠️ **Bất biến khắc:** Lớp A có **2 bản sao** `resolve_type` — cùng hình dạng
+`is_fat_ret` 3-bản-sao (ADR-0065 §14.7). Ai đụng một bản PHẢI grep bản còn lại.
+
+**Vị trí Lớp B — D bác gợi ý `env.rs` của WO và ĐÚNG:** `env.rs:374/394/506`
+chỉ khai báo `pop`/`pop_front`/`remove` MỘT LẦN lúc khởi tạo env, với `T`/`V`
+còn là `TypeParameter` trừu tượng — nó không biết `T` sẽ bind ra gì tại từng
+call-site. `check_call` là chokepoint DUY NHẤT nơi shape thật sự tồn tại.
+Guard **không name-gate**: bất kỳ generic function nào return `Nullable(T)` và
+bind `T` ra nullable đều bị bắt như nhau (nhất quán với Lớp A).
+
+### §88A.3 — Lớp MIR = tầng 2, và nó SẼ thành "code ma" nếu không có unit test
+
+Sau khi Lớp A+B chặn ở typecheck, **không còn đường `.tri` nào chạm tầng MIR**.
+Message tại `triet-mir/src/lib.rs` được sửa để mô tả đúng nested-nullable
+(không còn mượn lời ADR-0065 heap/Struct?), và bắt buộc kèm **unit test riêng**
+`nested_nullable_refused_with_correct_message` truyền thẳng
+`MirType::Nullable(Nullable(Integer))` vào helper. Tiền lệ: N1/N3 ở ADR-0083
+PA-A — N1 chặn mọi đường fixture nên N3 phải có răng riêng.
+
+⚠️ **Bẫy sai-dương D tự phát hiện và tự sửa:** bản nháp message MIR có chứa
+chuỗi `"(E1055)"`; harness so bằng `.contains(code)` nên poison gỡ guard
+typecheck vẫn "xanh giả" (tầng MIR nổ, message tình cờ chứa "E1055"). D tự đào
+ra, bỏ chuỗi mã khỏi message runtime, chạy lại bằng harness thật. **Message
+runtime của tầng MIR KHÔNG được chứa chuỗi mã lỗi của tầng khác** — nếu không,
+mọi poison xuyên tầng đều vô hiệu hoá câm.
+
+### §88A.4 — ĐÍNH CHÍNH thân bài: `contains` KHÔNG "không bị chặn"
+
+Thân bài §Quyết định viết: *"Guard KHÔNG chặn `contains` (chỉ trả `Trilean!`
+found/not-found, không có double-nullable nào phát sinh)"* — **mô tả một hành
+vi không tồn tại**. Đo thật (`triet-driver run`, 2026-07-27):
+
+```
+contains(m, 1)  với  m : HashMap<Integer, Integer?>
+→ E1041 NoMatchingOverload
+   available overloads: (String, String) · (Vector<Integer>, Integer)
+   · (HashMap<Integer, Integer>, Integer) · (HashMap<String, Integer>, String) · …
+```
+
+`contains` **cũng không dùng được** với `V = Integer?` — nhưng vì overload
+table không khai báo `V` generic, chứ KHÔNG phải vì nó được cho qua. Không
+phải UB, không phải lỗ; là **nhãn tài liệu sai**. Ai đọc thân bài mà tưởng
+`contains` là workaround hợp lệ cho `HashMap<K,V?>` sẽ trượt.
+
+### §88A.5 — 9 răng cưa + giao thức verify 2 mũi poison
+
+Fixtures **511–519** (7 đường trần, item `pop`-family tách 3 ca):
+`511` local · `512` param · `513` return · `514` pop · `515` pop_front ·
+`516` remove · `517` struct field (**cấm E1190**) · `518` enum payload
+(**cấm E1141**) · `519` `!!`.
+
+**Giao thức verify BẮT BUỘC cho mọi thay đổi chạm hàng rào này** (G phê chuẩn
+sau khi O bác giao thức 1-mũi ban đầu của G — 1 mũi sẽ đẩy người verify vào
+bẫy "poison không đỏ" rồi buộc phải bịa mũi giả cho nổ):
+
+| Mũi | Poison | Kỳ vọng ĐÚNG |
+|---|---|---|
+| 1a | tắt guard Lớp A | **6** fixture đỏ: 511·512·513·517·518·519; 514·515·516 **xanh** |
+| 1b | tắt guard Lớp B | **3** fixture đỏ: 514·515·516; 6 fixture kia **xanh** |
+| 2 | nới allow-list MIR | **chỉ unit test MIR** đỏ; **0 fixture** đỏ |
+
+O verify độc lập 2026-07-27, đủ cả 3 mũi + đặc hiệu hai chiều (6+3=9, không
+lớp nào đội lốt lớp kia); dưới mũi 1a, `517`/`518` **lộ lại đúng ICE cũ**
+(`unsupported match pattern` / `requires an expected type`) ⇒ guard mới chính
+là thứ giết E1190/E1141. Răng chứng minh ở **tầng harness** (đổi `// ERROR:`
+của 514 sang `E9999` → ra dòng FAIL expected/got, luật 15). Khôi phục bằng
+`cp`-snapshot + md5 khớp, KHÔNG `git checkout`.
+
+**Control chống over-refuse (phải giữ nguyên mãi mãi):** struct `Integer?`
+MỘT tầng → `16` · `HashMap<K,Integer?>` insert-store → `5` · `?+>` flatMap
+175/212/213 xanh (`exprs.rs:361-364` giữ body nullable, **không bao giờ sinh
+`U??`**) · 465/466/467 **giữ E1051**, không bị E1055 cướp · 468 control dương.
+
+### §88A.6 — Ranh giới E-code (một E-code, một hợp đồng)
+
+- **E1051** — `get`/`get_ref` trên container có element/value nullable.
+  GIỮ NGUYÊN, Lane A không đụng.
+- **E1055** `NestedNullableUnsupported` — nested `T??` ở **mọi vị trí khác**
+  (khai báo + suy diễn). Mã mới, cấp tại `triet-typecheck/src/error.rs`.
+- Cấm gộp hai mã; cấm để E1055 cướp chỗ E1051.
+
+### Ngày hiệu lực §AMEND-1
+
+- Hiệu lực từ `d9b659a` (2026-07-27). Gate `0 · clean · 0 · 511 · 0 · CLEAN`
+  (fixtures 502 → 511).
+- Lane B mở lại **chỉ khi** có use-case thật + ADR thiết kế repr đồng bộ
+  AST/typecheck/MIR/JIT/match. Ngày đó, việc đầu tiên là nới allow-list MIR —
+  và 9 răng cưa trên sẽ nổ đỏ nếu Lane B chưa làm đủ. Đó chính là mục đích
+  chúng tồn tại.
