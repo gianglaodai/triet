@@ -1053,44 +1053,91 @@ pub enum TypeError {
         span: Span,
     },
 
-    /// E1054: `for x in m.drain()` where `m : HashMap<K, V>` — refused
-    /// fail-closed (ADR-0089 §AMEND `HashMap.drain()` §HM-drain.3), NOT folded
-    /// into the generic E1052 `NonRangeIterationUnsupported`. Originally a
-    /// blanket refuse (no shape opened at all: no Tuple lowering, no
-    /// enumerate-entry shim). WO-HashMap-Drain-PA2 (O✅/G✅/Giang✅
-    /// 2026-07-27) opened a FENCED shape — `for (k, v) in m.drain()` with a
-    /// `Pattern::Tuple` of exactly 2 children, `K ∈ {scalar, String}`,
-    /// `V ∈ {scalar, String, Vector, HashMap}` non-nullable — via a cursor
-    /// shim (`__triet_hashmap_drain_next`) + destructuring-only desugar
-    /// (`Tuple` still never exists as a MIR value; the lowerer destructures
-    /// the pattern straight into two owned locals). This code now fires only
-    /// for what's OUTSIDE that fence: a non-tuple-2 pattern, an aggregate
-    /// key, an aggregate value, or a nullable value. This is a distinct
-    /// semantic contract from plain `for x in m` (still E1052,
+    /// E1054: `for (k, v) in m.drain()` where `m : HashMap<K, V>` and `K` is
+    /// an aggregate (struct/enum) key — refused fail-closed (ADR-0089
+    /// §AMEND `HashMap.drain()` §HM-drain.3), NOT folded into the generic
+    /// E1052 `NonRangeIterationUnsupported`. Originally a blanket refuse (no
+    /// shape opened at all: no Tuple lowering, no enumerate-entry shim).
+    /// WO-HashMap-Drain-PA2 (O✅/G✅/Giang✅ 2026-07-27) opened a FENCED
+    /// shape — `for (k, v) in m.drain()` with a `Pattern::Tuple` of exactly
+    /// 2 children, `K ∈ {scalar, String}`, `V ∈ {scalar, String, Vector,
+    /// HashMap}` non-nullable — via a cursor shim
+    /// (`__triet_hashmap_drain_next`) + destructuring-only desugar (`Tuple`
+    /// still never exists as a MIR value; the lowerer destructures the
+    /// pattern straight into two owned locals). WO-Split-E1054-4-meanings
+    /// (O✅/G✅ 2026-07-27(c)) split the original 4-in-1 refuse into 3
+    /// independent single-axis codes — this code is now KEY-axis only; the
+    /// pattern axis moved to E1056 and the value axis to E1057. This is a
+    /// distinct semantic contract from plain `for x in m` (still E1052,
     /// `NonRangeIterationUnsupported` — unchanged) and from
     /// `Vector<T>.drain()` (E1053) — one E-code, one contract, no gluing
     /// unrelated refusals together.
-    #[error("E1054: `for` iteration over `HashMap<{key}, {value}>.drain()` is unsupported")]
+    #[error("E1054: `for` iteration over `HashMap<{key}, _>.drain()` is unsupported")]
     #[diagnostic(
         code(triet::typecheck::E1054),
         help(
-            "`HashMap<{key}, {value}>.drain()` is outside the supported shape: the \
-            loop pattern must be `(k, v)` (exactly 2 bindings), the key must be a \
-            scalar or `String`, and the value must be a non-nullable scalar, \
-            `String`, `Vector`, or `HashMap` — an aggregate key/value or a \
-            nullable value is not yet supported.\n\n\
-            [Fix] Change the loop pattern to `for (k, v) in m.drain()` with a body \
-            whose key/value shape is inside the supported set, or iterate over a known \
-            set of keys and call `remove(m, k)` for each one instead."
+            "`HashMap<{key}, _>.drain()` key type is outside the supported shape: \
+            the key must be a scalar or `String` — an aggregate (struct/enum) key \
+            is not yet supported.\n\n\
+            [Fix] Change the `HashMap`'s key type to a scalar or `String`, or \
+            iterate over a known set of keys and call `remove(m, k)` for each one \
+            instead."
         )
     )]
-    DrainHashMapUnsupported {
+    DrainHashMapKeyUnsupported {
         /// The `HashMap`'s key type (`K`).
         key: String,
+        /// Source location of the `.drain()` receiver expression.
+        #[label("`HashMap<{key}, _>` drain key shape is unsupported here")]
+        span: Span,
+    },
+
+    /// E1056: `for pattern in m.drain()` where `m : HashMap<K, V>` and
+    /// `pattern` is not a 2-tuple `(k, v)` — refused fail-closed (ADR-0089
+    /// §AMEND `HashMap.drain()`). Split off WO-Split-E1054-4-meanings
+    /// (O✅/G✅ 2026-07-27(c)) from the original 4-in-1 `DrainHashMapUnsupported`:
+    /// this is the PATTERN axis, independent of `K`/`V` — deliberately does
+    /// NOT name `key`/`value` in its message, since the pattern shape is
+    /// checked before the key/value shape and the type names would be
+    /// irrelevant noise for a pattern-shape mistake.
+    #[error("E1056: `HashMap.drain()` loop pattern must be a 2-tuple `(k, v)`")]
+    #[diagnostic(
+        code(triet::typecheck::E1056),
+        help(
+            "`HashMap.drain()` requires the loop pattern to destructure exactly 2 \
+            bindings — a key and a value.\n\n\
+            [Fix] Change the loop pattern to `(k, v)`, e.g. \
+            `for (k, v) in m.drain()`."
+        )
+    )]
+    DrainHashMapPatternUnsupported {
+        /// Source location of the loop pattern.
+        #[label("pattern must be `(k, v)` — exactly 2 bindings")]
+        span: Span,
+    },
+
+    /// E1057: `for (k, v) in m.drain()` where `m : HashMap<K, V>` and `V` is
+    /// nullable or an aggregate — refused fail-closed (ADR-0089 §AMEND
+    /// `HashMap.drain()` §HM-drain.3). Split off WO-Split-E1054-4-meanings
+    /// (O✅/G✅ 2026-07-27(c)) from the original 4-in-1
+    /// `DrainHashMapUnsupported`: this is the VALUE axis, independent of `K`.
+    #[error("E1057: `for` iteration over `HashMap<_, {value}>.drain()` is unsupported")]
+    #[diagnostic(
+        code(triet::typecheck::E1057),
+        help(
+            "`HashMap<_, {value}>.drain()` value type is outside the supported \
+            shape: the value must be a non-nullable scalar, `String`, `Vector`, \
+            or `HashMap` — a nullable or aggregate value is not yet supported.\n\n\
+            [Fix] Change the `HashMap`'s value type to a non-nullable scalar, \
+            `String`, `Vector`, or `HashMap`, or iterate over a known set of keys \
+            and call `remove(m, k)` for each one instead."
+        )
+    )]
+    DrainHashMapValueUnsupported {
         /// The `HashMap`'s value type (`V`).
         value: String,
         /// Source location of the `.drain()` receiver expression.
-        #[label("`HashMap<{key}, {value}>` drain shape is unsupported here")]
+        #[label("`HashMap<_, {value}>` drain value shape is unsupported here")]
         span: Span,
     },
 
@@ -1373,7 +1420,9 @@ impl TypeError {
             | Self::VectorElementByValueIterationUnsupported { span, .. }
             | Self::DrainNullableElementUnsupported { span, .. }
             | Self::DrainBorrowedReceiverUnsupported { span, .. }
-            | Self::DrainHashMapUnsupported { span, .. }
+            | Self::DrainHashMapKeyUnsupported { span, .. }
+            | Self::DrainHashMapPatternUnsupported { span }
+            | Self::DrainHashMapValueUnsupported { span, .. }
             | Self::NestedNullableUnsupported { span, .. }
             | Self::CapabilityLevelUnsupported { span, .. }
             | Self::CapabilityNotPossessable { span, .. }

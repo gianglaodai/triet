@@ -820,12 +820,13 @@ impl<'p> Checker<'p> {
                 //     same reason (nested-nullable/aggregate-move-out is a
                 //     separate concern, ADR-0088).
                 //
-                // Every shape outside the fence still raises the SAME
-                // `DrainHashMapUnsupported` (E1054) this arm already threw
-                // unconditionally before this WO — the fence only narrows
-                // WHICH calls hit it, it does not mint a second code for
-                // "some other HashMap-drain shape is unsupported" (that is
-                // already exactly what E1054 means, ADR-0089 §AMEND).
+                // Every shape outside the fence raises one of THREE
+                // independent single-axis codes (WO-Split-E1054-4-meanings,
+                // O✅/G✅ 2026-07-27(c)) — checked in cascade order
+                // pattern→key→value so each refuse names only the axis that
+                // actually failed, instead of one 4-in-1 code that always
+                // printed `HashMap<key,value>` even when the culprit was the
+                // loop pattern.
                 let pattern_is_tuple2 = matches!(
                     &self.arena.pattern(variable).node,
                     Pattern::Tuple(children) if children.len() == 2
@@ -835,15 +836,25 @@ impl<'p> Checker<'p> {
                     && (v.is_scalar()
                         || matches!(**v, Type::String | Type::Vector(_) | Type::HashMap(_, _)));
 
-                if pattern_is_tuple2 && key_ok && value_ok {
-                    Type::Tuple(vec![(**k).clone(), (**v).clone()])
-                } else {
-                    self.errors.push(TypeError::DrainHashMapUnsupported {
+                if !pattern_is_tuple2 {
+                    self.errors.push(TypeError::DrainHashMapPatternUnsupported {
+                        span: self.arena.pattern(variable).span.clone(),
+                    });
+                    Type::Unknown
+                } else if !key_ok {
+                    self.errors.push(TypeError::DrainHashMapKeyUnsupported {
                         key: k.to_string(),
+                        span: receiver_span,
+                    });
+                    Type::Unknown
+                } else if !value_ok {
+                    self.errors.push(TypeError::DrainHashMapValueUnsupported {
                         value: v.to_string(),
                         span: receiver_span,
                     });
                     Type::Unknown
+                } else {
+                    Type::Tuple(vec![(**k).clone(), (**v).clone()])
                 }
             } else {
                 // String/other receiver, or a non-Vector/non-HashMap type

@@ -1,4 +1,4 @@
-// ERROR: E1054
+// ERROR: E1056
 // WO-HashMap-Drain-PA2 (ADR-0089 §AMEND-2 §4): `for (a, b, c) in m.drain()`
 // — a Tuple pattern of 3 children, not exactly 2 — stays refused with the
 // same E1054.

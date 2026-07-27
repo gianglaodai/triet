@@ -1,4 +1,4 @@
-// ERROR: E1054
+// ERROR: E1056
 // WO-HashMap-Drain-PA2 (ADR-0089 §AMEND-2 §4): `for x in m.drain()` — a
 // bare-variable pattern, not `Pattern::Tuple` of exactly 2 — stays refused
 // with the SAME E1054 the whole HashMap-drain arm already used before this

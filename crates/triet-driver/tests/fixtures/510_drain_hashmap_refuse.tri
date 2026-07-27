@@ -1,4 +1,4 @@
-// ERROR: E1054
+// ERROR: E1056
 // ADR-0089 §AMEND HashMap.drain() §HM-drain.3: `for x in m.drain()` where
 // `m : HashMap<K, V>` must be refused with a DEDICATED code (E1054), not the
 // generic E1052 `NonRangeIterationUnsupported` that plain `for x in m`

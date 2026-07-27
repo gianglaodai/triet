@@ -848,3 +848,31 @@ lower = fail-closed cuối), cùng kiến trúc với ADR-0088 Lane A.
   bộ nhớ + mandate teeth heap-key×heap-value dedup con trỏ; bắt ghi quy ước
   sentinel `-1`; tạm chấp nhận E1054 4-nghĩa cho lát 1.
 - **Giang: ✅** — chốt hướng Tuple/HashMap.drain, ký phát lệnh thi công.
+
+## §AMEND-3 — Split E1054 4-nghĩa → E1056 (pattern) / E1054 (key) / E1057 (value)
+
+Trả nợ chẩn đoán ghi ở §HM2.6/§AMEND-2 ("tách mã E1054 4-nghĩa"). `E1054
+DrainHashMapUnsupported` nhồi 3 trục độc lập vào MỘT nhánh `if…else` — pattern
+không phải `(k,v)`, key aggregate, value nullable/aggregate — và LUÔN in
+`HashMap<{key}, {value}>` làm nguyên nhân kể cả khi thủ phạm là cú pháp
+pattern (fixture 527/528 sai lệch: message nói kiểu trong khi lỗi là hình
+pattern). Vi phạm ADR-0086 "một E-code, một hợp đồng".
+
+**Tách theo 3 trục, thứ tự cascade pattern→key→value:**
+
+| Mã | Variant | Trục | Fixture |
+|---|---|---|---|
+| **E1056** | `DrainHashMapPatternUnsupported` | loop pattern ≠ `(k, v)` 2-tuple — message KHÔNG in `key`/`value` | 527, 528 |
+| **E1054** | `DrainHashMapKeyUnsupported` (thu hẹp) | `K` aggregate — đích danh `key` | 529 |
+| **E1057** | `DrainHashMapValueUnsupported` | `V` nullable/aggregate — đích danh `value` | 530 |
+
+Cascade kiểm pattern trước (không phụ thuộc K/V), rồi key, rồi value — mỗi
+refuse chỉ nêu đúng trục đã fail, không còn noise từ 2 trục kia. `526` (drain
+ngoài `for`-guard) không đổi, vẫn E1015. `TypeError::error_span` cập nhật 3
+arm thay 1. Không đổi hành vi ACCEPT (fence lát 1 giữ nguyên); chỉ đổi
+diagnostic surface.
+
+### Chữ ký §AMEND-3
+
+- **O: ✅** — soạn WO 5-điểm-chạm, chốt bảng 3 mã + cascade order.
+- **G: ✅** — duyệt tách trục, xác nhận không mở rộng scope ACCEPT.

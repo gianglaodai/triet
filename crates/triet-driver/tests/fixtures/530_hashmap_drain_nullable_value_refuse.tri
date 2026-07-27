@@ -1,4 +1,4 @@
-// ERROR: E1054
+// ERROR: E1057
 // WO-HashMap-Drain-PA2 (ADR-0089 §AMEND-2 §4): `V = Integer?` (nullable
 // value) stays refused for `.drain()` — same nested-nullable/aggregate-
 // move-out family of concerns ADR-0088 already refuses elsewhere (E1055),
