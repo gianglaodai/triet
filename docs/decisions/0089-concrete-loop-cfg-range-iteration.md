@@ -591,6 +591,13 @@ O(N) cursor-drain perf. Đều giữ refuse hiện hành.
 
 ## §AMEND — HashMap.drain() Deferral (hai-bức-tường, fail-closed E1054)
 
+> ⚠️ **SUPERSEDED bởi §AMEND-2 (2026-07-27, `816a729`)** — `HashMap.drain()`
+> nay ĐÃ LAND qua PA-2 destructuring-only desugar. Bức tường "cần Tuple
+> lowering" dưới đây **được đi vòng, không phải bị phá** (`MirType::Tuple`
+> vẫn = 0). E1054 GIỮ nhưng đổi vai: chỉ còn refuse các hình ngoài fence
+> lát 1. Đọc §AMEND-2 để biết trạng thái hiện hành; phần dưới giữ nguyên
+> làm hồ sơ lý do defer tại thời điểm đó.
+
 Formalize dòng §2d.5 out-of-scope "HashMap.drain() (pháo đài riêng)". Giang mở
 campaign HashMap.drain() (2026-07-27); O recon-trước **BÁC nhãn backlog "mirror
 Vector.drain / bucket state-gate riêng"** — nhãn bỏ sót bức tường lớn hơn (Tuple).
@@ -687,3 +694,157 @@ String/other GIỮ NGUYÊN `NonRangeIterationUnsupported`. Không đụng lower/
   `0·clean·0·502·0`. [G — RUTHLESS COMPILER GATEKEEPER].
 - **Giang: ✅ KÝ DUYỆT PA-D (2026-07-27)** — defer sạch, cấm PA-B/C lossy, đòi
   ADR + E-code riêng + teeth fail-closed.
+
+---
+
+## §AMEND-2 — HashMap.drain() LANDED (PA-2 destructuring-only desugar)
+
+**Trạng thái:** ĐÓNG (O✅/G✅/Giang✅ 2026-07-27, `816a729`).
+**SUPERSEDE §AMEND HashMap.drain() Deferral** ở trên: bức tường "cần Tuple
+lowering" **KHÔNG còn chặn** — nó được đi vòng, không phải bị phá. E1054 vẫn
+sống nhưng đổi vai: từ *refuse toàn bộ* `.drain()` trên HashMap → chỉ còn
+refuse các **hình ngoài fence lát 1** (§HM2.5).
+
+### §HM2.1 — Vì sao KHÔNG làm Tuple hạng nhất (PA-1 bị BÁC)
+
+Nhãn defer cũ ghi bức tường #1 là *"yield `(K,V)` cần Tuple lowering mà Tuple
+0-hit lower/mir/jit"*. Recon đo lại giá thật của việc gỡ bức tường đó:
+
+- `MirType::` bị match tại **729 site** trong `triet-lower`/`triet-mir`/
+  `triet-jit` (riêng `mir_lower.rs` có 29 match exhaustive).
+- Thêm một variant `MirType::Tuple` = gieo lại đúng họ bug **"match exact,
+  QUÊN variant"** mà dự án vừa tốn trọn một chiến dịch để quét (§họ "quên
+  `Nullable`": 6 thành viên, **2 nằm bên trong chính lưới an toàn**).
+- Chạm **B-γ multi-value return** (defer vô thời hạn) và kề **B-β sub-8B
+  packing** (đã đạp chết).
+
+**Câu hỏi kiến trúc quyết định:** `for (k,v) in m.drain()` cần **hai biến
+trong thân vòng lặp**, KHÔNG cần một **giá trị tuple**. PA-1 xây một kiểu
+hạng nhất chỉ để lập tức phá nó ra làm hai — trả 729 site cho một trung gian
+không ai giữ lại. **G BÁC PA-1, chuẩn thuận PA-2.**
+
+### §HM2.2 — 🔒 BẤT BIẾN TỐI CAO: Zero-Tuple-ở-MIR
+
+> **Tuple SỐNG ở front, CHẾT tại lower.** `MirType` giữ nguyên 11 variant.
+
+Kiểm chứng thường trực (O verify 2026-07-27): `MirType::Tuple` = **0** trên
+toàn `triet-lower` + `triet-mir` + `triet-jit`.
+
+⚠️ **Cách kiểm SAI (đã ăn đòn):** `grep -c Tuple` trần **KHÔNG** phải tiêu chí
+— lowerer BẮT BUỘC phải match `triet_syntax::Pattern::Tuple` để destructure
+(`triet-lower/src/lib.rs:2036`), đó chính là thiết kế PA-2 chứ không phải vi
+phạm. O đặt tiêu chí proxy thô này vào WO và **D bác bằng số đo — D đúng**.
+Tiêu chí đúng duy nhất là **`MirType::Tuple` = 0**.
+
+### §HM2.3 — Ba điểm chạm
+
+1. **typecheck** `check.rs:829-845` — pattern là `Pattern::Tuple` **đúng 2**
+   children ∧ `key_ok` ∧ `value_ok` ⇒ trả `Type::Tuple([K,V])`, bind qua
+   `bind_pattern` (`check.rs:1097`, cơ chế có sẵn). Ngược lại ⇒ E1054.
+   `Type::Tuple` ở typecheck là HỢP LỆ — nó chết ở bước sau.
+2. **lower** `triet-lower/src/lib.rs:2031+` — destructure `Pattern::Tuple(2)`
+   thành **hai local riêng** `_key`/`_val`; CFG mirror drain-arm Slice 2b
+   (cursor local, `break`→ext, `continue`→hdr). Không giá trị tuple nào sinh ra.
+3. **JIT** `mir_lower.rs:7005+` — shim mới `__triet_hashmap_drain_next`.
+
+### §HM2.4 — Shim `__triet_hashmap_drain_next`: chuỗi 4 bước move-out
+
+Thân mirror `__triet_hashmap_remove` (`:6824`) từ nhánh `state == 1`. Mỗi
+entry drain PHẢI làm đủ, đúng thứ tự:
+
+1. surface KEY → `key_out_ptr`, VALUE → `val_out_ptr` (`copy_nonoverlapping`)
+2. **zero key-cell** (`write_bytes(key_ptr, 0, key_stride)`)
+3. **`state → 2`** (tombstone)
+4. **`len--`**
+
+rồi trả `idx + 1` làm cursor kế.
+
+**Vì sao chuỗi này đóng cả 3 tử huyệt bộ nhớ (G mandate) bằng MỘT cờ:**
+drop-glue **chỉ walk `state == 1`** (`mir_lower.rs:1940` free KEY, `:2038`
+free VALUE) ⇒ ① move-out sound (tombstone miễn nhiễm double-free) · ②
+break-mid: phần đã drain `state 2` (bỏ qua) + phần còn lại `state 1`
+(drop-glue dọn nốt) ⇒ không rỉ, không free hai lần · ③ container-survives:
+`len--` mỗi entry ⇒ drain trọn `len == 0`, re-insert hợp lệ.
+
+**Cursor O(N), KHÔNG rescan O(N²)** (D giải trình bằng số, G nghiêng cùng
+hướng): ca `cap=1000, len=10` → cursor chạm mỗi slot đúng 1 lần = **1000**
+lượt đọc state cho toàn bộ drain; rescan-từ-0 = **10 × 1000 = 10.000**. Tổng
+quát cursor `O(cap)` vs rescan `O(len × cap)`.
+
+**Sound-stop:** `while idx < cap` kiểm điều kiện TRƯỚC khi đọc byte nào ⇒
+`cap == 0` / cursor đã ≥ `cap` → trả sentinel ngay, không đọc ngoài header.
+Fixture 525 (map rỗng) là răng canh ca này.
+
+### §HM2.5 — 🔑 QUY ƯỚC SENTINEL: cursor dùng `-1`, KHÔNG phải `NULL_SENTINEL`
+
+**G bắt buộc ghi rõ để thế hệ sau không nhầm.** Hai sentinel cùng tồn tại
+trong codebase, **khác miền, khác khái niệm**:
+
+| Sentinel | Giá trị | Nghĩa | Dùng ở |
+|---|---|---|---|
+| `triet_mir::NULL_SENTINEL` | `i64::MIN` | **giá trị vắng mặt** (nullable PA-3c) | `T?`, pop/remove/get |
+| cursor-stop (mới) | `-1` | **hết slot để quét** | `__triet_hashmap_drain_next` |
+
+Miền hợp lệ của cursor luôn `>= 0` ⇒ `-1` không đụng dải hợp lệ. **KHÔNG tái
+dùng `NULL_SENTINEL` cho cursor** — trộn hai khái niệm là mời một lớp bug câm.
+
+### §HM2.6 — Fence lát 1 + ranh giới E1054
+
+**MỞ:** `K` ∈ {scalar, String} · `V` ∈ {scalar, String, Vector, HashMap}.
+**REFUSE (E1054):** pattern không phải `Pattern::Tuple` đúng 2 · tuple-3 ·
+aggregate key/value · `V = Nullable`.
+**`m.drain()` ngoài hàng rào `for`** → **E1015** (`no field or method named
+drain`) — giữ bất biến for-guard-ONLY, y hệt tiền lệ Vector (fixture 491).
+
+⚠️ **Nợ chẩn đoán ghi sổ (G tạm chấp nhận cho lát 1):** E1054 nay mang **4
+nghĩa**; với ca pattern-shape (527/528) message vẫn in `key`/`value` dù
+nguyên nhân là *hình pattern*, không phải kiểu. Một lát dọn sau có thể tách
+mã nếu muốn siết "một E-code, một hợp đồng".
+
+### §HM2.7 — Răng + giao thức 3 mũi poison (O verify độc lập, số đo thật)
+
+**11 fixture 520-530** · **`hashmap_drain_counting.rs`** (7 test, **dedup CON
+TRỎ**: assert cả `count == N` VÀ `dup == 0` — FREE-count đơn thuần mù trước
+double-free, vì 3 lần free có thể là 3 object HOẶC 2 object + 1 trùng).
+
+| Mũi | Poison | Đo được (O tự cắm) |
+|---|---|---|
+| **P1** | `state → 2` thành `1u8` | `drain_full` **9 vs 6** · `break_mid` **10 vs 8**, con trỏ lặp ⇒ **double-free thật** |
+| **P2** | bỏ `len--` | `drain_full_leaves_len_exactly_zero` **3 vs 0** |
+| **P3** | guard typecheck fail-**open** (`if true`) | 527·528·529·530 đỏ **+ fixture cũ 510 đỏ lây**; 520-525 **không** đỏ |
+
+⚔ **Bài học P2 — "không đỏ" phải phân định (a)/(b) bằng đường-chạm-được:**
+P2 **KHÔNG** làm đỏ corpus, vì vòng drain dừng theo `state` (qua cursor),
+KHÔNG theo `len`; re-insert vào `cap=4` cũng chưa chạm ngưỡng resize. Đây là
+**(b) test chưa đủ mạnh**, không phải (a) bất-khả-observable. **D báo trung
+thực rồi tự cắm thêm răng** `drain_full_leaves_len_exactly_zero` đọc thẳng
+`len(m)` — KHÔNG bịa mũi giả cho nổ để qua cửa.
+
+⚔ **Bài học P3 — "tháo guard" nghĩa là fail-OPEN, không phải fail-closed.**
+Mũi đầu D làm `if false &&` (siết chặt hơn) = sai hướng, không chứng minh gì;
+D tự phát hiện, sửa thành `if true ||` (chấp nhận bừa) rồi đo lại. Dưới
+poison đúng hướng, các hình refuse **không compile lọt** mà bị lowerer chặn
+bằng `LowerError` khác ⇒ **có defense-in-depth 2 lớp** (typecheck = mã đúng,
+lower = fail-closed cuối), cùng kiến trúc với ADR-0088 Lane A.
+
+### Ngày hiệu lực §AMEND-2
+
+- Hiệu lực từ `816a729` (2026-07-27). Gate `0 · clean · 0 · **522** · 0 ·
+  CLEAN` (511 → 522 file fixture; **522 là TỔNG SỐ FILE**, không phải số hiệu
+  cao nhất — số hiệu cao nhất là 530, corpus có gap lịch sử).
+- **Nợ mở:** aggregate key/value drain (move-out key aggregate = đường ABI
+  mới) · `V = Nullable` (chờ số đo; HashMap drain qua out-param KHÔNG bọc
+  `Nullable` nên về lý thuyết an toàn hơn `Vector<T?>`, nhưng **chưa đo** ⇒
+  giữ refuse) · tách mã E1054 4-nghĩa · `Tuple` hạng nhất (PA-1) vẫn **BỊ
+  BÁC**, chỉ mở lại khi có use-case multi-return thật.
+
+### Chữ ký §AMEND-2
+
+- **O: ✅** — recon lật khung (PA-1 729-site vs PA-2 zero-hit); verify độc lập
+  3 mũi poison + gate + `MirType::Tuple`=0; **tự nhận 2 tiêu chí sai bị D bác
+  bằng số đo** (`grep -c Tuple` proxy thô · "530 fixtures" nhầm số-hiệu với
+  tổng-số-file, trong khi chính O đã đo `ls | wc -l` = 511 cùng phiên).
+- **G: ✅** — BÁC PA-1 ("tự châm lửa đốt nhà mình"), duyệt PA-2; ra 3 tử huyệt
+  bộ nhớ + mandate teeth heap-key×heap-value dedup con trỏ; bắt ghi quy ước
+  sentinel `-1`; tạm chấp nhận E1054 4-nghĩa cho lát 1.
+- **Giang: ✅** — chốt hướng Tuple/HashMap.drain, ký phát lệnh thi công.
