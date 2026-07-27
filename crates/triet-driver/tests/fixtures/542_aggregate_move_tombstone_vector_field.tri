@@ -1,0 +1,19 @@
+// EXPECT: 7
+// WO-Aggregate-Move-Tombstone (542, O+G, 2026-07-27): #1 (widening let)
+// variant with a `Vector<Integer>` heap field instead of `String` — proves
+// the fix is not String-specific (`ctx_is_copy` + the JIT's existing
+// `tombstone_slot_leaves` both classify `Vector<_>` as a heap leaf the same
+// way as `String`). UNPATCHED: measured 134 (double-free), same mechanism
+// as 537. Oracle reads an ELEMENT back through the moved struct — proves
+// the Vector's contents survive, not just that the handle is non-null.
+struct Bag { items: Vector<Integer> }
+function main() -> Integer {
+    let mutable v: Vector<Integer> = vector_new();
+    v = push(v, 7);
+    let p = Bag { items: v };
+    let a: Bag? = p;
+    return match a {
+        ~+ b => get(b.items, 0) !!,
+        ~0 => 0,
+    };
+}

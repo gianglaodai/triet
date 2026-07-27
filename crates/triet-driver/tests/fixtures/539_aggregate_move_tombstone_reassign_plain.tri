@@ -1,0 +1,22 @@
+// EXPECT: 2
+// WO-Aggregate-Move-Tombstone (539, O+G, 2026-07-27): the LARGEST bomb of
+// the family — a completely ordinary reassignment, NO `?` anywhere in the
+// program. `a = p;` where BOTH `a` and `p` are plain (non-nullable) `Leaf`.
+// UNPATCHED (measured on `04cb5d3`): double-free (exit 134), identical
+// mechanism to 538. Oracle reads `a.s` AFTER the reassignment — proves the
+// NEW value survives (not the old one, not garbage).
+//
+// ⚠ KNOWN, MEASURED, NOT FIXED HERE (Câu 1(b), reported to O — G ruling:
+// drop-old-dest-before-overwrite is a separate semantics decision, not in
+// this WO's scope): the OLD `a` value ("aaa") is silently LEAKED — `a = p`
+// overwrites `a`'s slot without dropping what it held first. See
+// `crates/triet-driver/tests/aggregate_move_tombstone_counting.rs`'s
+// `reassign_plain_no_double_free_but_leaks_old_dest` for the pointer-dedup
+// proof (2 allocated, only 1 freed, 0 duplicates — leak, not double-free).
+struct Leaf { s: String }
+function main() -> Integer {
+    let mutable a = Leaf { s: "aaa" };
+    let p = Leaf { s: "hi" };
+    a = p;
+    return length(a.s);
+}

@@ -1,0 +1,18 @@
+// EXPECT: 2
+// WO-Aggregate-Move-Tombstone (541, O+G, 2026-07-27): #1 (widening let)
+// variant with a NESTED struct (`Outer{inner: Inner{s: String}}`) — proves
+// the fix's `Deinit(v)` correctly tombstones the source regardless of how
+// deep the heap leaf sits, because it reuses the SAME struct-walk
+// (`tombstone_slot_leaves`) as the pre-existing, proven `is_move_binding`
+// path (`let q = p;`), not a shallow one-word zero. UNPATCHED: measured 134
+// (double-free), same mechanism as 537.
+struct Inner { s: String }
+struct Outer { inner: Inner }
+function main() -> Integer {
+    let p = Outer { inner: Inner { s: "hi" } };
+    let a: Outer? = p;
+    return match a {
+        ~+ v => length(v.inner.s),
+        ~0 => 0,
+    };
+}

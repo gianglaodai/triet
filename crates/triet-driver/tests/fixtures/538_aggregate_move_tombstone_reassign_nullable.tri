@@ -1,0 +1,18 @@
+// EXPECT: 2
+// WO-Aggregate-Move-Tombstone (538, O+G, 2026-07-27): `a = p;` where
+// `a: Leaf?` and `p: Leaf` (plain, non-nullable). UNPATCHED (measured on
+// `04cb5d3`): `Stmt::Assignment`'s identifier arm emitted a bare
+// `Assign{dest: a, source: p}` with NO tombstone at all — `p` and `a` both
+// owned the same String allocation at scope-end Drop, double-free (exit
+// 134). Fix: emit `Deinit(p)` right after the Assign for non-Copy sources
+// (guarded against zeroing on true self-assignment `x = x`).
+struct Leaf { s: String }
+function main() -> Integer {
+    let mutable a: Leaf? = ~0;
+    let p = Leaf { s: "hi" };
+    a = p;
+    return match a {
+        ~+ v => length(v.s),
+        ~0 => 0,
+    };
+}

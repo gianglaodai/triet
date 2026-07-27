@@ -1,0 +1,21 @@
+// EXPECT: 2
+// WO-Aggregate-Move-Tombstone (537, O+G, 2026-07-27): widening
+// `let a: Leaf? = p;` moves a heap-bearing struct into a fresh
+// Nullable(Struct) local. UNPATCHED (measured on `04cb5d3`): the widening
+// Assign (`crates/triet-lower/src/lib.rs`'s `is_struct_widening` branch)
+// byte-copied Leaf's String pointer into the new local WITHOUT tombstoning
+// the source `p` — both `p` and `a` ended up in `owned_locals`, so both got
+// a scope-end Drop, double-freeing the same String allocation:
+// `free(): double free detected in tcache 2` (exit 134). Fix: emit
+// `Deinit(p)` right after the widening Assign for non-Copy sources.
+// Oracle reads THROUGH the moved value (length of the field), not just
+// exit 0 — proves the data survives intact, not just "didn't crash".
+struct Leaf { s: String }
+function main() -> Integer {
+    let p = Leaf { s: "hi" };
+    let a: Leaf? = p;
+    return match a {
+        ~+ v => length(v.s),
+        ~0 => 0,
+    };
+}

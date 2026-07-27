@@ -2247,6 +2247,18 @@ fn lower_stmt(stmt: &Stmt, stmt_span: Span, arena: &Arena, c: &mut Ctx) -> Resul
                             source: Place::local(v),
                             span: stmt_span.clone(),
                         });
+                        // WO-Aggregate-Move-Tombstone (G ruling, 2026-07-27):
+                        // this Assign byte-copies v's heap pointers into
+                        // new_local's fresh slot — two owners of the same
+                        // allocation until v is tombstoned. Mirrors the
+                        // is_move_binding pattern below (Assign + Deinit,
+                        // same statement, same block). Only for non-Copy v —
+                        // Copy structs (e.g. fixtures 231/234/235/237 Pt{x,y})
+                        // must stay readable after widening.
+                        let v_ty = c.local_decls[v.0].ty.clone();
+                        if !ctx_is_copy(&v_ty, c) {
+                            c.push(Statement::Deinit(v, stmt_span.clone()));
+                        }
                         c.vars.insert(name.clone(), new_local);
                         c.local_names.insert(new_local, name.clone());
                         c.push_owned(new_local);
@@ -2379,6 +2391,23 @@ fn lower_stmt(stmt: &Stmt, stmt_span: Span, arena: &Arena, c: &mut Ctx) -> Resul
                         // Keep the var map pointing to orig — the Assign
                         // updated it in-place, and the loop header reads
                         // from the same local.
+                        //
+                        // WO-Aggregate-Move-Tombstone (G ruling, 2026-07-27):
+                        // `v` (the RHS) byte-copied its heap pointers into
+                        // `orig`'s slot — both locals now alias the same
+                        // allocation. `v` stays in owned_locals from its own
+                        // binding site, so its scope-end Drop double-frees
+                        // unless tombstoned here. Skip when v == orig (self-
+                        // assignment `a = a` — Deinit would zero the only
+                        // live copy) and skip for Copy types (no aliasing
+                        // hazard, and zeroing would corrupt a still-readable
+                        // value).
+                        if v != orig {
+                            let v_ty = c.local_decls[v.0].ty.clone();
+                            if !ctx_is_copy(&v_ty, c) {
+                                c.push(Statement::Deinit(v, stmt_span.clone()));
+                            }
+                        }
                     } else {
                         // Variable not yet defined — shouldn't happen after
                         // typecheck, but treat as a new binding.
@@ -2393,6 +2422,29 @@ fn lower_stmt(stmt: &Stmt, stmt_span: Span, arena: &Arena, c: &mut Ctx) -> Resul
                         source: Place::local(v),
                         span: stmt_span.clone(),
                     });
+                    // WO-Aggregate-Move-Tombstone: same hazard as the
+                    // identifier arm above — `v` moved into a field/index
+                    // place, but stays in owned_locals if it was itself a
+                    // named binding (e.g. `s.field = y`). Tombstone non-Copy
+                    // sources. If `v` is a fresh unowned temp (e.g.
+                    // `s.field = Leaf{...}`), this Deinit is inert — nobody
+                    // Drops an unowned local.
+                    //
+                    // VERIFIED UNREACHABLE today (refuse-over-guess probe,
+                    // 2026-07-27(f)): `crates/triet-parser/src/stmt.rs:292`
+                    // accepts ONLY `Expr::Identifier` as an assignment
+                    // target — any other target (field/index) is rejected
+                    // at parse time (E0007) and never reaches the lowerer.
+                    // A temporary `panic!()` inserted in this `_ =>` arm was
+                    // not hit by `cargo test --workspace` (all crates).
+                    // Kept for arm-agnostic symmetry with the G ruling and
+                    // in case the parser restriction is ever lifted — but
+                    // this specific Deinit is UNTESTED and untestable via
+                    // real `.tri` source today.
+                    let v_ty = c.local_decls[v.0].ty.clone();
+                    if !ctx_is_copy(&v_ty, c) {
+                        c.push(Statement::Deinit(v, stmt_span.clone()));
+                    }
                 }
             }
         }
