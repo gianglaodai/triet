@@ -1,0 +1,18 @@
+// EXPECT: 6
+// WO-HashMap-Drain-PA2 (ADR-0089 §AMEND-2): `for (k, v) in m.drain()` on a
+// `HashMap<String, String>` drains every entry via the cursor shim
+// (__triet_hashmap_drain_next). Full drain sums the LENGTH of every value
+// string ("aa"+"bb"+"cc" = 2+2+2 = 6) — a tobstone-broken drain would
+// either double-count (double-free/garbage re-read) or under-count (skip
+// an entry), both of which change this total.
+function main() -> Integer {
+    let mutable m: HashMap<String, String> = hashmap_new();
+    m = insert(m, "a", "aa");
+    m = insert(m, "b", "bb");
+    m = insert(m, "c", "cc");
+    let mutable total = 0;
+    for (k, v) in m.drain() {
+        total = total + length(v);
+    }
+    return total;
+}

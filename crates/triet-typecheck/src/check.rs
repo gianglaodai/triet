@@ -735,6 +735,14 @@ impl<'p> Checker<'p> {
     /// 2. An inline `Expr::Range` literal (Slice 1).
     /// 3. A `Vector<T>` with a Copy element (Slice 2a).
     /// 4. Anything else → E1052 (deferred trait-based iteration).
+    // WO-HashMap-Drain-PA2 (2026-07-27) added the `HashMap<K, V>` fence
+    // check (ADR-0089 §AMEND-2 §4: pattern-shape + K/V-shape guard) to the
+    // existing HashMap arm, pushing this over clippy's 100-line default —
+    // the added lines are the fence itself (3 boolean conditions + doc),
+    // not accidental bloat; splitting the fence into a helper would only
+    // move the length, not reduce it, since the fence needs `k`/`v`/
+    // `variable`/`receiver_span` all in scope together.
+    #[allow(clippy::too_many_lines)]
     fn check_for_stmt(&mut self, variable: PatternId, iterable: ExprId, body: ExprId) {
         let drain_receiver: Option<ExprId> = match &self.arena.expression(iterable).node {
             Expr::MethodCall {
@@ -793,18 +801,50 @@ impl<'p> Checker<'p> {
                     (**inner).clone()
                 }
             } else if let Type::HashMap(k, v) = &receiver_ty {
-                // ADR-0089 §AMEND HashMap.drain() §HM-drain.3: refuse with a
-                // DEDICATED code (E1054), not the generic E1052 — draining a
-                // HashMap has its own semantic contract (yields `(K, V)`
-                // pairs) and its own two walls (no Tuple lowering, no
-                // enumerate-entry shim), distinct from plain `for x in m`
-                // (still E1052 below) and from `Vector<T>.drain()` (E1053).
-                self.errors.push(TypeError::DrainHashMapUnsupported {
-                    key: k.to_string(),
-                    value: v.to_string(),
-                    span: receiver_span,
-                });
-                Type::Unknown
+                // WO-HashMap-Drain-PA2 (PA-2 Destructuring-Only Desugar,
+                // O✅/G✅/Giang✅ 2026-07-27): opens `for (k, v) in
+                // m.drain()` for a FENCED K/V shape — NOT a general Tuple
+                // feature (§1 bất biến: no `MirType::Tuple` anywhere in the
+                // backend; `Type::Tuple` stays a FRONTEND-only shape that
+                // dies at lower via destructuring, exactly like a
+                // multi-binding `let` would).
+                //
+                // Fence (ADR-0089 §AMEND-2 §4, measured, not guessed):
+                //   - pattern MUST be `Pattern::Tuple` with exactly 2
+                //     children (`for (k, v) in …`) — anything else (bare
+                //     `for x in`, `for (a,b,c) in`) stays refused.
+                //   - K ∈ {scalar, String} — an aggregate key is a NEW
+                //     move-out-key ABI question this WO does not open.
+                //   - V ∈ {scalar, String, Vector, HashMap}, NON-nullable —
+                //     an aggregate value or `V = T?` stays refused for the
+                //     same reason (nested-nullable/aggregate-move-out is a
+                //     separate concern, ADR-0088).
+                //
+                // Every shape outside the fence still raises the SAME
+                // `DrainHashMapUnsupported` (E1054) this arm already threw
+                // unconditionally before this WO — the fence only narrows
+                // WHICH calls hit it, it does not mint a second code for
+                // "some other HashMap-drain shape is unsupported" (that is
+                // already exactly what E1054 means, ADR-0089 §AMEND).
+                let pattern_is_tuple2 = matches!(
+                    &self.arena.pattern(variable).node,
+                    Pattern::Tuple(children) if children.len() == 2
+                );
+                let key_ok = k.is_scalar() || matches!(**k, Type::String);
+                let value_ok = !matches!(**v, Type::Nullable(_))
+                    && (v.is_scalar()
+                        || matches!(**v, Type::String | Type::Vector(_) | Type::HashMap(_, _)));
+
+                if pattern_is_tuple2 && key_ok && value_ok {
+                    Type::Tuple(vec![(**k).clone(), (**v).clone()])
+                } else {
+                    self.errors.push(TypeError::DrainHashMapUnsupported {
+                        key: k.to_string(),
+                        value: v.to_string(),
+                        span: receiver_span,
+                    });
+                    Type::Unknown
+                }
             } else {
                 // String/other receiver, or a non-Vector/non-HashMap type
                 // that happens to have a `.drain()`-shaped call — deferred

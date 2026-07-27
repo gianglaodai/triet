@@ -1,0 +1,25 @@
+// EXPECT: 2
+// WO-HashMap-Drain-PA2 (ADR-0089 §AMEND-2) — break-mid hygiene (G mandate
+// tử huyệt #2): drain 4 entries, `break` after the 2nd. The already-drained
+// entries are tombstoned (state=2, drop-glue skips them); the un-drained
+// survivors are still state=1 and get cleaned up by the map's own
+// end-of-scope Drop. Count is order-independent (every value is the SAME
+// scalar 1, so the sum equals the number of entries actually processed
+// before `break` regardless of which 2 of the 4 the hash probe visits
+// first) — this isolates the break-mid PATH from any hash-order
+// assumption.
+function main() -> Integer {
+    let mutable m: HashMap<Integer, Integer> = hashmap_new();
+    m = insert(m, 1, 1);
+    m = insert(m, 2, 1);
+    m = insert(m, 3, 1);
+    m = insert(m, 4, 1);
+    let mutable count = 0;
+    for (k, v) in m.drain() {
+        count = count + v;
+        if count == 2 {
+            break;
+        }
+    }
+    return count;
+}

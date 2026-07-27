@@ -21,8 +21,8 @@ use triet_mir::{
 };
 use triet_syntax::{
     Arena, BinaryOperator, CapabilityLevel, Expr, ExprId, FunctionBody, FunctionDefinition, Item,
-    MethodResolutions, PatternResolutions, Program, ReferenceForm, Stmt, TypeExpr, TypeId,
-    UnaryOperator,
+    MethodResolutions, PatternId, PatternResolutions, Program, ReferenceForm, Stmt, TypeExpr,
+    TypeId, UnaryOperator,
 };
 
 // ── Lowering error ───────────────────────────────────────────
@@ -1978,6 +1978,204 @@ fn is_null_expr(expr: &Expr) -> bool {
         )
 }
 
+/// WO-HashMap-Drain-PA2 (ADR-0089 §AMEND-2, PA-2 Destructuring-Only Desugar,
+/// O✅/G✅/Giang✅ 2026-07-27): lower `for (k, v) in m.drain()` where `m` is
+/// an OWNED `HashMap<K, V>`.
+///
+/// §1 bất biến (non-negotiable): NO `Tuple` value ever exists at this layer
+/// or below — `Pattern::Tuple` is a FRONTEND shape that dies HERE via
+/// destructuring into two independently-typed owned locals, exactly like a
+/// multi-binding `let (a, b) = ...` would. `MirType` gains no new variant.
+///
+/// CFG mirrors the existing `Vector<T>.drain()` desugar (`hdr`/`bdy`/`ext`,
+/// present-test via a sentinel compare) but with a CURSOR instead of a
+/// Nullable-payload present/absent test: `__triet_hashmap_drain_next(map,
+/// cursor, key_out, val_out) -> next_cursor` scans forward for the next
+/// occupied slot, surfaces K/V into `key_local`/`val_local` via out-pointers
+/// (`triet-jit/src/mir_lower.rs`'s marshal — `dest[1]`/`dest[2]`), tombstones
+/// the slot, and returns `-1` on exhaustion. `cursor_local` is read AND
+/// written by the same call (`args[1]` reads the current position,
+/// `dest[0]` writes the next one) — the same "loop induction variable"
+/// idiom as a `while` counter, not a Tuple-shaped return.
+#[allow(clippy::too_many_arguments)]
+fn lower_hashmap_drain_for(
+    k_ty: MirType,
+    v_ty: MirType,
+    iter_local: Local,
+    variable: PatternId,
+    loop_body: ExprId,
+    stmt: &Stmt,
+    stmt_span: Span,
+    arena: &Arena,
+    c: &mut Ctx,
+) -> Result<(), LowerError> {
+    // Defense-in-depth mirror of typecheck's ADR-0089 §AMEND-2 §4 fence —
+    // never assume the upstream guard ran. K ∈ {scalar, String}; V ∈
+    // {scalar, String, Vector, HashMap} non-nullable.
+    let key_ok = matches!(
+        k_ty,
+        MirType::Trit | MirType::Tryte | MirType::Integer | MirType::Long | MirType::Trilean
+    ) || matches!(k_ty, MirType::String);
+    let value_ok = !matches!(v_ty, MirType::Nullable(_))
+        && (matches!(
+            v_ty,
+            MirType::Trit | MirType::Tryte | MirType::Integer | MirType::Long | MirType::Trilean
+        ) || matches!(
+            v_ty,
+            MirType::String | MirType::Vector(_) | MirType::HashMap(_, _)
+        ));
+    if !key_ok || !value_ok {
+        return Err(LowerError::unsupported_stmt(stmt, stmt_span));
+    }
+
+    // Pattern MUST be `Pattern::Tuple` of exactly 2 children (typecheck's
+    // fence) — re-checked defensively. Each child must be a plain binding
+    // or wildcard (same shape Vector-drain already accepts for its single
+    // loop variable).
+    let (key_pat, val_pat) = match &arena.pattern(variable).node {
+        triet_syntax::Pattern::Tuple(children) if children.len() == 2 => (children[0], children[1]),
+        _ => return Err(LowerError::unsupported_stmt(stmt, stmt_span)),
+    };
+
+    // `iter_local` is the map handle — heap-owning, needs Drop at scope
+    // exit exactly once (named local: no-op dedup; rvalue temp: first
+    // registration), mirroring the `§2a.3.1` idiom Vector-drain documents
+    // (there it rides in via `emit_shim_call`'s automatic `push_owned` on
+    // an unconsumed arg; this call is hand-built, so it's done explicitly
+    // here instead).
+    c.push_owned(iter_local);
+
+    // Persistent cursor — starts at 0, read AND written by every `hdr`
+    // visit (`args[1]` in, `dest[0]` out — same local both times).
+    let cursor_local = c.alloc_local_ty(MirType::Integer);
+    c.push(Statement::StorageLive(cursor_local, stmt_span.clone()));
+    c.push(Statement::Const {
+        dest: Place::local(cursor_local),
+        value: ConstValue::Integer(0),
+        span: stmt_span.clone(),
+    });
+
+    let hdr = c.alloc_bb();
+    let bdy = c.alloc_bb();
+    let ext = c.alloc_bb();
+
+    let cur = c.cur;
+    c.term(
+        cur,
+        Terminator::Goto {
+            target: hdr,
+            span: DUMMY_SPAN,
+        },
+    );
+
+    // hdr: key_local/val_local/cursor_local <- drain_next(map, cursor).
+    // Allocated ONCE at lowering time (this block is visited once here,
+    // looped at RUNTIME via the back-edge from `bdy`) — same "loop slot
+    // reuse" pattern already proven sound for Vector-drain's `opt_local`
+    // (every successful call fully overwrites key_local/val_local before
+    // `bdy` ever reads them; the exhausted/-1 path never enters `bdy` at
+    // all, so there is no stale-slot read to guard against).
+    c.cur = hdr;
+    let key_local = c.alloc_local_ty(k_ty.clone());
+    c.push(Statement::StorageLive(key_local, stmt_span.clone()));
+    let val_local = c.alloc_local_ty(v_ty.clone());
+    c.push(Statement::StorageLive(val_local, stmt_span.clone()));
+
+    let ret_bb = c.alloc_bb();
+    let call_bb = c.cur;
+    c.term(
+        call_bb,
+        Terminator::CallDispatch {
+            callee: triet_mir::FunctionId(0),
+            callee_name: "__triet_hashmap_drain_next".into(),
+            target: CallTarget::Shim,
+            args: vec![iter_local, cursor_local],
+            return_bb: ret_bb,
+            dest: vec![cursor_local, key_local, val_local],
+            return_shape: triet_mir::ReturnShape::Scalar,
+            span: stmt_span.clone(),
+        },
+    );
+    c.cur = ret_bb;
+
+    // <present-test>: cursor_local == -1 (done sentinel) ⇒ ext; else bdy.
+    // Hand-built rather than via a synthetic `Expr::Match` for the same
+    // reason Vector-drain's own present-test is hand-built: a `~0 => break`
+    // arm body would need to be an `ExprId`, but `break` is a `Stmt`.
+    let sentinel = c.alloc_local();
+    c.push(Statement::StorageLive(sentinel, stmt_span.clone()));
+    c.push(Statement::Const {
+        dest: Place::local(sentinel),
+        value: ConstValue::Integer(-1),
+        span: stmt_span.clone(),
+    });
+    let cmp = c.alloc_local();
+    c.push(Statement::StorageLive(cmp, stmt_span.clone()));
+    c.push(Statement::BinaryOp {
+        dest: Place::local(cmp),
+        op: BinOp::Eq,
+        left: Place::local(cursor_local),
+        right: Place::local(sentinel),
+        span: stmt_span.clone(),
+    });
+    let hdr_end = c.cur;
+    c.term(
+        hdr_end,
+        Terminator::If {
+            cond: cmp,
+            positive_bb: ext, // done (-1) → loop finished
+            zero_bb: None,
+            negative_bb: bdy, // found → process this entry
+            span: stmt_span.clone(),
+        },
+    );
+
+    // bdy: destructure (key_local, val_local) into the pattern's bindings,
+    // run the loop body, loop back to hdr. break→ext, continue→hdr.
+    c.cur = bdy;
+    c.push_scope();
+    let drop_snapshot = c.owned_locals.len();
+
+    match &arena.pattern(key_pat).node {
+        triet_syntax::Pattern::Variable(name) => {
+            c.vars.insert(name.clone(), key_local);
+            c.local_names.insert(key_local, name.clone());
+        }
+        triet_syntax::Pattern::Wildcard => {}
+        _ => return Err(LowerError::unsupported_stmt(stmt, stmt_span)),
+    }
+    c.push_owned(key_local);
+    match &arena.pattern(val_pat).node {
+        triet_syntax::Pattern::Variable(name) => {
+            c.vars.insert(name.clone(), val_local);
+            c.local_names.insert(val_local, name.clone());
+        }
+        triet_syntax::Pattern::Wildcard => {}
+        _ => return Err(LowerError::unsupported_stmt(stmt, stmt_span)),
+    }
+    c.push_owned(val_local);
+
+    c.loop_stack.push(LoopContext {
+        break_bb: ext,
+        continue_bb: hdr,
+        drop_snapshot,
+    });
+    lower_block(loop_body, arena, c)?;
+    c.loop_stack.pop();
+    c.pop_scope();
+    let bdy_end = c.cur;
+    c.term(
+        bdy_end,
+        Terminator::Goto {
+            target: hdr,
+            span: DUMMY_SPAN,
+        },
+    );
+
+    c.cur = ext;
+    Ok(())
+}
+
 // ── Statement lowering ──────────────────────────────────────
 
 fn lower_stmt(stmt: &Stmt, stmt_span: Span, arena: &Arena, c: &mut Ctx) -> Result<(), LowerError> {
@@ -2357,6 +2555,32 @@ fn lower_stmt(stmt: &Stmt, stmt_span: Span, arena: &Arena, c: &mut Ctx) -> Resul
                 // temp for the first time (drops exactly once at the
                 // enclosing scope's exit either way).
                 let iter_local = lower_expr(receiver_id, None, arena, c)?;
+                let receiver_ty_probe = c.local_decls[iter_local.0].ty.clone();
+
+                // WO-HashMap-Drain-PA2 (ADR-0089 §AMEND-2, O✅/G✅/Giang✅
+                // 2026-07-27): `for (k, v) in m.drain()` on an OWNED
+                // `HashMap<K, V>` — checked BEFORE the Vector-only `inner`
+                // match below (a bare HashMap receiver would otherwise fall
+                // into that match's defensive `_ => Err` arm). Reference-
+                // receiver HashMap drain (`&0 mutable HashMap`) is OUT OF
+                // SCOPE here — typecheck's `Type::HashMap` arm in
+                // `check_for_stmt` only ever computes a non-Unknown
+                // `element_ty` for a bare, non-`Reference` receiver, so a
+                // borrowed HashMap receiver never reaches this branch with
+                // a fenced shape anyway.
+                if let MirType::HashMap(k_ty, v_ty) = &receiver_ty_probe {
+                    return lower_hashmap_drain_for(
+                        (**k_ty).clone(),
+                        (**v_ty).clone(),
+                        iter_local,
+                        *variable,
+                        *body,
+                        stmt,
+                        stmt_span,
+                        arena,
+                        c,
+                    );
+                }
 
                 // ADR-0089 §AMEND Slice 2d §2d.4.2: accept EITHER an owned
                 // `Vector<T>` (Slice 2b, unchanged) OR a
@@ -2369,7 +2593,7 @@ fn lower_stmt(stmt: &Stmt, stmt_span: Span, arena: &Arena, c: &mut Ctx) -> Resul
                 // input). The reference-value IS the same buffer-pointer
                 // handle the owner holds (§2d.2) — `iter_local` itself
                 // needs no unwrap/deref, only its static element type does.
-                let receiver_ty = c.local_decls[iter_local.0].ty.clone();
+                let receiver_ty = receiver_ty_probe;
                 let inner = match receiver_ty {
                     MirType::Vector(elem) => *elem,
                     MirType::Reference {

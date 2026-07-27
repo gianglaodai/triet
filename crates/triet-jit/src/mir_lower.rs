@@ -4033,7 +4033,57 @@ impl JitContext {
                             cranelift_codegen::ir::Value,
                         )> = None;
                         let mut remove_key_free_ptr: Option<cranelift_codegen::ir::Value> = None;
-                        let arg_vals: Vec<_> = if concat_sret {
+                        // WO-HashMap-Drain-PA2: `drain_next`'s K/V out-params
+                        // (`dest[1]`/`dest[2]`) are ALWAYS surfaced by-pointer
+                        // (unlike `remove`'s stride-conditional register/out_ptr
+                        // split — the return register here is the cursor, so
+                        // there is no "thin scalar via register" path at all).
+                        // A String dest already has a pre-allocated struct_slot
+                        // (every String-typed local gets one, :2427-2452) — the
+                        // shim memcpy's straight into it, nothing further to
+                        // bind. A scalar/handle dest (Integer, or a Vector/
+                        // HashMap pointer — never Struct/Enum, the aggregate
+                        // fence keeps them out) has NO slot — these two scratch
+                        // StackSlots hold the shim's out-write until the
+                        // post-call bind loads them back into the Cranelift
+                        // Variable.
+                        let mut drain_key_scratch: Option<cranelift_codegen::ir::StackSlot> = None;
+                        let mut drain_val_scratch: Option<cranelift_codegen::ir::StackSlot> = None;
+                        let arg_vals: Vec<_> = if callee_name == "__triet_hashmap_drain_next" {
+                            if dest.len() < 3 {
+                                return Err(JitError::Unsupported(
+                                    "hashmap_drain_next: expected dest = [cursor, key, value]"
+                                        .into(),
+                                ));
+                            }
+                            let map_val = builder.use_var(self.var(args[0]));
+                            let cursor_val = builder.use_var(self.var(args[1]));
+                            let key_out_ptr =
+                                if let Some((slot, _)) = self.struct_slots.get(&dest[1]) {
+                                    builder.ins().stack_addr(I64, *slot, 0)
+                                } else {
+                                    let slot = builder.create_sized_stack_slot(StackSlotData::new(
+                                        StackSlotKind::ExplicitSlot,
+                                        8,
+                                        3u8, // log2(8)
+                                    ));
+                                    drain_key_scratch = Some(slot);
+                                    builder.ins().stack_addr(I64, slot, 0)
+                                };
+                            let val_out_ptr =
+                                if let Some((slot, _)) = self.struct_slots.get(&dest[2]) {
+                                    builder.ins().stack_addr(I64, *slot, 0)
+                                } else {
+                                    let slot = builder.create_sized_stack_slot(StackSlotData::new(
+                                        StackSlotKind::ExplicitSlot,
+                                        8,
+                                        3u8, // log2(8)
+                                    ));
+                                    drain_val_scratch = Some(slot);
+                                    builder.ins().stack_addr(I64, slot, 0)
+                                };
+                            vec![map_val, cursor_val, key_out_ptr, val_out_ptr]
+                        } else if concat_sret {
                             // C6: concat receives dest_slot as first arg (callee-fill via *mut FatStr).
                             // Followed by bung-field source args {a_ptr, a_len, b_ptr, b_len}.
                             let mut vals = Vec::with_capacity(1 + args.len() * 2);
@@ -4597,7 +4647,30 @@ impl JitContext {
                         // 1-return shims. Check has_return via BuiltinShimMeta existence
                         // (all registered shims with a return value are in the meta table).
                         // C6: concat returns void (callee writes dest slot via *mut FatStr).
-                        if vector_get_copy_fat || hashmap_get_copy_fat {
+                        if callee_name == "__triet_hashmap_drain_next" {
+                            // dest[0] = next_cursor — the ORDINARY i64 return
+                            // register (this shim's only register return; K/V
+                            // never travel through it, unlike `remove`'s
+                            // stride-conditional register/out_ptr split).
+                            let ret_val = nth_call_result(builder, call_inst, 0, 1, callee_name)?;
+                            builder.def_var(self.var(dest[0]), ret_val);
+                            // dest[1]/dest[2] = key/value. A String dest was
+                            // ALREADY populated in-place by the shim's memcpy
+                            // through its own struct_slot address (no scratch
+                            // was allocated for it, `drain_*_scratch` stays
+                            // `None`) — nothing further to bind, the slot IS
+                            // the local's storage, same as every other String
+                            // local. A scalar/handle dest's scratch write must
+                            // be loaded back into the Cranelift Variable.
+                            if let Some(slot) = drain_key_scratch {
+                                let word = builder.ins().stack_load(I64, slot, 0);
+                                builder.def_var(self.var(dest[1]), word);
+                            }
+                            if let Some(slot) = drain_val_scratch {
+                                let word = builder.ins().stack_load(I64, slot, 0);
+                                builder.def_var(self.var(dest[2]), word);
+                            }
+                        } else if vector_get_copy_fat || hashmap_get_copy_fat {
                             // ADR-0082 §AMEND-3: NON-destructive get-by-value
                             // copy-out, FAT case only (stride > 8 — see the
                             // `get_copy_elem_stride` comment above for why the
@@ -6882,6 +6955,89 @@ pub extern "C" fn __triet_hashmap_remove(map: i64, k: i64, out_ptr: i64, key_out
         }
         probe = (probe + 1) % cap;
     }
+}
+
+/// WO-HashMap-Drain-PA2 (ADR-0089 §AMEND-2, PA-2 Destructuring-Only Desugar,
+/// O✅/G✅/Giang✅ 2026-07-27): `for (k, v) in m.drain()` cursor step.
+///
+/// Scans forward from `cursor` (inclusive) for the next occupied slot
+/// (`state == 1`). On found: surfaces the resident K into `key_out_ptr`
+/// (memcpy `key_stride` bytes) and V into `val_out_ptr` (memcpy
+/// `value_stride` bytes), then runs the SAME 4-step tombstone chain
+/// `__triet_hashmap_remove` already proved sound (D.5): zero the key
+/// cell (defense-in-depth against a stale read on a future probe reusing
+/// this slot), `state -> 2` (tombstone — the ACTUAL double-free guard:
+/// drop-glue at `:1940`/`:2038` and rehash at `:6583` all gate on
+/// `state == 1`, so a tombstoned slot is invisible to every free-walk
+/// regardless of its cell content), `len -= 1` (container-survives: a
+/// full drain leaves `len == 0`, so the caller's `HashMap` can be
+/// re-inserted into afterward). Returns `idx + 1` as the cursor to
+/// resume scanning from on the CALLER's next call.
+///
+/// On exhaustion (`cursor` reaches `cap` with no occupied slot found):
+/// returns `-1` (the done sentinel) and writes NEITHER out-pointer —
+/// the JIT-side caller must not read them on this path. Sound-stop is
+/// structural: the scan loop's condition is `idx < cap`, checked BEFORE
+/// any slot read, so `cap == 0` (a degenerate map) or a `cursor` already
+/// at/past `cap` (every entry already drained) both return `-1`
+/// immediately with zero memory reads past the header.
+///
+/// Unlike `remove` (which returns the scalar-stride value directly via
+/// the i64 return register when `value_stride <= 8`), the return
+/// register here is ALWAYS the cursor — K and V therefore ALWAYS
+/// surface via their out-pointers regardless of stride (a thin 8B
+/// scalar/handle write is just as much a `copy_nonoverlapping` here as
+/// a fat 24B String).
+///
+/// K is fenced at typecheck/lower to `{scalar, String}` and V to
+/// `{scalar, String, Vector, HashMap}` non-nullable (ADR-0089 §AMEND-2
+/// §4) — no aggregate key ever reaches this shim, so (unlike `remove`)
+/// there is no `hash_fn`/`eq_fn` walker dispatch to thread through here.
+#[allow(unsafe_code)]
+#[allow(
+    clippy::cast_sign_loss,
+    clippy::cast_possible_truncation,
+    clippy::cast_possible_wrap,
+    clippy::cast_ptr_alignment,
+    clippy::ptr_as_ptr
+)]
+#[unsafe(no_mangle)]
+pub extern "C" fn __triet_hashmap_drain_next(
+    map: i64,
+    cursor: i64,
+    key_out_ptr: i64,
+    val_out_ptr: i64,
+) -> i64 {
+    if map == 0 {
+        std::process::abort();
+    }
+    let body = map as *mut u8;
+    let cap = unsafe { (body as *const i64).add(1).read_unaligned() } as usize;
+    let key_stride = hashmap_key_stride(map);
+    let value_stride = hashmap_value_stride(map);
+    let mut idx = i64_to_usize(cursor.max(0));
+    while idx < cap {
+        let state = unsafe { *hashmap_state_ptr(body, idx) };
+        if state == 1u8 {
+            let key_ptr = unsafe { hashmap_key_ptr(body, idx) };
+            let val_ptr = unsafe { hashmap_value_ptr(body, idx) };
+            unsafe {
+                std::ptr::copy_nonoverlapping(key_ptr, key_out_ptr as *mut u8, key_stride);
+                std::ptr::copy_nonoverlapping(val_ptr, val_out_ptr as *mut u8, value_stride);
+                // D.5-style tombstone-zero: prevents a stale read on a
+                // future probe reusing this slot after the surfaced key
+                // bytes are freed by the caller (drain hands K's ownership
+                // to the loop-bound local, same as `remove`'s key_out_ptr).
+                std::ptr::write_bytes(key_ptr, 0, key_stride);
+            }
+            unsafe { *hashmap_state_ptr(body, idx) = 2u8 };
+            let len = unsafe { (body as *const i64).read_unaligned() };
+            unsafe { (body as *mut i64).write_unaligned(len - 1) };
+            return usize_to_i64(idx + 1);
+        }
+        idx += 1;
+    }
+    -1
 }
 
 /// `__triet_hashmap_contains(map, key)` — key lookup.

@@ -1,0 +1,17 @@
+// EXPECT: 0
+// WO-HashMap-Drain-PA2 (ADR-0089 §AMEND-2) — sound-stop on `len == 0`
+// (fixture directly targets §7.2's cursor-soundness question): draining a
+// freshly-allocated, never-inserted-into `HashMap` must run ZERO loop
+// iterations and read no memory past the header. `__triet_hashmap_alloc`
+// still allocates `cap >= 4` slots even at `len == 0`, all `state == 0`
+// (empty, not tombstoned) — the cursor shim's `idx < cap` scan must walk
+// past all of them and return -1 on the FIRST call without touching any
+// key/value cell.
+function main() -> Integer {
+    let mutable m: HashMap<Integer, Integer> = hashmap_new();
+    let mutable total = 0;
+    for (k, v) in m.drain() {
+        total = total + v;
+    }
+    return total;
+}

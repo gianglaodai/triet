@@ -1,0 +1,15 @@
+// ERROR: E1054
+// WO-HashMap-Drain-PA2 (ADR-0089 §AMEND-2 §4): `for x in m.drain()` — a
+// bare-variable pattern, not `Pattern::Tuple` of exactly 2 — stays refused
+// with the SAME E1054 the whole HashMap-drain arm already used before this
+// WO (the fence narrows WHICH shapes hit E1054, it does not mint a new
+// code).
+function main() -> Integer {
+    let mutable m: HashMap<Integer, Integer> = hashmap_new();
+    m = insert(m, 1, 10);
+    let mutable total = 0;
+    for x in m.drain() {
+        total = total + 1;
+    }
+    return total;
+}

@@ -1,0 +1,13 @@
+// ERROR: E1054
+// WO-HashMap-Drain-PA2 (ADR-0089 §AMEND-2 §4): `for (a, b, c) in m.drain()`
+// — a Tuple pattern of 3 children, not exactly 2 — stays refused with the
+// same E1054.
+function main() -> Integer {
+    let mutable m: HashMap<Integer, Integer> = hashmap_new();
+    m = insert(m, 1, 10);
+    let mutable total = 0;
+    for (a, b, c) in m.drain() {
+        total = total + 1;
+    }
+    return total;
+}

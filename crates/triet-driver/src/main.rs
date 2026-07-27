@@ -168,6 +168,12 @@ fn main() -> ExitCode {
         ShimSymbol::fn_4_1("__triet_hashmap_insert", mir_lower::__triet_hashmap_insert),
         ShimSymbol::fn_2_1("__triet_hashmap_get", mir_lower::__triet_hashmap_get),
         ShimSymbol::fn_4_1("__triet_hashmap_remove", mir_lower::__triet_hashmap_remove),
+        // WO-HashMap-Drain-PA2: cursor-step shim for `for (k, v) in
+        // m.drain()` (ADR-0089 §AMEND-2).
+        ShimSymbol::fn_4_1(
+            "__triet_hashmap_drain_next",
+            mir_lower::__triet_hashmap_drain_next,
+        ),
         // ADR-0079: get_ref shims (zero-copy borrow)
         ShimSymbol::fn_2_1("__triet_vector_get_ref", mir_lower::__triet_vector_get_ref),
         ShimSymbol::fn_2_1(

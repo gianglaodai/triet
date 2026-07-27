@@ -1,0 +1,14 @@
+// ERROR: no field or method named `drain`
+// WO-HashMap-Drain-PA2 (ADR-0089 §AMEND-2) — `m.drain()` used OUTSIDE the
+// `for`-guard (ADR-0089's for-guard-ONLY invariant, kept unchanged by this
+// WO). `drain` is not registered in `builtin_method_type`/trait dispatch,
+// so a standalone `m.drain()` falls through to the ordinary MethodCall
+// path (E1015 `UnknownMember`) — mirrors 491_drain_standalone_refuse.tri's
+// Vector precedent, MEASURED (not guessed): `triet::typecheck::E1015`,
+// "type HashMap<Integer, Integer> has no field or method named `drain`".
+function main() -> Integer {
+    let mutable m: HashMap<Integer, Integer> = hashmap_new();
+    m = insert(m, 1, 10);
+    let x = m.drain();
+    return 0;
+}

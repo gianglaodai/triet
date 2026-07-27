@@ -192,6 +192,12 @@ fn run_fixture(source: &str) -> Result<i64, String> {
             "__triet_hashmap_remove",
             triet_jit::mir_lower::__triet_hashmap_remove,
         ),
+        // WO-HashMap-Drain-PA2: cursor-step shim for `for (k, v) in
+        // m.drain()` (ADR-0089 §AMEND-2).
+        ShimSymbol::fn_4_1(
+            "__triet_hashmap_drain_next",
+            triet_jit::mir_lower::__triet_hashmap_drain_next,
+        ),
         // ADR-0079: get_ref shims (zero-copy borrow)
         ShimSymbol::fn_2_1(
             "__triet_vector_get_ref",

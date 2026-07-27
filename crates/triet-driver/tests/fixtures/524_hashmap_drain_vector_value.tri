@@ -1,0 +1,26 @@
+// EXPECT: 36
+// WO-HashMap-Drain-PA2 (ADR-0089 §AMEND-2): `HashMap<String, Vector<Integer>>`
+// drain — a heap-CONTAINER value (V = Vector<Integer>, a plain 8B handle,
+// not a fat String). Proves the scratch out-pointer path also covers a
+// Vector/HashMap handle value (distinct from both the thin-scalar path,
+// fixture 521, and the fat-String path, fixture 520). Sum every element of
+// every drained Vector: (1+2+3) + (10+20) = 6 + 30 = 36.
+function main() -> Integer {
+    let mutable m: HashMap<String, Vector<Integer>> = hashmap_new();
+    let mutable v1 = vector_new();
+    v1 = push(v1, 1);
+    v1 = push(v1, 2);
+    v1 = push(v1, 3);
+    let mutable v2 = vector_new();
+    v2 = push(v2, 10);
+    v2 = push(v2, 20);
+    m = insert(m, "a", v1);
+    m = insert(m, "b", v2);
+    let mutable total = 0;
+    for (k, v) in m.drain() {
+        for x in v.drain() {
+            total = total + x;
+        }
+    }
+    return total;
+}

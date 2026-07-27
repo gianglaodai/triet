@@ -1267,6 +1267,23 @@ pub fn builtin_shim_meta(name: &str) -> Option<BuiltinShimMeta> {
             mutates_arg: Some(0),
             arg_consumes: &[false, false],
         }),
+        // WO-HashMap-Drain-PA2 (ADR-0089 §AMEND-2, O✅/G✅/Giang✅
+        // 2026-07-27): `drain_next(map, cursor) -> next_cursor` for
+        // `for (k, v) in m.drain()`. Map mutates IN PLACE (tombstone slot +
+        // len--, same contract as `remove`) — `mutates_arg=Some(0)` fires
+        // E2440 if an active loan exists. `cursor` is a plain scalar,
+        // never consumed (re-read every iteration, like a Range induction
+        // variable). Neither `args` entry surfaces K/V — those travel via
+        // `dest[1]`/`dest[2]` (see `triet-jit/src/mir_lower.rs`'s
+        // `__triet_hashmap_drain_next` marshal), which this table's
+        // 2-argument shape does not describe (M3/consume tracking only
+        // ever walks `args`, never `dest`).
+        "__triet_hashmap_drain_next" => Some(BuiltinShimMeta {
+            name: "__triet_hashmap_drain_next",
+            returns_borrow_of: None,
+            mutates_arg: Some(0),
+            arg_consumes: &[false, false],
+        }),
         // ADR-0082 §AMEND-3: get-by-value COPY of a Copy-aggregate element
         // (Struct/Enum, no heap leaf). Non-destructive — the element stays
         // resident in the container (no tombstone, no free), a bitwise-

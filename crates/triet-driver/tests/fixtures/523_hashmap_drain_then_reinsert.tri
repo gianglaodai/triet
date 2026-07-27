@@ -1,0 +1,22 @@
+// EXPECT: 42
+// WO-HashMap-Drain-PA2 (ADR-0089 §AMEND-2) — container-survives (G mandate
+// tử huyệt #3): a full drain must leave `len == 0` (every entry's `len--`
+// actually ran) so the SAME map handle can be re-inserted into and read
+// back afterward. If `len--` were broken (poison P2), either the
+// container would refuse a "full" re-insert as if slots were still
+// occupied, or a stale `len` would corrupt the resize/rehash trigger —
+// either way this fixture's read-back after re-insert would not reliably
+// return 42.
+function main() -> Integer {
+    let mutable m: HashMap<Integer, Integer> = hashmap_new();
+    m = insert(m, 1, 10);
+    m = insert(m, 2, 20);
+    for (k, v) in m.drain() {
+        let mutable ignore = v;
+    }
+    m = insert(m, 9, 42);
+    return match get(m, 9) {
+        ~+ found => found,
+        ~0 => 0,
+    };
+}

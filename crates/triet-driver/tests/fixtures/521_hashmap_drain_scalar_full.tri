@@ -1,0 +1,18 @@
+// EXPECT: 60
+// WO-HashMap-Drain-PA2 (ADR-0089 §AMEND-2): scalar-key/scalar-value control
+// case — `HashMap<Integer, Integer>` full drain, sum every VALUE
+// (10+20+30 = 60). No heap leaves at all (K and V both fit in the 8B
+// scratch-slot out-pointer path in the JIT marshal, not the String
+// struct_slot path) — proves the thin/scalar branch works independently
+// of the fat/String branch fixture 520 already covers.
+function main() -> Integer {
+    let mutable m: HashMap<Integer, Integer> = hashmap_new();
+    m = insert(m, 1, 10);
+    m = insert(m, 2, 20);
+    m = insert(m, 3, 30);
+    let mutable total = 0;
+    for (k, v) in m.drain() {
+        total = total + v;
+    }
+    return total;
+}

@@ -1055,27 +1055,33 @@ pub enum TypeError {
 
     /// E1054: `for x in m.drain()` where `m : HashMap<K, V>` — refused
     /// fail-closed (ADR-0089 §AMEND `HashMap.drain()` §HM-drain.3), NOT folded
-    /// into the generic E1052 `NonRangeIterationUnsupported`. `HashMap`
-    /// drain would need to yield `(K, V)` pairs, and two walls block that
-    /// today: (a) the yielded pair is a `Tuple`, and `Tuple` has no MIR/JIT
-    /// lowering yet (no stack slot layout, no shim ABI); (b) there is no
-    /// enumerate-entry shim — the existing `HashMap` shims are all
-    /// key-indexed (`get`/`insert`/`remove`), none can walk entries
-    /// key-less. This is a distinct semantic contract from plain
-    /// `for x in m` (still E1052, `NonRangeIterationUnsupported` —
-    /// unchanged) and from `Vector<T>.drain()` (E1053) — one E-code, one
-    /// contract, no gluing unrelated refusals together.
+    /// into the generic E1052 `NonRangeIterationUnsupported`. Originally a
+    /// blanket refuse (no shape opened at all: no Tuple lowering, no
+    /// enumerate-entry shim). WO-HashMap-Drain-PA2 (O✅/G✅/Giang✅
+    /// 2026-07-27) opened a FENCED shape — `for (k, v) in m.drain()` with a
+    /// `Pattern::Tuple` of exactly 2 children, `K ∈ {scalar, String}`,
+    /// `V ∈ {scalar, String, Vector, HashMap}` non-nullable — via a cursor
+    /// shim (`__triet_hashmap_drain_next`) + destructuring-only desugar
+    /// (`Tuple` still never exists as a MIR value; the lowerer destructures
+    /// the pattern straight into two owned locals). This code now fires only
+    /// for what's OUTSIDE that fence: a non-tuple-2 pattern, an aggregate
+    /// key, an aggregate value, or a nullable value. This is a distinct
+    /// semantic contract from plain `for x in m` (still E1052,
+    /// `NonRangeIterationUnsupported` — unchanged) and from
+    /// `Vector<T>.drain()` (E1053) — one E-code, one contract, no gluing
+    /// unrelated refusals together.
     #[error("E1054: `for` iteration over `HashMap<{key}, {value}>.drain()` is unsupported")]
     #[diagnostic(
         code(triet::typecheck::E1054),
         help(
-            "`HashMap.drain()` would yield `(K, V)` pairs, but two things are \
-            missing: (a) `Tuple` has no lowering to MIR/JIT yet, so the \
-            yielded pair has no layout; (b) there is no enumerate-entry shim — \
-            every `HashMap` shim today is key-indexed (`get`/`insert`/`remove`), \
-            none can walk entries without a key.\n\n\
-            [Fix] Iterate over a known set of keys and call `remove(m, k)` for \
-            each one instead of draining the whole map."
+            "`HashMap<{key}, {value}>.drain()` is outside the supported shape: the \
+            loop pattern must be `(k, v)` (exactly 2 bindings), the key must be a \
+            scalar or `String`, and the value must be a non-nullable scalar, \
+            `String`, `Vector`, or `HashMap` — an aggregate key/value or a \
+            nullable value is not yet supported.\n\n\
+            [Fix] Change the loop pattern to `for (k, v) in m.drain()` with a body \
+            whose key/value shape is inside the supported set, or iterate over a known \
+            set of keys and call `remove(m, k)` for each one instead."
         )
     )]
     DrainHashMapUnsupported {
@@ -1084,9 +1090,7 @@ pub enum TypeError {
         /// The `HashMap`'s value type (`V`).
         value: String,
         /// Source location of the `.drain()` receiver expression.
-        #[label(
-            "`HashMap<{key}, {value}>` drain is unsupported — no Tuple lowering, no enumerate-entry shim"
-        )]
+        #[label("`HashMap<{key}, {value}>` drain shape is unsupported here")]
         span: Span,
     },
 

@@ -1,0 +1,18 @@
+// ERROR: E1054
+// WO-HashMap-Drain-PA2 (ADR-0089 §AMEND-2 §4): an aggregate (Struct) KEY
+// stays refused — move-out-key is a new ABI question this WO does not
+// open (K is fenced to {scalar, String}). `KP` is otherwise a perfectly
+// valid HashMap key (352_hashmap_struct_key_int_roundtrip.tri routes it
+// through the JIT-emitted key hash/eq walkers for get/insert) — this
+// fixture proves `.drain()` specifically still refuses it.
+struct KP { a: Integer, b: Integer }
+function main() -> Integer {
+    let mutable m: HashMap<KP, Integer> = hashmap_new();
+    let k = KP { a: 1, b: 2 };
+    m = insert(m, k, 10);
+    let mutable total = 0;
+    for (key, v) in m.drain() {
+        total = total + v;
+    }
+    return total;
+}
