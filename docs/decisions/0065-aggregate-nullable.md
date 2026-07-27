@@ -560,5 +560,135 @@ trần, đọc field String tại **offset 0** = **đọc TAG (=1) làm con tr�
 - **Container-element `Nullable(Struct-heap)` hiện REFUSE, chưa hỗ trợ.** Muốn hỗ trợ = cho
   `emit_vector_element_free_loop`/`emit_hashmap_value_free_loop` **giữ** `Nullable` và route qua
   `struct_drop` arm (như local), thay vì bóc trước. Campaign riêng.
-- **Local `Nullable(Struct-heap)` qua widening** (`let a: Leaf? = plain`) — cùng lỗ N1 (§13),
-  policy-hole, chưa đo riêng. Ghi nợ.
+- ~~Local `Nullable(Struct-heap)` qua widening (`let a: Leaf? = plain`) — cùng lỗ N1 (§13),
+  policy-hole, chưa đo riêng. Ghi nợ.~~ **ĐÍNH CHÍNH 2026-07-27(f), xem §16 — nhãn
+  "policy-hole" ở dòng này SAI: đo được là double-free TẤT ĐỊNH (UB), không phải policy-hole.
+  Đóng bởi WO-Aggregate-Move-Tombstone.
+
+## 16. AMENDMENT (WO-Aggregate-Move-Tombstone, 2026-07-27(f)) — §15.6's "policy-hole" đính
+chính thành double-free UB SỐNG; bán kính mở từ "widening" sang "aggregate move" nói chung
+
+### 16.1 Nhãn cũ sai vì sao
+
+§15.6 (viết 2026-07-20, WO-5) gọi "Local `Nullable(Struct-heap)` qua widening" là
+"cùng lỗ N1, policy-hole, chưa đo riêng" — suy loại (analogy) từ N1 (§13, nullable
+ENUM widening, đã đo FREE=1 distinct=1, KHÔNG UB), KHÔNG phải từ số đo trực tiếp
+trên struct. Đây là lỗi suy diễn: N1 và struct-widening dùng hai lowering site khác
+hẳn nhau (N1 qua construction trực tiếp `E::V(42)`; struct-widening qua
+`is_struct_widening` branch, `crates/triet-lower/src/lib.rs:2240-2254` cũ). Đo trực
+tiếp (2026-07-27(f)) trên `04cb5d3`:
+
+```
+struct Leaf { s: String }
+function main() -> Integer {
+    let p = Leaf { s: "hi" };
+    let a: Leaf? = p;   // widening
+    return 42;
+}
+```
+→ `free(): double free detected in tcache 2` (exit **134**), tất định, mọi lần chạy.
+
+### 16.2 Bán kính THẬT rộng hơn "widening" — mọi aggregate MOVE thiếu tombstone
+
+Đo mở rộng lộ ra bug KHÔNG giới hạn ở `Struct?` widening — cú pháp gán lại
+(`Stmt::Assignment`) hoàn toàn thường ngày (0 dấu `?`) cũng nổ **cùng cơ chế**:
+
+```
+let mutable a = Leaf { s: "aa" };
+let p = Leaf { s: "hi" };
+a = p;   // → 134, KHÔNG có `?` nào trong chương trình
+```
+
+Gốc rễ JIT (đo trực tiếp `crates/triet-jit/src/mir_lower.rs`, `Statement::Assign`
+codegen): với aggregate có `ty_total_size > 8` (bất kỳ struct >1 field scalar, hoặc
+1 field heap như `String`), nhánh **"Multi-word copy for struct/enum aggregate"**
+(`:3081-3122`) làm một memcpy word-by-word THÔ, có comment tự thú **"Struct/enum
+types are Copy in Bậc A — no M1 zeroing needed"** — giả định SAI cho struct
+heap-bearing. Cơ chế "M1 Zeroing-on-Move" (`:3189-3212`, tự động zero nguồn khi
+`is_aggregate == false`) chỉ chạy ở nhánh ELSE (scalar / String-as-thin-handle) —
+**không bao giờ chạm nhánh aggregate**. Đây là lý do `String`/`Vector`/`HashMap`/
+`Nullable(scalar)`/`Outcome` (đều size ≤8B ở cấp Variable hoặc có sync riêng) ĐÃ
+an toàn từ trước — trong khi `Struct` VÀ `Enum` (cả hai đều >8B ở JIT) đều lộ.
+
+### 16.3 Fix — Deinit tường minh ở lowerer, KHÔNG sửa M1/JIT
+
+`crates/triet-lower/src/lib.rs`, hai điểm chạm, mirror pattern đã CHỨNG MINH đúng
+của `is_move_binding` (`let q = p;`, đã có Deinit từ trước):
+- **Site A** (`Stmt::Let`'s `is_struct_widening` branch): thêm `Deinit(v)` ngay
+  trước `return Ok(())`, guard `!ctx_is_copy(&v_ty, c)`.
+- **Site B** (`Stmt::Assignment`): thêm `Deinit(v)` sau `Assign` ở CẢ hai nhánh
+  (`Expr::Identifier` — guard `v != orig` để không tự zero self-assignment `a = a`;
+  và nhánh field/projection `_ =>` — **đo được nhánh này UNREACHABLE qua parser
+  hiện hành**, `crates/triet-parser/src/stmt.rs:292` chỉ chấp nhận `Expr::Identifier`
+  làm assignment target, mọi target khác → `E0007` parse error. Deinit thêm ở đây
+  không kiểm chứng được bằng fixture thật; giữ lại vì đúng theo phán quyết G
+  (arm-agnostic) và vô hại nếu parser mở rộng sau này, nhưng KHÔNG claim đã fix gì
+  ở nhánh này).
+
+`Statement::Deinit`'s JIT codegen (đã tồn tại từ trước, không đổi) walk TOÀN BỘ
+heap-leaf của struct đệ quy (`tombstone_slot_leaves`) — khác M1's zero-một-word —
+nên xử lý đúng cả struct lồng nhiều tầng (§16.4 bảng, hàng struct lồng).
+
+### 16.4 BẢNG 8 VỊ TRÍ — đo trên `04cb5d3` (TRƯỚC vá) và trên cây đã vá (SAU)
+
+| # | Hình (`struct Leaf { s: String }`) | TRƯỚC vá | SAU vá |
+|---|---|---|---|
+| 1 | `let a: Leaf? = p;` (widening) | 🔴 134 (double-free) | ✅ exit 0, giá trị đúng |
+| 2 | `return p;` trong `-> Leaf?` | ✅ E1121 (refuse, giữ nguyên) | ✅ E1121 (không đổi) |
+| 3 | `take(p)` param `Leaf?` | ✅ JIT refuse "Struct? Drop without slot" | ✅ giữ nguyên |
+| 4 | `Container { f: p }` field init | ✅ E1100 (refuse, giữ nguyên) | ✅ E1100 (không đổi) |
+| 5 | `push(v, p)` `Vector<Leaf?>` | ✅ MIR verifier B8 | ✅ giữ nguyên |
+| 5b | `insert(m, 1, p)` `HashMap<_, Leaf?>` | ✅ MIR verifier B8 | ✅ giữ nguyên |
+| 6 | `a = p` với `a: Leaf?` | 🔴 134 | ✅ exit 0, giá trị đúng |
+| 7 | `a = p` với `a: Leaf` (không nullable) | 🔴 134 | ✅ exit 0, giá trị đúng (⚠ old-dest leak, §16.5) |
+
+Biến thể của #1 đo thêm (TRƯỚC vá, cả ba đều 134): struct lồng
+(`Outer{Inner{String}}`) → SAU vá exit 0 đúng · field `Vector<Integer>` thay
+`String` → SAU vá exit 0 đúng · **nguồn là function PARAM** → SAU vá **KHÔNG xanh,
+đổi sang SIGSEGV (139)** — bug JIT KHÁC, ĐỘC LẬP, xem §16.6, KHÔNG đóng trong WO
+này.
+
+Đối chứng giữ xanh (không bị patch làm hỏng): `let q = p` (is_move_binding, không
+đổi) · widening enum · Copy-struct qua widening (fixture 231/234/235/237,
+`Pt{x,y}` toàn scalar — `ctx_is_copy` trả `true` nên KHÔNG bị Deinit, đọc lại được
+sau widening).
+
+### 16.5 Nợ mới ghi — leak old-dest, KHÔNG fix trong WO này
+
+`a = p` (case #7) tombstone nguồn `p` đúng (0 double-free) nhưng KHÔNG drop giá
+trị CŨ của `a` trước khi ghi đè — giá trị cũ bị **leak** (đo bằng pointer-dedup:
+2 String cấp phát, chỉ 1 pointer được free, 0 pointer bị free 2 lần — xem
+`crates/triet-driver/tests/aggregate_move_tombstone_counting.rs`,
+`reassign_plain_no_double_free_but_leaks_old_dest`). Đây là quyết định ngữ nghĩa
+riêng (drop-old-dest-before-overwrite), NGOÀI phạm vi WO này — ghi nợ, chờ G/O
+quyết có campaign riêng hay không.
+
+### 16.6 Nợ mới ghi — Deinit trên PARAM struct-by-value gây SIGSEGV, KHÔNG fix
+
+Đo được (2026-07-27(f)): `function take(p: Leaf) -> Integer { let q = p; ... }`
+(kể cả KHÔNG qua widening — pattern `is_move_binding` đã tồn tại từ trước WO này,
+KHÔNG phải regression của patch) — SIGSEGV (**exit 139**) trên `04cb5d3` gốc, ĐÃ
+CÓ TRƯỚC WO này, không do patch gây ra. Gốc rễ: struct-by-value param KHÔNG có
+entry trong `struct_slots`/`enum_slots` (`crates/triet-jit/src/mir_lower.rs` prologue
+`:2684-2771` chỉ copy-in String/Enum/Outcome param, không có nhánh Struct trần) —
+Cranelift `Variable` của param LÀ con trỏ thô trỏ vào bộ nhớ CALLER (aliasing, không
+copy). `Statement::Deinit`'s generic scalar fallback (`:2943-2945`,
+`builder.def_var(self.var(*l), zero)`) zero CHÍNH cái Variable/địa chỉ đó (đúng cho
+local thường, SAI cho param-alias — phá luôn handle duy nhất tới dữ liệu) → `Drop`
+sau đó `load` từ địa chỉ `0` → SIGSEGV. Việc WO này thêm `Deinit(v)` vào Site A/B
+KHÔNG tạo ra bug này (nó vốn đã sống ở `is_move_binding` không đổi) — WO chỉ mở
+thêm MỘT đường khác (widening-từ-param) chạm phải NÓ. Fix đòi sửa JIT Deinit
+codegen (case riêng cho struct-param-alias) hoặc đổi cách lowerer xử lý
+widening-từ-param — cả hai đều ngoài thẩm quyền D, cần O/G quyết. Fixture cho biến
+thể "param" (số 540 trong kế hoạch đánh số ban đầu) **KHÔNG được tạo** — một SIGSEGV
+trong integration-test process sẽ giết cả binary test, che mất mọi fixture khác.
+
+### 16.7 Vì sao sống 7 ngày (2026-07-20 §15/WO-5 → 2026-07-27 §16) mà không ai bắt
+
+Nhánh `is_struct_widening` VÀ toàn bộ `Stmt::Assignment` chỉ được lưới fixture
+HIỆN CÓ phủ qua struct **Copy** (`Pt { x: Integer, y: Integer }`, fixture
+231/234/235/237) — `ctx_is_copy(Pt) == true` nên đường Move-tombstone không bao
+giờ được thực thi bởi các test đó, dù chúng "chạy qua" đúng nhánh code. Đây là
+vùng mù luật HP.3 của dự án: **guard/nhánh áp cho N biến thể (Copy lẫn Move) thì
+teeth phải poison/đo TỪNG biến thể riêng — "chạy qua nhánh" với biến thể AN TOÀN
+KHÔNG chứng minh gì về biến thể NGUY HIỂM.**

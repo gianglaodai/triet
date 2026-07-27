@@ -17,6 +17,55 @@ Mốc cũ (stale `462`): Gate `0·clean·0·462·0`, origin/main = `36dad8e`, sy
 > cuối file + memory index. Việc kế chờ G/Giang mở: ADR-0088 double-nullable /
 > `!!` ForceUnwrap (Slice 2c) / HashMap.drain() / Deep-Clone.
 
+### 🏁 WO-Aggregate-Move-Tombstone (2026-07-27(f)) — vá UB SỐNG: double-free tất
+định trên aggregate move (widening + reassign) heap-bearing struct
+
+**Đính chính nhãn cũ:** ADR-0065 §15.6 (viết 2026-07-20, WO-5) gọi "Local
+`Nullable(Struct-heap)` qua widening" là "cùng lỗ N1, policy-hole, chưa đo
+riêng" — suy diễn SAI từ N1 (§13, nullable ENUM widening, đã đo KHÔNG UB), không
+phải số đo trực tiếp trên struct. Đo trực tiếp (2026-07-27(f)) trên `04cb5d3`:
+`let a: Leaf? = p;` (struct heap-bearing widening) → `free(): double free
+detected in tcache 2`, exit **134**, tất định. Bán kính RỘNG HƠN "widening" —
+`a = p;` gán lại THƯỜNG (0 dấu `?`) cũng nổ CÙNG cơ chế. Chi tiết đầy đủ + bảng
+8 vị trí đo trước/sau vá → **ADR-0065 §16** (mới thêm).
+
+**Gốc rễ (JIT):** aggregate `ty_total_size > 8` (struct >1 field, hoặc 1 field
+heap) rơi vào nhánh "Multi-word copy" thô (`crates/triet-jit/src/mir_lower.rs
+:3081-3122`, tự comment "Struct/enum types are Copy in Bậc A — no M1 zeroing
+needed" — SAI cho struct heap-bearing); cơ chế "M1 Zeroing-on-Move" tự động chỉ
+chạy ở nhánh scalar/String-thin-handle, không bao giờ chạm nhánh aggregate.
+
+**Fix:** `crates/triet-lower/src/lib.rs` — 2 điểm chạm phát `Statement::Deinit`
+tường minh (tái dùng cơ chế đã CHỨNG MINH đúng của `is_move_binding`): Site A
+(`Stmt::Let`'s `is_struct_widening`) + Site B (`Stmt::Assignment`, cả hai nhánh
+— nhánh field/projection **đo được là dead code**, parser chỉ chấp nhận
+`Expr::Identifier` làm target, `E0007` chặn mọi target khác).
+
+**Fixture 537/538/539/541/542** + `crates/triet-driver/tests/
+aggregate_move_tombstone_counting.rs` (pointer-dedup, KHÔNG raw count — free
+2 pointer khác nhau và double-free cùng 1 pointer đều ra count==2, phải dedup).
+
+**2 nợ mới ghi, KHÔNG fix trong WO này (ngoài thẩm quyền D / cần O+G quyết):**
+1. **Leak old-dest:** `a = p` tombstone nguồn đúng (0 double-free) nhưng KHÔNG
+   drop giá trị CŨ của `a` trước khi ghi đè → leak (đo bằng pointer-dedup: 2
+   cấp phát, chỉ 1 free). Quyết định ngữ nghĩa riêng (drop-old-dest-before-
+   overwrite), không phải bug của WO này.
+2. **SIGSEGV trên struct-by-value PARAM khi Deinit chạm nó:** đo được
+   `function take(p: Leaf) { let q = p; ... }` (pattern `is_move_binding` CÓ
+   TRƯỚC WO này, không phải regression) đã SIGSEGV (139) trên `04cb5d3` gốc —
+   struct param không có `struct_slots` entry (aliasing con trỏ caller, không
+   copy-in), `Deinit`'s scalar fallback zero nhầm cái Variable/địa chỉ duy
+   nhất thay vì nội dung. WO này KHÔNG mở đường mới cho bug này (nó vốn sống ở
+   `is_move_binding`), chỉ chạm nó qua thêm 1 đường (widening-từ-param). Fixture
+   biến thể "param" (dự kiến số 540) KHÔNG được tạo — SIGSEGV trong process
+   integration-test sẽ giết cả binary, che mất mọi fixture khác. Cần WO riêng
+   sửa JIT `Deinit` codegen cho struct-param-alias.
+
+**KHÔNG đụng entry "N1 widening (E1120)"** ở mục TRIAGE 2026-07-25 phía dưới —
+đó là chủ đề KHÁC (nullable ENUM widening, đã đo KHÔNG UB, `POLICY-HOLE` đúng
+nghĩa ở đó) dù cùng dùng cụm "POLICY-HOLE, KHÔNG UB". Sửa nhầm entry đó sẽ là
+tuyên bố SAI.
+
 ### 🗄️ (LỊCH SỬ, ĐÃ ĐÓNG `dbde2d5`) — **`WO-Front-A`: `LowerError` diagnostic codes (ADR-0086)**
 
 `LowerError` (`crates/triet-lower/src/lib.rs`) chuyển struct phẳng
