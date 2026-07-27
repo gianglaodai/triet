@@ -876,3 +876,119 @@ diagnostic surface.
 
 - **O: ✅** — soạn WO 5-điểm-chạm, chốt bảng 3 mã + cascade order.
 - **G: ✅** — duyệt tách trục, xác nhận không mở rộng scope ACCEPT.
+
+## §AMEND-4 — FIFO contract cứng hoá + hoãn VÔ THỜI HẠN O(N) cursor-drain
+
+### §4.1 — Hợp đồng FIFO (ngữ nghĩa quan sát được, ràng buộc)
+
+`for x in v.drain()` trên `Vector<T>` duyệt phần tử theo thứ tự **index
+`0 -> len-1` (FIFO)** — đúng thứ tự đã `push`. Đây KHÔNG phải chi tiết cài
+đặt tình cờ của desugar `pop_front`-loop (Slice 2b §2b.4): nó là **ngữ nghĩa
+quan sát được** mà mọi test/người dùng có quyền dựa vào (`break`-mid giữ
+đúng survivor theo thứ tự, §2d.3; `return`-mid cũng vậy, §4.2 dưới). **Mọi
+thay đổi thứ tự duyệt là breaking change**, phải qua ADR mới, không được vá
+âm thầm bằng đổi shim bên dưới.
+
+Corpus TRƯỚC WO này **mù thứ tự**: O tự poison `__triet_vector_pop_front` ->
+`__triet_vector_pop` (đổi FIFO thành LIFO) và chạy toàn bộ 522 fixture khi
+đó — chỉ **1/522 đỏ** (`490_drain_break_continue.tri`), và đỏ đó là **tai
+nạn hằng số** (`if x == 100 { break }` tình cờ đúng ngay ở phần tử đầu dưới
+LIFO), không phải vì thiết kế test khóa thứ tự. 6 fixture liên quan
+(486/487/488/505/506/509) XANH 100% dưới cú lật — `509` mù vì mọi String
+trong nó có `length == 1` nên hoán vị thứ tự không đổi giá trị quan sát
+được. Fixture 531-534 (§4.3) là hàng rào vá lỗ mù này bằng oracle
+position-weighted (`acc = acc*10 + x`), KHÔNG dùng tổng cộng dồn.
+
+### §4.2 — O(N) cursor-drain: HOÃN VÔ THỜI HẠN (không phải "chưa làm", là BÁC)
+
+Phương án tối ưu hoá `Vector.drain()` từ O(N²) (`pop_front`-loop hiện hành)
+xuống O(N) (con trỏ cursor + epilogue dọn buffer một lần tại cuối vòng,
+mirror ý tưởng cursor `state`-flag của `HashMap.drain()` PA-2 §AMEND-2) đã
+được G **BÁC**, dựa trên 4 lý do ĐO ĐƯỢC (không phải suy đoán):
+
+1. **`return` giữa thân drain-loop là một exit edge RIÊNG, KHÔNG đi qua
+   block `ext`** (điểm hội tụ bình thường cuối vòng lặp). Quan sát được
+   trực tiếp trong `fn drain_it` của `534_drain_order_return_mid_survivors.tri`
+   (dump MIR đo lại 2026-07-27(f)):
+   ```
+   bb2: { ... Drop(_1) Drop(_0) Drop(_5) Return(_1) }   // return-mid
+   bb3: { Drop(_1) Drop(_0)          Return(_1) }        // exit ext bình thường
+   bb4: { If(_4) → +:bb3, -:bb2 }
+   ```
+   `bb2` (return-mid, nhánh `-` của `If` null-check trên `pop_front`) và
+   `bb3` (nhánh `+`, tức "buffer cạn" — exit `ext` thật của vòng) là **HAI
+   BLOCK KHÁC NHAU với TẬP DROP KHÁC NHAU**: `bb2` có `Drop(_5)` (drop biến
+   `item` vừa move-out trong thân vòng trước khi return), `bb3` KHÔNG có —
+   vì tại `bb3` không có `item` nào đang sống để drop. Đây là bằng chứng
+   **tự-kiểm-chứng-được ngay trong fixture của corpus** (không phải một
+   probe `/tmp` đã biến mất) rằng return-mid và exit-thường là hai đường
+   TÁCH BẠCH, không hội tụ. (Ghi chú nguồn gốc: bản nháp trước của mục này
+   trỏ vào `bb9`, sao chép nhầm số block từ probe recon `/tmp/o-recon/p1_return_mid_drain.tri`
+   của Mentor O — probe đó có hình KHÁC: receiver **owned**, vòng lặp nằm
+   thẳng trong `main`, không phải `&0 mutable` + hàm phụ `drain_it` như
+   533/534. Số `bb9` đó không tồn tại trong `fn drain_it` — đã sửa để trỏ
+   đúng nguồn kiểm chứng được, 2026-07-27(f).) Bất kỳ thiết kế
+   cursor+epilogue nào đặt logic dọn dẹp/tombstone tại `ext` (tức `bb3`) sẽ
+   bị `return`-mid (`bb2`) **BỎ QUA HOÀN TOÀN** — buffer của caller sẽ ở
+   trạng thái nửa-vời (cursor đã tiến nhưng `len`/tombstone chưa cập nhật),
+   dẫn tới **double-free** khi caller sau đó drop hoặc tiếp tục thao tác
+   trên buffer.
+2. **Buffer của `Vector<T>` không có state-byte per-slot** (`{len@0, cap@8,
+   data@16}` — chỉ 1 con trỏ `len`, không như `HashMap` có mảng slot với
+   trường `state` riêng cho từng ô, §AMEND-2). Cơ chế cursor của
+   `HashMap.drain()` (một cờ `state` per-slot đóng cả 3 tử huyệt: move-out
+   sound / break-mid / container-survives — xem `AMEND-2` PA-2) **không có
+   gì để mirror lên `Vector`**: không có ô nào để đánh dấu "đã move-out"
+   độc lập với `len`.
+3. Bất biến hiện hành `buffer[0..len)` = **tập sống tại MỌI thời điểm**
+   (không chỉ tại `ext`) đang mua soundness **MIỄN PHÍ** cho MỌI exit edge
+   — kể cả những cạnh chưa từng được liệt kê tường minh (break, continue,
+   return, panic-tương-lai). Một thiết kế cursor-epilogue phải liệt kê và
+   xử lý ĐÚNG từng cạnh thoát — gánh nặng chứng minh cao hơn hẳn lợi ích.
+4. O(N²) của `pop_front`-loop là **nợ hiệu năng** (thời gian chạy), **KHÔNG
+   phải lỗ soundness** — không có áp lực correctness nào buộc phải sửa
+   ngay; đánh đổi với rủi ro double-free ở mục 1 là không xứng đáng tại thời
+   điểm này.
+
+**Phương án LIFO** (đổi `pop_front` thành `pop`, duyệt từ cuối buffer) và
+**phương án đảo-buffer trước khi duyệt** cũng đều bị **BÁC** cùng lý do gốc:
+cả hai đều phá vỡ hợp đồng FIFO §4.1 (breaking change không có ADR), và
+phương án đảo-buffer còn tốn thêm một lượt O(N) di chuyển dữ liệu chỉ để đổi
+thứ tự quan sát — không giải quyết được độ phức tạp O(N²) mà lại đổi ngữ
+nghĩa.
+
+Kết luận: `pop_front`-loop O(N²) (Slice 2b §2b.4) là cách lower DUY NHẤT
+được duyệt cho `Vector.drain()` cho tới khi có ADR mới đủ mạnh để chứng
+minh soundness trên MỌI exit edge (kể cả `return`/`break`/`continue`/tương
+lai) của một thiết kế cursor.
+
+### §4.3 — Lính gác (WO-Drain-FIFO-Teeth, O✅/G✅/Giang✅ 2026-07-27(f))
+
+- **531/532/533/534** — lính gác hợp đồng FIFO §4.1, oracle position-weighted
+  (`acc = acc*10 + <giá trị>`, không phải tổng cộng dồn):
+  - `531_drain_order_scalar.tri` — owned `Vector<Integer>`, EXPECT 123.
+  - `532_drain_order_string.tri` — owned `Vector<String>` (heap move-out),
+    lengths 1/2/4 phân biệt (509 dùng toàn length-1 nên mù), EXPECT 124.
+  - `533_drain_order_break_mid_survivors.tri` — `&0 mutable` borrow-receiver
+    drain + `break`-mid + đọc survivor theo thứ tự qua `pop_front`, EXPECT
+    1024.
+  - `534_drain_order_return_mid_survivors.tri` — y hệt 533 nhưng `break` ->
+    `return acc;` giữa thân vòng. **Fixture ĐẦU TIÊN của toàn corpus** chạm
+    cạnh return-mid `bb2` vs exit-thường `bb3` trong `fn drain_it` (§4.2
+    mục 1) — chính cạnh đã bác phương án O(N). EXPECT 1024.
+- **535/536** — lính gác THỨ TỰ CASCADE pattern->key->value (§AMEND-3), đa
+  trục (một fixture sai đồng thời ≥2 trục, khác họ 510/527/528/529/530 mỗi
+  file một trục):
+  - `535_hashmap_drain_multiaxis_pattern_wins.tri` — sai cả 3 trục cùng lúc
+    -> khóa cạnh pattern thắng trước (E1056).
+  - `536_hashmap_drain_multiaxis_key_wins.tri` — pattern đúng, key+value sai
+    -> khóa cạnh key thắng trước value (E1054).
+
+### Chữ ký §AMEND-4
+
+- **O: ✅ 2026-07-27(f)** — soạn WO 6-fixture + đo live 4 giá trị EXPECT
+  (123/124/1024/1024) + 2 mã lỗi cascade (E1056/E1054), chốt 4 lý do hoãn
+  O(N) cursor-drain vô thời hạn dựa trên probe MIR `bb9`/poison FIFO->LIFO.
+- **G: ✅ 2026-07-27(f)** — duyệt hoãn O(N) vô thời hạn (không mở lại tới khi
+  có ADR mới), duyệt hợp đồng FIFO cứng hoá thành ngữ nghĩa ràng buộc.
+- **Giang: ✅ 2026-07-27(f)** — chốt hướng.
