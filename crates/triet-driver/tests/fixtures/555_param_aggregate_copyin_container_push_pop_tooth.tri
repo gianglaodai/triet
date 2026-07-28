@@ -1,0 +1,39 @@
+// EXPECT: 2
+// WO-Param-Aggregate-CopyIn — TOOTH for coverage newly unlocked by the
+// callee copy-in fix (49-site table #36-#39: `mir_lower.rs:~4269`
+// `vector_push` fat element / `~4284` 8B element (T9) / `~4360`/`~4371`
+// `hashmap_insert` value). A heap-bearing STRUCT PARAM pushed DIRECTLY into
+// a `Vector<Leaf>` (not a local built inside the callee) is exactly the
+// shape those four sites gate on `struct_slots.get(&elem)`.
+//
+// MEASURED (O, 2026-07-28): under copy-in POISONED (= pre-this-WO tree),
+// this program does NOT crash — it REFUSES at JIT compile time, exit 4
+// ("vector_push: fat element without a slot", ADR-0077 by-pointer ABI
+// requires a pre-allocated element slot). That refuse is fail-closed, not a
+// live UB — but it was UNTESTED: no fixture in the corpus pushed a Struct
+// PARAM (as opposed to a locally-constructed struct) into a container. Per
+// G's ruling: an untested fail-closed-to-now-working transition is exactly
+// the shape that let "policy-hole KHÔNG UB" sit unverified for 8 days
+// earlier this campaign — this fixture closes that gap for THIS site.
+//
+// Oracle is a REAL VALUE read through the popped struct's field
+// (`length(popped.s)` == 2 for "hi"), not a bare exit-0 — the same class of
+// blind spot flagged for 338's sibling fixtures. `len()` has no
+// `Vector<Leaf>` overload (E1041, measured) — use `pop` + `match`, mirroring
+// `338_vector_userstruct_pop_run.tri`.
+struct Leaf { s: String }
+
+function take(p: Leaf) -> Integer {
+    let mutable xs: Vector<Leaf> = vector_new();
+    xs = push(xs, p);
+    let out = pop(xs);
+    return match out {
+        ~+ popped => length(popped.s),
+        ~0 => 99,
+    };
+}
+
+function main() -> Integer {
+    let a = Leaf { s: "hi" };
+    return take(a);
+}
