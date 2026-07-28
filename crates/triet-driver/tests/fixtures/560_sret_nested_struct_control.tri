@@ -1,0 +1,23 @@
+// EXPECT: 5
+// WO-SRet-Aggregate-StringField-Corruption — CONTROL (must be identical
+// before AND after the fix). `Outer { i: Inner, n: Integer }` returned via
+// sret moves the field `_0.i = move _1.i` where `i`'s type is `Struct
+// (Inner)` — `ty_total_size(Inner) == 24 > 8`, so this already takes the
+// PRE-EXISTING multi-word aggregate-copy branch (`mir_lower.rs:~3146`),
+// which blindly copies all 24 bytes (ptr/len/cap) regardless of field
+// semantics. Hole A's new branch only fires when `dest_ty.is_string_repr()`
+// on a SCALAR-path field (a bare/`?` `String`, not a nested Struct) — this
+// fixture must stay green both sides to prove the fix does not regress the
+// aggregate-copy path.
+struct Inner { s: String }
+struct Outer { i: Inner, n: Integer }
+
+function make() -> Outer {
+    let o = Outer { i: Inner { s: "hi" }, n: 3 };
+    return o;
+}
+
+function main() -> Integer {
+    let o = make();
+    return length(o.i.s) + o.n;
+}

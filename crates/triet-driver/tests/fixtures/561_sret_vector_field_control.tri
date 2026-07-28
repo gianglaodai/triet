@@ -1,0 +1,25 @@
+// EXPECT: 42
+// WO-SRet-Aggregate-StringField-Corruption — CONTROL (must be identical
+// before AND after the fix). `Box { v: Vector<Integer> }` returned via sret:
+// `_0.v = move _1.v` is projected→projected (same shape as Hole A's target)
+// but `Vector` is an 8-byte opaque HANDLE with no separate len/cap words in
+// the local's slot (the length lives on the heap side) — a single scalar
+// ptr@0 copy already carries the whole value. Hole A's new sync branch is
+// gated on `dest_ty.is_string_repr()`, which a `Vector<Integer>` field never
+// satisfies, so this fixture must stay green both sides.
+struct Box { v: Vector<Integer> }
+
+function make() -> Box {
+    let mutable v = vector_new();
+    v = push(v, 42);
+    let b = Box { v: v };
+    return b;
+}
+
+function main() -> Integer {
+    let b = make();
+    return match pop(b.v) {
+        ~+ x => x,
+        ~0 => 0,
+    };
+}

@@ -1,0 +1,20 @@
+// EXPECT: 2
+// WO-SRet-Aggregate-StringField-Corruption — G's LỆNH THÉP tooth. `return
+// Leaf { s: "hi" };` directly, with NO intermediate `let` binding. §0
+// ĐÍNH CHÍNH 1 measured (MIR dump) that the lowerer STILL builds a temp
+// local for the struct literal — the shape reaching the Assign is byte-for-
+// byte identical to 556's `_0.s = move _1.s` (the only delta is a missing
+// `Drop(_1)`, irrelevant to the fat-pointer sync bug). Kept as a SEPARATE
+// fixture per G's mandate to cover this lowering path even though it needs
+// no second patch — do not go hunting for a second Hole here (scope-creep
+// on a phantom, per §0).
+struct Leaf { s: String }
+
+function make() -> Leaf {
+    return Leaf { s: "hi" };
+}
+
+function main() -> Integer {
+    let l = make();
+    return length(l.s);
+}

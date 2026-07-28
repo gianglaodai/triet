@@ -1,0 +1,21 @@
+// EXPECT: 2
+// WO-SRet-Aggregate-StringField-Corruption (G #4): `take(make())` — the
+// sret-returned struct is immediately forwarded as a heap-bearing param to
+// another function (WO-Param-Aggregate-CopyIn territory), composing the two
+// fixes. `make()`'s sret return must produce a struct with a CORRECTLY
+// synced String fat pointer before `take` ever copies it in — if Hole A
+// were unpatched, `take` would copy-in garbage len/cap, not just read it.
+struct Leaf { s: String }
+
+function make() -> Leaf {
+    let p = Leaf { s: "hi" };
+    return p;
+}
+
+function take(p: Leaf) -> Integer {
+    return length(p.s);
+}
+
+function main() -> Integer {
+    return take(make());
+}

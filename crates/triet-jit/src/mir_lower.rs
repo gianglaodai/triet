@@ -3239,6 +3239,36 @@ impl JitContext {
                                     .ins()
                                     .stack_store(src_cap, *dest_slot, dest_off + 16);
                             }
+                            // WO-SRet-Aggregate-StringField-Corruption Hole A
+                            // (2026-07-29): a fat-String field moved
+                            // PROJECTED→PROJECTED (`_0.s = move _1.s`, the
+                            // sret RETURN path — `_0` is the caller-supplied
+                            // sret pointer local, EXCLUDED from `struct_slots`
+                            // by the derived-locals loop's `reserved_locals`
+                            // guard, :2597) hits neither STEP 4 above (needs
+                            // an UNPROJECTED source) nor the ADR-0070
+                            // read-side block below (needs an UNPROJECTED
+                            // dest) — len@+8/cap@+16 were never synced,
+                            // leaving dest's cap@+16 as stack garbage (wrong-
+                            // value corruption at read time; `dealloc` UB at
+                            // Drop time — not a trap). `copy_base_addr`
+                            // yields the correct field address for BOTH a
+                            // slot-backed struct local (`stack_addr`) and a
+                            // pointer-based local (sret `_0`, param, match-
+                            // binding — `use_var`), so this fires correctly
+                            // even though `_0` has no `struct_slots` entry.
+                            if !dest.projection.is_empty()
+                                && !source.projection.is_empty()
+                                && dest_ty.is_string_repr()
+                            {
+                                let fat_mem = cranelift_codegen::ir::MemFlags::new();
+                                let src_addr = self.copy_base_addr(builder, source.local, src_off);
+                                let dest_addr = self.copy_base_addr(builder, dest.local, dest_off);
+                                let src_len = builder.ins().load(I64, fat_mem, src_addr, 8);
+                                let src_cap = builder.ins().load(I64, fat_mem, src_addr, 16);
+                                builder.ins().store(fat_mem, src_len, dest_addr, 8);
+                                builder.ins().store(fat_mem, src_cap, dest_addr, 16);
+                            }
                             // M1: Zeroing-on-Move — if source is a plain local of Move type,
                             // store 0 into it so Drop becomes a no-op.
                             let source_is_plain = source.projection.is_empty();

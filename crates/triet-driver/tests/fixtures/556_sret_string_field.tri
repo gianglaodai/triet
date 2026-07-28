@@ -1,0 +1,21 @@
+// EXPECT: 2
+// WO-SRet-Aggregate-StringField-Corruption (G #1): the base repro. `make()`
+// builds a local `Leaf { s: "hi" }` and returns it BY VALUE through sret —
+// lowers to `_0.s = move _1.s` where BOTH sides are projected (`_0` is the
+// caller-supplied sret pointer local, EXCLUDED from `struct_slots` per
+// `mir_lower.rs:~2597`; `_1` is the ordinary slot-backed local). Neither
+// ADR-0066 STEP 4 (requires an UNPROJECTED source) nor the ADR-0070
+// read-side block (requires an UNPROJECTED dest) covers this shape — Hole
+// A. Pre-fix: `length(l.s)` reads cap/len garbage through the scalar
+// ptr-only copy (dest cap@+16 never synced) — wrong value, not a crash.
+struct Leaf { s: String }
+
+function make() -> Leaf {
+    let p = Leaf { s: "hi" };
+    return p;
+}
+
+function main() -> Integer {
+    let l = make();
+    return length(l.s);
+}

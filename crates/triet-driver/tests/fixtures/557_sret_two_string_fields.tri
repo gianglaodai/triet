@@ -1,0 +1,17 @@
+// EXPECT: 25
+// WO-SRet-Aggregate-StringField-Corruption (G #2 — CẢ HAI field): two
+// separate `String` fields returned via sret in the SAME struct. Each field
+// hits Hole A independently (`_0.a = move _1.a` then `_0.b = move _1.b`) —
+// this fixture proves the fix is not order-dependent and both fat pointers
+// sync correctly, not just the first field touched.
+struct Two { a: String, b: String }
+
+function make() -> Two {
+    let t = Two { a: "hi", b: "world" };
+    return t;
+}
+
+function main() -> Integer {
+    let t = make();
+    return length(t.a) * 10 + length(t.b);
+}
