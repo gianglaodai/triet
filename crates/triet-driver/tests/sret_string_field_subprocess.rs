@@ -1,6 +1,5 @@
 //! WO-SRet-Aggregate-StringField-Corruption (O+G, 2026-07-29) — subprocess-
-//! isolated CONTENT read for the fat-String `len`/`cap` sync bug (Hole A:
-//! sret return path, this commit).
+//! isolated CONTENT read for the fat-String `len`/`cap` sync bug.
 //!
 //! `sret_string_field_counting.rs` proves the `(ptr, cap)` pairing is
 //! correct but only reads LENGTH (`length(l.s)`), never the string's actual
@@ -13,10 +12,6 @@
 //!
 //! The parent asserts `status.success()` — a crashed child fails the
 //! assertion instead of aborting the harness.
-//!
-//! Hole B (STEP-4 `Nullable(String)` construct-time sync) and the combined
-//! Hole-A+B case are fixed and tested in the follow-up commit (`p2`/`p3`
-//! tests land there).
 //!
 //! # `free_count` is a CALL count, not a "real dealloc" count
 //!
@@ -197,6 +192,55 @@ fn p1_sret_string_field_println_content() {
     let _serial = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     child_guard("p1_sret_string_field_println_content", SRC_P1);
     let out = spawn_child("p1_sret_string_field_println_content");
+    assert!(out.success, "child must exit cleanly: {out:?}");
+    assert_eq!(extract_program_stdout(&out.stdout), "hi\n");
+    // 2 zeroing no-op calls: make()'s own temp + main()'s `l` (see module
+    // doc — the real dealloc is println's own direct call, invisible here).
+    assert_eq!(out.free_count, Some(2), "child output: {out:?}");
+}
+
+// ══════════════════════════════════════════════════════════════════════
+// P2 — Hole B isolated: NO sret, `String?` field, content read via `!!`
+// then println.
+// ══════════════════════════════════════════════════════════════════════
+
+const SRC_P2: &str = "struct Leaf { s: String? }\n\
+     function main() -> Integer {\n\
+     \x20   let l = Leaf { s: ~+ \"hi\" };\n\
+     \x20   println(l.s!!);\n\
+     \x20   return 0;\n\
+     }";
+
+#[test]
+fn p2_nullable_field_local_println_content() {
+    let _serial = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    child_guard("p2_nullable_field_local_println_content", SRC_P2);
+    let out = spawn_child("p2_nullable_field_local_println_content");
+    assert!(out.success, "child must exit cleanly: {out:?}");
+    assert_eq!(extract_program_stdout(&out.stdout), "hi\n");
+    assert_eq!(out.free_count, Some(1), "child output: {out:?}");
+}
+
+// ══════════════════════════════════════════════════════════════════════
+// P3 — Combined: Hole A AND Hole B, `String?` field via sret.
+// ══════════════════════════════════════════════════════════════════════
+
+const SRC_P3: &str = "struct Leaf { s: String? }\n\
+     function make() -> Leaf {\n\
+     \x20   let p = Leaf { s: ~+ \"hi\" };\n\
+     \x20   return p;\n\
+     }\n\
+     function main() -> Integer {\n\
+     \x20   let l = make();\n\
+     \x20   println(l.s!!);\n\
+     \x20   return 0;\n\
+     }";
+
+#[test]
+fn p3_combined_sret_nullable_field_println_content() {
+    let _serial = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    child_guard("p3_combined_sret_nullable_field_println_content", SRC_P3);
+    let out = spawn_child("p3_combined_sret_nullable_field_println_content");
     assert!(out.success, "child must exit cleanly: {out:?}");
     assert_eq!(extract_program_stdout(&out.stdout), "hi\n");
     // 2 zeroing no-op calls: make()'s own temp + main()'s `l` (see module

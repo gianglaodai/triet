@@ -1,0 +1,14 @@
+// EXPECT: 2
+// WO-SRet-Aggregate-StringField-Corruption — Hole B ISOLATED (no sret at
+// all). `Leaf { s: String? }` constructed and read in the SAME function —
+// `_1.s = <construct String?>` where `dest` (`_1.s`) is projected and
+// `source` is NOT projected (a fresh String? value). STEP 4's
+// `matches!(dest_ty, MirType::String)` guard (`mir_lower.rs:3210`) excludes
+// `Nullable(String)`, so cap/len for the field never sync — independent of
+// the sret/Hole-A mechanism entirely (§0 ĐÍNH CHÍNH 2). Read via `!!`.
+struct Leaf { s: String? }
+
+function main() -> Integer {
+    let l = Leaf { s: ~+ "hi" };
+    return length(l.s!!);
+}

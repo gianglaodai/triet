@@ -3206,8 +3206,18 @@ impl JitContext {
                             // the slot). Reuses the dest_ty/dest_off from the
                             // walk above; reads src BEFORE M1 zeroing (which only
                             // touches src@0).
+                            // WO-SRet-Aggregate-StringField-Corruption Hole B
+                            // (2026-07-29): `matches!(dest_ty, MirType::String)`
+                            // excluded `Nullable(String)` — a `String?` field
+                            // constructed in a struct literal (`Leaf { s: ~+
+                            // "hi" }`) never got its len/cap synced, leaving
+                            // cap@+16 as stack garbage (wrong-value corruption,
+                            // not a trap). `is_string_repr()` covers both
+                            // `String` and `String?` (same 24-byte fat repr) —
+                            // mirrors the sibling ADR-0070 read-side guard
+                            // (`field_ty.is_string_repr()` below).
                             if !dest.projection.is_empty()
-                                && matches!(dest_ty, MirType::String)
+                                && dest_ty.is_string_repr()
                                 && let Some((dest_slot, _)) = self.struct_slots.get(&dest.local)
                                 && source.projection.is_empty()
                                 && let Some((src_slot, _)) = self.struct_slots.get(&source.local)

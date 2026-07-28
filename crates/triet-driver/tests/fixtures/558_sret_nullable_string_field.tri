@@ -1,0 +1,19 @@
+// EXPECT: 2
+// WO-SRet-Aggregate-StringField-Corruption (G #3 — needs BOTH holes fixed).
+// `Leaf { s: String? }` returned via sret: `_0.s = move _1.s` is
+// projected→projected (Hole A) AND the field's type is `Nullable(String)`,
+// which STEP 4's `matches!(dest_ty, MirType::String)` guard would have
+// excluded even if Hole A alone were patched (Hole B, `mir_lower.rs:3210`).
+// This fixture is RED if either hole is unpatched — it does not
+// disambiguate which; 563/564 isolate Hole B without sret.
+struct Leaf { s: String? }
+
+function make() -> Leaf {
+    let p = Leaf { s: ~+ "hi" };
+    return p;
+}
+
+function main() -> Integer {
+    let l = make();
+    return length(l.s!!);
+}

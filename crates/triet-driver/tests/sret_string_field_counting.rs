@@ -1,15 +1,15 @@
 //! WO-SRet-Aggregate-StringField-Corruption (O+G, 2026-07-29) — paired
 //! `(ptr, cap)` oracle for the fat-String `len`/`cap` sync fixed in
-//! `mir_lower.rs`'s `Statement::Assign` scalar-copy path.
+//! `mir_lower.rs`'s `Statement::Assign` scalar-copy path:
 //!
-//! **Hole A** (this commit): a `String` field moved PROJECTED→PROJECTED
-//! (`_0.s = move _1.s`, the sret RETURN path — `_0` is the caller-supplied
-//! sret pointer local, excluded from `struct_slots`) never synced
-//! `len@+8`/`cap@+16`; only `ptr@0` crossed.
-//!
-//! A second, orthogonal hole (Hole B — the STEP-4 construct-time sync guard
-//! excluding `Nullable(String)`) is fixed and tested in the follow-up commit
-//! (`hole_b_*`/`combined_*` tests land there).
+//! - **Hole A**: a `String`/`String?` field moved PROJECTED→PROJECTED
+//!   (`_0.s = move _1.s`, the sret RETURN path — `_0` is the caller-supplied
+//!   sret pointer local, excluded from `struct_slots`) never synced
+//!   `len@+8`/`cap@+16`; only `ptr@0` crossed.
+//! - **Hole B**: the STEP-4 construct-time sync guard
+//!   (`matches!(dest_ty, MirType::String)`) excluded `Nullable(String)`, so a
+//!   `String?` field built in a struct literal never got its len/cap synced
+//!   either — independent of sret entirely.
 //!
 //! # Why a paired oracle, not a bare pointer count
 //!
@@ -256,6 +256,90 @@ fn hole_a_forward_param_copyin_cap_matches() {
     let _serial = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     reset();
     let r = run(SRC_HOLE_A_FORWARD_PARAM);
+    assert_eq!(r, 2);
+    let s = stats();
+    assert_eq!(s.distinct_alloc, 1);
+    assert_eq!(s.distinct_freed, 1);
+    assert_eq!(s.dup_free, 0);
+    assert!(
+        s.cap_mismatches.is_empty(),
+        "cap mismatch (ptr, expected, freed): {:?}",
+        s.cap_mismatches
+    );
+}
+
+// ══════════════════════════════════════════════════════════════════════
+// Hole B — construct-time sync of a `String?` field, NO sret at all.
+// ══════════════════════════════════════════════════════════════════════
+
+const SRC_HOLE_B_READ: &str = "struct Leaf { s: String? }\n\
+     function main() -> Integer {\n\
+     \x20   let l = Leaf { s: ~+ \"hi\" };\n\
+     \x20   return length(l.s!!);\n\
+     }";
+
+#[test]
+fn hole_b_nullable_field_local_read_cap_matches() {
+    let _serial = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    reset();
+    let r = run(SRC_HOLE_B_READ);
+    assert_eq!(r, 2);
+    let s = stats();
+    assert_eq!(s.distinct_alloc, 1);
+    assert_eq!(s.distinct_freed, 1);
+    assert_eq!(s.dup_free, 0);
+    assert!(
+        s.cap_mismatches.is_empty(),
+        "cap mismatch (ptr, expected, freed): {:?}",
+        s.cap_mismatches
+    );
+}
+
+const SRC_HOLE_B_MATCH: &str = "struct Leaf { s: String? }\n\
+     function main() -> Integer {\n\
+     \x20   let l = Leaf { s: ~+ \"hi\" };\n\
+     \x20   return match l.s {\n\
+     \x20       ~+ v => length(v),\n\
+     \x20       ~0 => 99,\n\
+     \x20   };\n\
+     }";
+
+#[test]
+fn hole_b_nullable_field_local_match_cap_matches() {
+    let _serial = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    reset();
+    let r = run(SRC_HOLE_B_MATCH);
+    assert_eq!(r, 2);
+    let s = stats();
+    assert_eq!(s.distinct_alloc, 1);
+    assert_eq!(s.distinct_freed, 1);
+    assert_eq!(s.dup_free, 0);
+    assert!(
+        s.cap_mismatches.is_empty(),
+        "cap mismatch (ptr, expected, freed): {:?}",
+        s.cap_mismatches
+    );
+}
+
+// ══════════════════════════════════════════════════════════════════════
+// Combined — Hole A AND Hole B, a `String?` field via sret.
+// ══════════════════════════════════════════════════════════════════════
+
+const SRC_COMBINED: &str = "struct Leaf { s: String? }\n\
+     function make() -> Leaf {\n\
+     \x20   let p = Leaf { s: ~+ \"hi\" };\n\
+     \x20   return p;\n\
+     }\n\
+     function main() -> Integer {\n\
+     \x20   let l = make();\n\
+     \x20   return length(l.s!!);\n\
+     }";
+
+#[test]
+fn combined_sret_nullable_field_cap_matches() {
+    let _serial = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    reset();
+    let r = run(SRC_COMBINED);
     assert_eq!(r, 2);
     let s = stats();
     assert_eq!(s.distinct_alloc, 1);

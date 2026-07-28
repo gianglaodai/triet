@@ -1,0 +1,16 @@
+// EXPECT: 2
+// WO-SRet-Aggregate-StringField-Corruption — Hole B, idiom variant (HP.3:
+// every reachable idiom must be its own tooth, not just the first one that
+// happened to be probed). Same construction as 563 (`Leaf { s: String? }`,
+// no sret), but read via `match ~+/~0` instead of `!!` — a different
+// codegen path down to the field read, same underlying missing len/cap
+// sync at construction time.
+struct Leaf { s: String? }
+
+function main() -> Integer {
+    let l = Leaf { s: ~+ "hi" };
+    return match l.s {
+        ~+ v => length(v),
+        ~0 => 99,
+    };
+}
