@@ -1,0 +1,24 @@
+// EXPECT: 2
+// WO-Param-Aggregate-CopyIn (P4, O+G, 2026-07-28): whole-struct move of a
+// heap-bearing param into a fresh local (`let q = p;`), then read through
+// the new binding. Measured on the unpatched tree (per the prior WO
+// b998c76's own escalation note): SIGSEGV (139) — the aggregate multi-word
+// copy branch (`mir_lower.rs`'s `is_aggregate` Assign path) computes the
+// param's base address via `copy_base_addr`; without a `struct_slots` entry
+// the param falls to `copy_base_addr`'s `use_var` fallback, and the
+// param's own subsequent Deinit (`Statement::Deinit`'s struct branch,
+// `mir_lower.rs:~2921`) ALSO misses its slot and falls to
+// `def_var(local, zero)` — zeroing the Cranelift VARIABLE (which held the
+// CALLER's raw pointer) instead of tombstoning real memory, corrupting the
+// pointer used for later field reads through the moved-to copy `q`.
+struct Leaf { s: String }
+
+function take(p: Leaf) -> Integer {
+    let q = p;
+    return length(q.s);
+}
+
+function main() -> Integer {
+    let p = Leaf { s: "hi" };
+    return take(p);
+}

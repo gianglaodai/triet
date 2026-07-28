@@ -1,0 +1,17 @@
+// EXPECT: 0
+// WO-Param-Aggregate-CopyIn (P2, control, O+G, 2026-07-28): a heap-bearing
+// Struct param that is NEVER read or moved inside the callee — only
+// received and dropped at scope-end. MUST stay green across this WO (it
+// already passed pre-patch — the callee's Drop-of-unread-param path always
+// had SOME slot-less handling; this control pins it does not regress now
+// that the param DOES get a slot).
+struct Leaf { s: String }
+
+function take(p: Leaf) -> Integer {
+    return 0;
+}
+
+function main() -> Integer {
+    let p = Leaf { s: "hi" };
+    return take(p);
+}

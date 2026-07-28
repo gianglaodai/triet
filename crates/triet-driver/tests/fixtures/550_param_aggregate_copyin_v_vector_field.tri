@@ -1,0 +1,21 @@
+// EXPECT: 2
+// WO-Param-Aggregate-CopyIn (V, O+G, 2026-07-28): a Struct param whose only
+// field is a `Vector<Integer>` (HP.3 blind-spot extension — prior
+// heap-in-aggregate campaigns' fixtures for Vector-field structs
+// (260/542) never exercised this field through a PARAM, only through
+// locals). Same copy-in mechanism as the String-field cells above, but for
+// an 8-byte opaque handle field rather than a fat 24-byte one — confirms
+// the fix is not String-specific.
+struct Bag { items: Vector<Integer> }
+
+function take(b: Bag) -> Integer {
+    return len(b.items);
+}
+
+function main() -> Integer {
+    let mutable xs = vector_new();
+    xs = push(xs, 10);
+    xs = push(xs, 20);
+    let b = Bag { items: xs };
+    return take(b);
+}

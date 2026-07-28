@@ -1,0 +1,20 @@
+// EXPECT: 2
+// WO-Param-Aggregate-CopyIn (S2, O+G, 2026-07-28): a plain heap-bearing
+// Struct param, field MOVE-OUT (`let s = p.s;`). Same root cause as 543 —
+// without a `struct_slots` entry for the param, the field-move-out tombstone
+// (`mir_lower.rs:~3238`, gated on `self.struct_slots.get(&source.local)`)
+// silently skips zeroing the moved field's heap leaf in the param's slot
+// (there is none), so `Drop(p)` at scope-end (still seeing the live pointer)
+// double-frees against the moved-out `s`'s own drop — exit 134
+// pre-patch. Fixed by ADR-0066 §AMEND-1 callee copy-in.
+struct Leaf { s: String }
+
+function take(p: Leaf) -> Integer {
+    let s = p.s;
+    return length(s);
+}
+
+function main() -> Integer {
+    let p = Leaf { s: "hi" };
+    return take(p);
+}

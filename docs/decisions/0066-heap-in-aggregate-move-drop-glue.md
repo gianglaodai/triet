@@ -213,6 +213,78 @@ FLAT heap-in-struct; vẫn khóa nested/recursive/enum-payload (Lát 2).
 
 ---
 
+## §AMEND-1 — Callee Stack-Slot Copy-In for Struct Parameters (2026-07-28)
+
+**Trạng thái:** ✅ Quyết định — G ký duyệt WO-Param-Aggregate-CopyIn 2026-07-28. D thi hành.
+
+**Bệnh lý đóng bởi amend này:** Struct param bị loại khỏi `struct_slots` tại vòng lặp dẫn xuất
+prologue (`crates/triet-jit/src/mir_lower.rs`, vòng lặp Lát 2 §"Hình thức cụ thể" ở trên, guard
+`i < reserved_locals`), khiến mọi cổng kiểm soát ownership, Deinit và Assign thi hành qua
+`struct_slots.get()` đều mù hoặc rơi vào nhánh fallback sai, gây UB double-free (134), SIGSEGV
+(139) và SIGILL (132) — tuỳ hình MIR cụ thể trúng cổng nào.
+
+Nhát 1b's diagram ở trên ("Hình thức cụ thể", bước B.1) mô tả ĐÚNG ABI hôm nay: callee nhận `p`
+qua con trỏ và "đọc p qua con trỏ (cùng vùng nhớ main)" — điều này **CHỈ ĐƯỢC CHỨNG MINH SOUND**
+cho hình `take(p) { return 0; }` (fixture 258): callee KHÔNG đụng field nào của `p` trước khi
+Drop nó qua chính con trỏ đó. Recon 2026-07-28 đo được: bất kỳ hình nào ĐỌC hoặc DI CHUYỂN một
+field của `p` (S1 đọc field, S2 move field ra, P4 whole-move nội bộ rồi đọc lại, S9 forward `p`
+sang lệnh gọi khác) đều đâm vào MỘT TRONG BA cổng `struct_slots.get()` sau, tất cả đều mù trước
+param vì Lát 2's `reserved_locals` guard loại trừ param khỏi vòng cấp slot:
+- field move-out tombstone (`mir_lower.rs:~3239`) — bỏ qua câm, không zero field đã move-out
+  trong "slot" của param (không tồn tại) → double-free khi cả field-owner mới VÀ Drop(param) đều
+  free cùng con trỏ.
+- `Statement::Deinit`'s struct branch (`mir_lower.rs:~2921`) — rơi fallback `def_var(local, zero)`,
+  chỉ zero Cranelift Variable (giữ con trỏ caller), KHÔNG chạm bộ nhớ thật → whole-move sau đó đọc
+  qua con trỏ hỏng.
+- call-site arg forwarding (`mir_lower.rs:~3816`) — rơi fallback `use_var`, forward THẲNG con trỏ
+  của caller (không phải bản sao riêng) sang callee kế tiếp → hai hàm cùng alias một buffer.
+
+1. **Hợp đồng caller (tái khẳng định Nhát 1b — KHÔNG đổi).** Aggregate vẫn truyền **by-pointer**:
+   call-site ghi `stack_addr` slot của chính caller vào ô đối số (`mir_lower.rs:~3818`). **RÚT BỎ**
+   mọi diễn giải trước đây rằng việc callee alias trực tiếp bộ nhớ caller là một "bug" — đó là
+   hợp đồng ABI có chủ ý (tiết kiệm một byte-copy 24B ở mọi call, per Nhát 1b's lý do gốc).
+2. **Nghĩa vụ callee (MỚI).** Prologue callee **BẮT BUỘC** cấp `StackSlot` tường minh cho mỗi
+   struct param thuần và **copy-in** `layout.total_size` byte từ con trỏ caller — cùng khuôn với
+   String (`mir_lower.rs:~2691`), Enum (`~2701`, WO-NullableEnumParamABI) và Outcome (`~2748`) đã
+   làm từ trước. Struct là aggregate ABI thứ TƯ còn thiếu bước này. Sau copy-in, callee thao tác
+   trên **bản sao riêng của chính nó** — không còn alias trực tiếp bộ nhớ caller, dù ABI truyền
+   vào vẫn là một con trỏ.
+3. **Ngoại lệ `Local(0)` (sret).** Khi hàm trả về qua sret, `Local(0)` là con trỏ DO CALLER CẤP để
+   nhận kết quả return — cấp StackSlot cho nó sẽ shadow con trỏ đó và miscompile đường return (tiền
+   lệ struct 172/14, tiền lệ enum P0 §"Nhát 1b"). `Local(0)` tiếp tục bị loại trừ tuyệt đối khỏi
+   copy-in.
+4. **Bất biến thu được.** Copy-in tự thoả mãn TOÀN BỘ cổng `struct_slots.get()` của JIT
+   (ownership/Deinit/Assign/Drop/forwarding) cho param, KHÔNG cần vá từng cổng riêng lẻ. Vá lẻ
+   từng cổng là mẫu đã lặp lại và để lại lỗ **BA lần**: `WO-NullableEnumParamABI` (enum param, cổng
+   `mir_lower.rs:~2704`), `WO-StructParamABI` (nhánh `is_nullable_struct_param` đơn lẻ trong
+   `load_place`, `~1343`), và chính hình này trước khi §AMEND-1 tổng quát hoá. Soundness của
+   copy-in dựa vào một bất biến CÓ SẴN, không đổi: `triet-lower/src/lib.rs` phát `Deinit(arg)`
+   **vô điều kiện** ngay sau `CallDispatch` cho mọi đối số kiểu Move (ADR-0042 Q1) — đây là thứ
+   tombstone bản sao của CALLER sau khi "chuyển quyền sở hữu" logic cho callee, bất kể callee làm
+   gì với bản sao riêng của nó. Nếu bất biến này biến mất, copy-in biến double-free thành LEAK CÂM
+   thay vì crash — có canary MIR-structural pin riêng (`param_aggregate_copyin_counting.rs`,
+   `caller_emits_deinit_after_struct_arg_call`), độc lập với JIT.
+5. **Phạm vi khoá cứng.** Chỉ `MirType::Struct` THUẦN (không unwrap `Nullable`, khác nhánh Enum ở
+   trên). `Nullable(Struct)` param GIỮ NGUYÊN đường refuse fail-closed hiện có
+   (`load_place`'s nhánh `is_nullable_struct_param`; Drop/`store_place`'s refuse
+   `"Struct? Drop without slot"`) — cấp slot cho nó sẽ làm nhánh refuse đó chết hoặc deref hai lần.
+   Đây là nợ ghi sổ riêng (`TODO.md`), không mở trong §AMEND-1.
+
+**Nợ leo thang phát hiện trong lúc verify (KHÔNG sửa — ngoài phạm vi §AMEND-1):** trả struct-theo-
+giá-trị (sret, non-nullable) chứa một field `String` sinh giá trị RÁC (không crash) khi field đó
+được ghi vào buffer sret qua một `Assign` chiếu-field (`_0.field = move _1.field`) — đích `_0`
+(sret) VĨNH VIỄN không có `struct_slots` entry nên bước đồng bộ `len@+8`/`cap@+16` riêng cho String
+(`mir_lower.rs:~3156-3168`, gate trên `struct_slots.get(&dest.local)`) không bao giờ chạy cho field
+đích là sret. TÁI HIỆN ĐƯỢC VỚI 0 THAM SỐ (`function make() -> Leaf { let p = Leaf{s:"hi"}; return
+p; }` đã lỗi) — độc lập hoàn toàn với param-copy-in, một lỗ tồn tại từ trước, chưa từng có fixture
+chạm tới (440 chỉ khoá trường hợp `Struct?`/Nullable). Ghi sổ `TODO.md`.
+
+**Chữ ký §AMEND-1:** O: soạn WO 2026-07-28 (bảng 49-site + 3 điểm chạm semantics bắt buộc đo) ·
+G: ✅ ký duyệt · D: thi hành, đo đủ 8 fixture (543-550) + counting (`param_aggregate_copyin_counting.rs`)
++ poison thủ công qua cp-snapshot (mir_lower.rs, triet-lower/src/lib.rs) — không `git checkout`.
+
+---
+
 **Chữ ký ADR-0066:** O: ✅ (recon Phase 1 + vẽ bản kiến trúc + verify width Vector/HashMap qua shim) ·
 G: ✅ (ký duyệt bản vẽ 2026-06-21 — 3 KCN + cắt scope whole-move + gộp M-1/M-2 vào Lát 1 + khắc LUẬT THÉP
 Atomic). D được phép `rustc` từ điểm này.

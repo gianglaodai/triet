@@ -2745,6 +2745,59 @@ impl JitContext {
                     builder.ins().stack_store(field, slot, off);
                 }
             }
+            // WO-Param-Aggregate-CopyIn (O+G, 2026-07-28): plain Struct param
+            // received as pointer-to-caller-slot. Mirror the String (:2691) /
+            // Enum (:2701, WO-NullableEnumParamABI) copy-in above — Struct is
+            // the FOURTH aggregate ABI that was missing this step. The Lát 2
+            // derived-locals loop above (`reserved_locals`) explicitly
+            // excludes parameters, so a plain-Struct param never got a
+            // `struct_slots` entry; every downstream `struct_slots.get()`
+            // gate (Deinit/Assign/Drop/call-forwarding) missed for it and
+            // fell into a fallback that treated the CALLER'S RAW POINTER as
+            // if it were the struct's byte-0 VALUE — root cause of the
+            // double-free (134) / SIGSEGV (139) / SIGILL (132) family closed
+            // by ADR-0066 §AMEND-1. The by-pointer caller ABI itself
+            // (`stack_addr` of the caller's own slot, call-site :3818) is
+            // NOT changed and is NOT a bug (ADR-0066 KCN-1b) — this adds the
+            // callee-side copy-in obligation only.
+            //
+            // SCOPE LOCKED to `MirType::Struct` WITHOUT unwrapping Nullable
+            // (unlike the Enum branch above): a `Nullable(Struct)` param
+            // keeps the pre-existing fail-closed refuse (`load_place`'s
+            // `is_nullable_struct_param` branch; store_place/Drop's "Struct?
+            // Drop without slot" refuse). Giving it a slot here would make
+            // that refuse dead code or double-deref through it — see
+            // ADR-0066 §AMEND-1 §5 (Nullable(Struct) param stays a tracked
+            // debt, not opened by this WO).
+            //
+            // `Local(0)` (sret) is excluded automatically: this loop only
+            // ranges over `body.signature.parameters` (see the `bp_idx`/
+            // `local` mapping above), never over Local(0).
+            if let MirType::Struct(struct_name) = &body.local_decls[local.0].ty
+                && struct_name.as_str() != "String"
+                && !self.struct_slots.contains_key(&local)
+                && let Some(layout) = body
+                    .struct_layouts
+                    .iter()
+                    .find(|l| l.name == *struct_name)
+                    .cloned()
+            {
+                let align_shift = u32_to_u8(layout.alignment.ilog2());
+                let slot = builder.create_sized_stack_slot(StackSlotData::new(
+                    StackSlotKind::ExplicitSlot,
+                    usize_to_u32(layout.total_size),
+                    align_shift,
+                ));
+                self.struct_slots.insert(local, (slot, layout.clone()));
+                // Copy-in ALL `total_size` bytes from the caller's buffer
+                // (param_val) into the callee's own slot — 8-byte words,
+                // starting at offset 0 (no discriminant/tag word for a plain
+                // Struct, unlike Enum's disc@0/payload@8 split).
+                for off in (0..usize_to_i32(layout.total_size)).step_by(8) {
+                    let field = builder.ins().load(I64, mem_flags, param_val, off);
+                    builder.ins().stack_store(field, slot, off);
+                }
+            }
             // ADR-0057/0058 gap: Outcome param received as pointer-to-caller-slot
             // (Site 1, call-site packing at ~2676, already correct). Mirror the
             // String/Enum copy-in above — without this, `param_val` is loaded

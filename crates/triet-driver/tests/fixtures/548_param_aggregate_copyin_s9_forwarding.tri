@@ -1,0 +1,37 @@
+// EXPECT: 0
+// WO-Param-Aggregate-CopyIn (S9, O+G, 2026-07-28): call-site FORWARDING —
+// `outer(p)` passes its OWN param straight through to `inner(p)` without
+// touching it first. Measured 139 (SIGSEGV) pre-patch: `outer`'s param `p`
+// has no `struct_slots` entry, so its Cranelift Variable holds the CALLER's
+// raw pointer; the call-site arg marshal (`mir_lower.rs:~3816`) falls to its
+// `use_var` fallback and forwards that SAME caller pointer straight into
+// `inner` — `inner` and `main` now alias the identical buffer. The lowerer
+// unconditionally emits `Deinit(p)` in `outer` right after the call
+// (`triet-lower/src/lib.rs:~4462`, ADR-0042 Q1); pre-patch this only zeroed
+// `outer`'s own Variable (not real memory), so `main`'s own scope-end Drop
+// of `p` STILL frees the same String `inner` already consumed — double
+// free. Post-patch, `outer`'s param gets its OWN copy-in slot, so the
+// call-site forwards the ADDRESS OF THAT COPY (not `main`'s buffer) to
+// `inner` — `inner` frees the copy, `outer`'s Deinit tombstones the copy's
+// slot (a no-op double-free-wise), `main`'s Drop of its own original `p` is
+// the only real free of that particular allocation.
+//
+// Self-checking oracle (not a bare `EXPECT: 0` masking a wrong value):
+// `inner` returns `length(p.s)` (== 2 for "hi"); `outer` returns
+// `inner(p) - 2`, which is 0 ONLY if the forwarded read produced the real,
+// correct length — any corruption would almost certainly NOT yield exactly
+// 2, making a residual 0 here a strong (not lucky) signal.
+struct Leaf { s: String }
+
+function inner(p: Leaf) -> Integer {
+    return length(p.s);
+}
+
+function outer(p: Leaf) -> Integer {
+    return inner(p) - 2;
+}
+
+function main() -> Integer {
+    let p = Leaf { s: "hi" };
+    return outer(p);
+}

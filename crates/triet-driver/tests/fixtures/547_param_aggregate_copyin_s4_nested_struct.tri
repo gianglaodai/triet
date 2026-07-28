@@ -1,0 +1,20 @@
+// EXPECT: 5
+// WO-Param-Aggregate-CopyIn (S4, O+G, 2026-07-28): a NESTED heap-bearing
+// struct param (`Box { l: Leaf, n: Integer }`, `Leaf { s: String }`),
+// whole-moved (`let c = b;`) then read through both a nested heap field
+// (`c.l.s`) and a scalar field (`c.n`). Extends 546 (P4) one level deeper —
+// `copy_base_addr` / the aggregate copy / the Deinit tombstone all need to
+// resolve the OUTER param's slot correctly before nested-field offsets are
+// even meaningful. Measured 139 (SIGSEGV) pre-patch, same mechanism as P4.
+struct Leaf { s: String }
+struct Box { l: Leaf, n: Integer }
+
+function take(b: Box) -> Integer {
+    let c = b;
+    return length(c.l.s) + c.n;
+}
+
+function main() -> Integer {
+    let b = Box { l: Leaf { s: "hi" }, n: 3 };
+    return take(b);
+}

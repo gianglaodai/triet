@@ -1,0 +1,44 @@
+// EXPECT: 3
+// WO-Param-Aggregate-CopyIn (S3, O+G, 2026-07-28): a heap-bearing Struct
+// param returned WHOLE (`return b;`) — the param's field is moved into the
+// callee's sret buffer via a field-projected Assign, then the param's own
+// scope-end Drop must see a tombstoned field (no double-free).
+//
+// ⚠ DEVIATION FROM THE WO's LITERAL S3 SHAPE: the WO's table specifies
+// `Leaf { s: String }` (matching S1/S2/S9/S8) for this cell. MEASURED
+// (2026-07-28, on the patched tree): returning a `String`-field struct by
+// value through sret (`_0.s = move _1.s`) produces a WRONG VALUE (garbage,
+// not a crash) — `_0` (the sret local) is PERMANENTLY excluded from
+// `struct_slots` (it is a caller-supplied pointer, ADR-0049/`:2537-2552`),
+// so the String-specific len/cap sync (`mir_lower.rs:~3156-3168`, gated on
+// `self.struct_slots.get(&dest.local)`) never fires for a field-projected
+// write INTO the sret local — only the 8-byte ptr word crosses, cap/len are
+// left as uninitialized stack garbage. REPRODUCIBLE WITH ZERO PARAMETERS
+// (`function make() -> Leaf { let p = Leaf{s:"hi"}; return p; }` already
+// returns garbage) — this is a PRE-EXISTING, INDEPENDENT bug, orthogonal to
+// this WO's param-copy-in scope (confirmed: the Assign's `source.local` in
+// the zero-param repro is an ordinary `let` local, which already had a slot
+// before this WO). NOT fixed here (out of the locked scope — prologue slot
+// derivation + param loop only); escalated in the WO report / TODO.md.
+//
+// This fixture substitutes a Vector-backed heap field (`Vector<Integer>`,
+// an 8-byte opaque handle — no separate len/cap sync needed, so it is NOT
+// affected by the orthogonal bug above) to still exercise the SAME
+// mechanism the WO's own recon flagged (`mir_lower.rs:~3238` field
+// move-out tombstone gated on the param having a `struct_slots` entry) for
+// a return-escape shape, without tripping the unrelated sret/String gap.
+struct Bag { items: Vector<Integer> }
+
+function take(b: Bag) -> Bag {
+    return b;
+}
+
+function main() -> Integer {
+    let mutable xs = vector_new();
+    xs = push(xs, 10);
+    xs = push(xs, 20);
+    xs = push(xs, 30);
+    let b = Bag { items: xs };
+    let c = take(b);
+    return len(c.items);
+}

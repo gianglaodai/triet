@@ -1,0 +1,18 @@
+// EXPECT: 2
+// WO-Param-Aggregate-CopyIn (S6, control, O+G, 2026-07-28): a `&0 Leaf`
+// BORROW param (Reference-typed, not a plain Struct) — this WO's new
+// copy-in branch matches ONLY `MirType::Struct`, so a Reference-typed
+// param must be COMPLETELY untouched by it (References never enter
+// `struct_slots`; they carry a raw address in their own Variable via
+// `Statement::Borrow`). Strengthened beyond the WO's literal `EXPECT: 0`
+// cell to a real value read, per the project's no-exit-0-oracle rule.
+struct Leaf { s: String }
+
+function take(p: &0 Leaf) -> Integer {
+    return length(p.s);
+}
+
+function main() -> Integer {
+    let p = Leaf { s: "hi" };
+    return take(&0 p);
+}

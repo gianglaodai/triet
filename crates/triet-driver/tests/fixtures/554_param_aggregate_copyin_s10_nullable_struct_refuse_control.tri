@@ -1,0 +1,22 @@
+// ERROR: Struct? Drop without slot
+// WO-Param-Aggregate-CopyIn (S10, control, O+G, 2026-07-28): a
+// `Nullable(Struct)` (`Leaf?`) param — EXPLICITLY OUT OF SCOPE for this WO
+// (ADR-0066 §AMEND-1 §5). The new copy-in branch matches ONLY bare
+// `MirType::Struct` (no `Nullable` unwrap, unlike the Enum param branch),
+// so a `Leaf?` param must keep failing CLOSED with the pre-existing refuse
+// — giving it a slot here would make `load_place`'s
+// `is_nullable_struct_param` special case dead code or a double-deref
+// hazard. MUST stay a compile-time refuse, never a runtime crash.
+struct Leaf { s: String }
+
+function take(p: Leaf?) -> Integer {
+    return match p {
+        ~+ v => length(v.s),
+        ~0 => 0,
+    };
+}
+
+function main() -> Integer {
+    let p: Leaf? = ~0;
+    return take(p);
+}

@@ -1,0 +1,22 @@
+// EXPECT: 7
+// WO-Param-Aggregate-CopyIn (S8, O+G, 2026-07-28): TWO heap-bearing Struct
+// params in the same callee, both read AND combined via arithmetic
+// (`Add`). Measured 132 (SIGILL) pre-patch: the field move-out sync
+// (`mir_lower.rs:~3251`) that keeps a destination String's `len@8`/`cap@16`
+// in sync with its source silently no-ops when the source param has no
+// slot, leaving `len` as uninitialized stack garbage in one of the two
+// `length(...)` calls; the subsequent `Add` then violates the ADR-0044
+// range-enforcement trap on the garbage operand → `trapnz` → SIGILL,
+// DISTINCT from the double-free/SIGSEGV family in the other cells here
+// (Luật: failure-mode precision — 132 is a trap, not memory corruption).
+struct Leaf { s: String }
+
+function take(p: Leaf, q: Leaf) -> Integer {
+    return length(p.s) + length(q.s);
+}
+
+function main() -> Integer {
+    let p = Leaf { s: "hi" };
+    let q = Leaf { s: "world" };
+    return take(p, q);
+}

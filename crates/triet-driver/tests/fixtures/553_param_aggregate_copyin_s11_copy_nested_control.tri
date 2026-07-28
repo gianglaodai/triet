@@ -1,0 +1,20 @@
+// EXPECT: 6
+// WO-Param-Aggregate-CopyIn (S7/S11, control, O+G, 2026-07-28): an
+// all-scalar (Copy) struct param, NESTED one level (`Outer2 { inner: Inner,
+// c: Integer }`). Copy structs already got a `struct_slots` entry via a
+// DIFFERENT path pre-this-WO in some shapes (fixture 14 is the flat-Copy
+// precedent, kept green unmodified) — this control confirms a NESTED
+// all-Copy param still reads correctly now that the plain-Struct copy-in
+// branch also applies to it (Copy-ness is irrelevant to this WO's scope —
+// the new branch matches on `MirType::Struct` regardless of Copy/Move).
+struct Inner { a: Integer, b: Integer }
+struct Outer2 { inner: Inner, c: Integer }
+
+function take(o: Outer2) -> Integer {
+    return o.inner.a + o.inner.b + o.c;
+}
+
+function main() -> Integer {
+    let o = Outer2 { inner: Inner { a: 1, b: 2 }, c: 3 };
+    return take(o);
+}

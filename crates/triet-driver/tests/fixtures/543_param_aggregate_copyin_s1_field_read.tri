@@ -1,0 +1,23 @@
+// EXPECT: 2
+// WO-Param-Aggregate-CopyIn (S1, O+G, 2026-07-28): a plain heap-bearing
+// Struct param, read-only (field access, no move). UNPATCHED: the Lát 2
+// derived-locals loop (`mir_lower.rs`, `reserved_locals`) explicitly excludes
+// parameters from `struct_slots`, so a Struct param never got a StackSlot —
+// every downstream `struct_slots.get()` gate missed for it. Here, the field
+// move-out tombstone (`Statement::Assign`'s Field-projection branch,
+// `mir_lower.rs:~3238`) silently no-ops when the base has no slot, so BOTH
+// `take`'s own `Drop(p)` (reading the never-tombstoned field) AND `main`'s
+// own scope-end drop of `p` free the SAME String allocation —
+// `free(): double free detected in tcache 2` (exit 134). Fixed by giving
+// every plain-Struct param a callee-owned copy-in StackSlot (ADR-0066
+// §AMEND-1), mirroring the pre-existing String/Enum/Outcome param copy-in.
+struct Leaf { s: String }
+
+function take(p: Leaf) -> Integer {
+    return length(p.s);
+}
+
+function main() -> Integer {
+    let p = Leaf { s: "hi" };
+    return take(p);
+}
