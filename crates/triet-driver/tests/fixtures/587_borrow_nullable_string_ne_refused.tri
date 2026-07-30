@@ -1,0 +1,22 @@
+// ERROR: E1058
+// WO-Reference-Operand-Eq-Refuse: `&0 String? != &0 String?`, covering the
+// `Ne` path (not just `Eq`). Two independently allocated nullables with the
+// SAME content. Pre-fix (measured on `d8fa041`): `Statement::Borrow` yields
+// the slot ADDRESS for the `String?` local — generic `icmp` on that address
+// always returns non-equal for two distinct allocations, silently wrong
+// (exit 0, no diagnostic), even though owned `Nullable(String) !=` is
+// already refused (fat-String sync inside the nullable is unlike a bare
+// `String`'s explicit content-compare shim). Must refuse through the
+// reference too.
+function f(s: &0 String?, t: &0 String?) -> Integer {
+    if s != t {
+        return 1;
+    }
+    return 0;
+}
+
+function main() -> Integer {
+    let a: String? = "hi";
+    let b: String? = "hi";
+    return f(&0 a, &0 b);
+}

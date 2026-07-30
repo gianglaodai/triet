@@ -269,6 +269,35 @@ impl Type {
             Self::Nullable(inner) => {
                 matches!(inner.as_ref(), Self::String) || inner.is_eq_refused()
             }
+            // `WO-Reference-Operand-Eq-Refuse` — a reference operand
+            // (`&0`/`&+`/`&-`, frozen or mutable) is a slot ADDRESS in the
+            // JIT (`Statement::Borrow`, `mir_lower.rs:3494-3501`), not the
+            // pointee's content. Generic `icmp` on that address is only
+            // semantically correct when the pointee's OWN equality is
+            // already a raw-value compare (scalars, and `String` — whose
+            // content-compare shim dereferences explicitly, landed in
+            // `d8fa041`). Every other pointee shape must refuse here too,
+            // even where the owned form is allowed:
+            //   - `String` exempted: the reference-operand dispatch derefs
+            //     and content-compares explicitly (not a raw `icmp`).
+            //   - `UserEnum` (even payload-free): unlike the owned case,
+            //     comparing through a reference means comparing the two
+            //     distinct allocations' ADDRESSES, not the discriminant
+            //     value — always false for independently-allocated equal
+            //     variants. Owned payload-free enum stays allowed
+            //     (`is_eq_refused` on the enum itself, not this arm).
+            //   - `Nullable(UserEnum)`: must be its own arm, NOT left to
+            //     fall through to `other.is_eq_refused()` below — that
+            //     call refuses `Nullable` only via the `String`-inner or
+            //     recursive-refuse rules above, which return `false` for
+            //     a payload-free enum. Without this arm the same
+            //     address-compare hole reopens one level down.
+            Self::Reference(_, inner) => match inner.as_ref() {
+                Self::String => false,
+                Self::UserEnum { .. } => true,
+                Self::Nullable(n) if matches!(n.as_ref(), Self::UserEnum { .. }) => true,
+                other => other.is_eq_refused(),
+            },
             _ => false,
         }
     }

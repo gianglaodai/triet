@@ -1,0 +1,22 @@
+// ERROR: E1058
+// WO-Reference-Operand-Eq-Refuse: `&0 HashMap<String,Integer> == &0
+// HashMap<String,Integer>`, two independently allocated maps with the SAME
+// content. Pre-fix (measured on `d8fa041`): `Statement::Borrow` yields the
+// slot ADDRESS for the HashMap local — generic `icmp` on that address
+// always returns 0 for two distinct allocations, silently wrong (exit 0,
+// no diagnostic), even though the owned `HashMap == HashMap` form is
+// already refused. Must refuse through the reference too.
+function f(s: &0 HashMap<String, Integer>, t: &0 HashMap<String, Integer>) -> Integer {
+    if s == t {
+        return 1;
+    }
+    return 0;
+}
+
+function main() -> Integer {
+    let a: HashMap<String, Integer> = hashmap_new();
+    let a2 = insert(a, "k", 1);
+    let b: HashMap<String, Integer> = hashmap_new();
+    let b2 = insert(b, "k", 1);
+    return f(&0 a2, &0 b2);
+}

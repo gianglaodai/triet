@@ -1,0 +1,24 @@
+// ERROR: E1058
+// WO-Reference-Operand-Eq-Refuse: `&0 Color == &0 Color`, a PAYLOAD-FREE
+// enum, same variant, through a reference. Pre-fix (measured on `d8fa041`):
+// `Statement::Borrow` yields the slot ADDRESS for the enum local — generic
+// `icmp` on that address always returns 0 for two distinct allocations,
+// silently wrong (exit 0, no diagnostic), even though the OWNED payload-free
+// enum's `==` is already correct (discriminant compare, control fixture
+// 572). The reference form must be refused despite the owned form being
+// allowed: comparing through a reference compares the two allocations'
+// ADDRESSES, not the discriminant.
+enum Color { Red, Green }
+
+function f(s: &0 Color, t: &0 Color) -> Integer {
+    if s == t {
+        return 1;
+    }
+    return 0;
+}
+
+function main() -> Integer {
+    let a = Color::Red;
+    let b = Color::Red;
+    return f(&0 a, &0 b);
+}
