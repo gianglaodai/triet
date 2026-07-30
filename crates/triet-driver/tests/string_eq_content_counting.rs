@@ -358,3 +358,91 @@ fn borrow_eq_identity_single_alloc_single_free() {
         s.cap_mismatches
     );
 }
+
+// ══════════════════════════════════════════════════════════════════════
+// `WO-BinaryOp-Operand-Temp-Drop-Leak` §4 — an operand that is itself a
+// heap-owning TEMP (a bare string-literal RHS, or a call-result operand),
+// not a `let`-bound local, gets no scope-end `Drop` from `Expr::BinaryOp`
+// (`crates/triet-lower/src/lib.rs`, `BinaryOp` never called `push_owned`
+// on its lowered operands — the same gap `emit_shim_call` closed for shim
+// args in WO-ShimTempOwnership). Before the fix: `distinct_freed == 1`
+// (only the `let`-bound side frees; the literal/call temp leaks).
+// ══════════════════════════════════════════════════════════════════════
+
+const SRC_EQ_LITERAL_RHS: &str = "function main() -> Integer {\n\
+     \x20   let s = \"hi\";\n\
+     \x20   if s == \"hi\" { return 1; } else { return 0; }\n\
+     }";
+
+#[test]
+fn eq_literal_rhs_operand_temp_no_leak() {
+    let _serial = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    reset();
+    let r = run(SRC_EQ_LITERAL_RHS);
+    assert_eq!(r, 1, "s == \"hi\" must content-compare TRUE");
+    assert_two_distinct_no_dup_no_corruption(&stats());
+}
+
+const SRC_NE_LITERAL_RHS: &str = "function main() -> Integer {\n\
+     \x20   let s = \"hi\";\n\
+     \x20   if s != \"ho\" { return 1; } else { return 0; }\n\
+     }";
+
+#[test]
+fn ne_literal_rhs_operand_temp_no_leak() {
+    let _serial = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    reset();
+    let r = run(SRC_NE_LITERAL_RHS);
+    assert_eq!(r, 1, "s != \"ho\" must be TRUE");
+    assert_two_distinct_no_dup_no_corruption(&stats());
+}
+
+const SRC_EQ_CALL_RHS: &str = "function g() -> String = \"hi\"\n\
+     function main() -> Integer {\n\
+     \x20   let s = \"hi\";\n\
+     \x20   if s == g() { return 1; } else { return 0; }\n\
+     }";
+
+#[test]
+fn eq_call_result_operand_temp_no_leak() {
+    let _serial = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    reset();
+    let r = run(SRC_EQ_CALL_RHS);
+    assert_eq!(r, 1, "s == g() (g() -> \"hi\") must content-compare TRUE");
+    assert_two_distinct_no_dup_no_corruption(&stats());
+}
+
+const SRC_NE_CALL_RHS: &str = "function g() -> String = \"ho\"\n\
+     function main() -> Integer {\n\
+     \x20   let s = \"hi\";\n\
+     \x20   if s != g() { return 1; } else { return 0; }\n\
+     }";
+
+#[test]
+fn ne_call_result_operand_temp_no_leak() {
+    let _serial = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    reset();
+    let r = run(SRC_NE_CALL_RHS);
+    assert_eq!(r, 1, "s != g() (g() -> \"ho\") must be TRUE");
+    assert_two_distinct_no_dup_no_corruption(&stats());
+}
+
+// O's P3 poison (round-1 verify gap): the patch is `for operand in [lhs,
+// rhs]` — two loop elements, two orthogonal branches per Luật 34. All four
+// tests above put the heap temp on the RHS; none exercised the LHS half.
+// O measured `for operand in [rhs]` (dropping `lhs`) and got 13/13 GREEN —
+// half the fix deletable, unnoticed. This test puts the literal temp on
+// the LHS (`"hi" == s`, s the let-bound RHS) to pin that half.
+const SRC_EQ_LITERAL_LHS: &str = "function main() -> Integer {\n\
+     \x20   let s = \"hi\";\n\
+     \x20   if \"hi\" == s { return 1; } else { return 0; }\n\
+     }";
+
+#[test]
+fn eq_literal_lhs_operand_temp_no_leak() {
+    let _serial = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    reset();
+    let r = run(SRC_EQ_LITERAL_LHS);
+    assert_eq!(r, 1, "\"hi\" == s must content-compare TRUE");
+    assert_two_distinct_no_dup_no_corruption(&stats());
+}

@@ -3639,6 +3639,21 @@ fn lower_expr(
         } => {
             let lhs = lower_expr(*left, None, arena, c)?;
             let rhs = lower_expr(*right, None, arena, c)?;
+            // Operand temps that OWN heap (a `const "…"` literal, a call result) get no
+            // scope-end Drop otherwise — the same `push_owned` gap `emit_shim_call`
+            // (:1778-1785) closed for shim args in WO-ShimTempOwnership.
+            // `MirType::String` ONLY: E1004/E1058 already fence every other heap shape
+            // out of `Statement::BinaryOp`, and `Reference{String}` must NOT be pushed —
+            // not because Drop would double-free today (it is a no-op: Reference is Copy
+            // per ADR-0045 §3, and `mir_lower.rs:3608-3611` short-circuits on
+            // `ty.is_copy`) but so this fix does not silently depend on that.
+            // `push_owned` is idempotent, so a let-bound or Move-param operand is
+            // unaffected.
+            for operand in [lhs, rhs] {
+                if matches!(c.local_decls[operand.0].ty, MirType::String) {
+                    c.push_owned(operand);
+                }
+            }
             let ty = binop_result_type(operator);
             let d = c.alloc_local_ty(ty);
 
