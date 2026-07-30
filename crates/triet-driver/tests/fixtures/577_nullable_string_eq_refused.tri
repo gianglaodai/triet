@@ -1,0 +1,16 @@
+// ERROR: E1058
+// WO-String-Eq-Content-Compare-And-Aggregate-Refuse Task B: `String? ==
+// String?` — the content-compare shim wired for Task A only understands a
+// bare, non-nullable `String`'s `{ptr,len}`; Ł3 null-comparison semantics
+// for a nullable String are not yet specified. Measured pre-WO: this ran
+// all the way to the JIT (MIR `_2 = _0 == _1`), exit 0, sai câm — refused
+// fail-closed now.
+function main() -> Integer {
+    let a: String? = ~+ "hi";
+    let b: String? = ~+ "hi";
+    if a == b {
+        return 1;
+    } else {
+        return 0;
+    }
+}

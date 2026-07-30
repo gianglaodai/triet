@@ -1,0 +1,14 @@
+// ERROR: E1058
+// WO-String-Eq-Content-Compare-And-Aggregate-Refuse Task B: `Vector == Vector`
+// has no defined structural equality — refused fail-closed at typecheck.
+function main() -> Integer {
+    let mutable a = vector_new();
+    a = push(a, 1);
+    let mutable b = vector_new();
+    b = push(b, 1);
+    if a == b {
+        return 1;
+    } else {
+        return 0;
+    }
+}

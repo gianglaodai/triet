@@ -1,0 +1,15 @@
+// ERROR: E1058
+// WO-String-Eq-Content-Compare-And-Aggregate-Refuse Task B: `HashMap ==
+// HashMap` has no defined structural equality — refused fail-closed at
+// typecheck.
+function main() -> Integer {
+    let mutable a = hashmap_new();
+    a = insert(a, 1, 100);
+    let mutable b = hashmap_new();
+    b = insert(b, 1, 100);
+    if a == b {
+        return 1;
+    } else {
+        return 0;
+    }
+}

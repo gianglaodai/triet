@@ -392,7 +392,7 @@ exist** (deep dive ở [`docs/ARCHIVE.md`](docs/ARCHIVE.md)):
 
 - `triet::lex::E0000` — lexer
 - `triet::parse::E000X` — parser
-- `triet::typecheck::E10XX` — type checker (E1024-E1032 + E1037-E1039 ADR-0020 Outcome; E1033/E1034 ADR-0021 Trilean!; **E1035** NegativeArmOnNullable ADR-0041 §12; **E1036** IntegerLiteralOverflow ADR-0044 Q2)
+- `triet::typecheck::E10XX` — type checker (E1024-E1032 + E1037-E1039 ADR-0020 Outcome; E1033/E1034 ADR-0021 Trilean!; **E1035** NegativeArmOnNullable ADR-0041 §12; **E1036** IntegerLiteralOverflow ADR-0044 Q2; **E1058** EqualityUnsupported — `==`/`!=` refused fail-closed on Struct/Vector/HashMap/payload-carrying enum/`Nullable<String>` per `WO-String-Eq-Content-Compare-And-Aggregate-Refuse`, ADR-0038 §4 defers a general `compare()`; payload-free enum and bare `String` (content-compare) stay allowed)
 - `triet::lower::E11XX` — lowering (AST→MIR), 8-code taxonomy per ADR-0086: **E1100** ConstructNotYetLowered / **E1120** NullableEnumPayloadUnsupported / **E1121** NullableStructReturnHeapField / **E1122** EscapingClosureSealed (design fences) / **E1140** UndefinedLocal / **E1141** NullLiteralWithoutExpectedType / **E1142** LiteralOutOfRange (user errors) / **E1190** InternalInvariant (ICE — compiler bug, not user error)
 - `triet::runtime::E20XX` — interpreter (DELETED crate; codes reserved, no live emitter)
 - `triet::modules::E21XX` — loader / resolver (E2100 cyclic, E2101 file-not-found, …)

@@ -1,0 +1,16 @@
+// ERROR: E1058
+// WO-String-Eq-Content-Compare-And-Aggregate-Refuse Task B, operator
+// variant (HP.3): `Struct != Struct` must ALSO be refused — a guard that
+// only pattern-matched `BinaryOperator::Eq` and forgot `Ne` would let this
+// slip through silently.
+struct Point { x: Integer, y: Integer }
+
+function main() -> Integer {
+    let a = Point { x: 1, y: 2 };
+    let b = Point { x: 3, y: 4 };
+    if a != b {
+        return 1;
+    } else {
+        return 0;
+    }
+}

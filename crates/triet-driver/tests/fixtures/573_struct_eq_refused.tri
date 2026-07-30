@@ -1,0 +1,15 @@
+// ERROR: E1058
+// WO-String-Eq-Content-Compare-And-Aggregate-Refuse Task B: `Struct == Struct`
+// has no defined structural equality (ADR-0038 defers a general `compare()`)
+// — refused fail-closed at typecheck, before lower/JIT ever see it.
+struct Point { x: Integer, y: Integer }
+
+function main() -> Integer {
+    let a = Point { x: 1, y: 2 };
+    let b = Point { x: 1, y: 2 };
+    if a == b {
+        return 1;
+    } else {
+        return 0;
+    }
+}

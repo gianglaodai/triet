@@ -1,0 +1,18 @@
+// ERROR: E1058
+// WO-String-Eq-Content-Compare-And-Aggregate-Refuse Task B: an enum with a
+// payload-carrying variant has no defined `==` semantics — comparing (or
+// silently ignoring) the payload is unspecified. Measured pre-WO: `E::A(1)
+// == E::A(2)` returned 1 (discriminant-only compare silently dropped the
+// payload) — refused fail-closed now. Contrast 572 (payload-FREE enum,
+// which stays a CONTROL, not refused).
+enum OptionInt { SomeInt(Integer), NoneInt }
+
+function main() -> Integer {
+    let a = OptionInt::SomeInt(1);
+    let b = OptionInt::SomeInt(2);
+    if a == b {
+        return 1;
+    } else {
+        return 0;
+    }
+}
