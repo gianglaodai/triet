@@ -770,6 +770,20 @@ impl Checker<'_> {
                     });
                     return Type::Unknown;
                 }
+                // E1058 (WO-String-Eq-Content-Compare-And-Aggregate-Refuse §3):
+                // Struct/Vector/HashMap/payload-carrying-enum/`Nullable<String>`
+                // have no defined structural equality — refuse fail-closed at
+                // the type-check gate, before lower/JIT. `left_ty.matches(&right_ty)`
+                // above already proved both sides the same shape, so checking
+                // one side suffices.
+                if left_ty.is_eq_refused() {
+                    self.errors.push(TypeError::EqualityUnsupported {
+                        operator: operator_symbol(operator).to_owned(),
+                        ty: left_ty,
+                        span,
+                    });
+                    return Type::Unknown;
+                }
                 // ADR-0021 §2.2: comparison refinement propagation.
                 eq_result_type(&left_ty, &right_ty)
             }

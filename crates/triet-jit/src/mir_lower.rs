@@ -338,6 +338,29 @@ impl JitContext {
         Variable::from_u32(usize_to_u32(l.0))
     }
 
+    /// WO-String-Eq-Content-Compare-And-Aggregate-Refuse §2: read the
+    /// `{ptr@0, len@8}` pair for a `MirType::String` local straight out of
+    /// its pre-allocated `struct_slots` entry. EVERY `is_string_repr()`
+    /// local (including params) gets one — see the unconditional alloc
+    /// loop in `build_body` (`for i in 0..body.num_locals { if
+    /// ty.is_string_repr() { ... } }`) — so a missing entry here is a
+    /// compiler-internal invariant violation, not a user error (Track B
+    /// rule #1: `Err`, never a panic/unwrap).
+    fn load_string_fat(
+        &self,
+        builder: &mut FunctionBuilder<'_>,
+        local: Local,
+    ) -> Result<(cranelift_codegen::ir::Value, cranelift_codegen::ir::Value), JitError> {
+        let (slot, _) = self.struct_slots.get(&local).ok_or_else(|| {
+            JitError::Internal(format!(
+                "String local {local:?} has no struct_slots entry (build_body invariant)"
+            ))
+        })?;
+        let ptr = builder.ins().stack_load(I64, *slot, 0);
+        let len = builder.ins().stack_load(I64, *slot, 8);
+        Ok((ptr, len))
+    }
+
     /// Get or declare a shim function ID. Caches the result so multiple
     /// call sites for the same shim use the same `FuncId`.
     fn get_or_declare_shim(&mut self, name: &str) -> Result<cranelift_module::FuncId, JitError> {
@@ -3466,10 +3489,57 @@ impl JitContext {
                     right,
                     ..
                 } => {
-                    let lhs = self.load_place(builder, body, left)?;
-                    let rhs = self.load_place(builder, body, right)?;
-                    let result = lower_binop(builder, *op, lhs, rhs);
-                    self.store_place(builder, body, dest, result)?;
+                    // WO-String-Eq-Content-Compare-And-Aggregate-Refuse §2:
+                    // `==`/`!=` on a `String` operand must content-compare via
+                    // `__triet_string_eq` (the same shim `emit_key_eq_value`
+                    // already uses for HashMap String keys), not fall through
+                    // to the generic `icmp` below — a bare `load_place` on a
+                    // `struct_slots` local (String's runtime repr) reads ONLY
+                    // the first field (`ptr@0`), so the un-dispatched path
+                    // compared POINTERS, not content (WO §1 bug). Dispatch on
+                    // the operand's declared MIR type ONLY — never
+                    // `is_string_repr()` here: `Nullable(String)` is refused
+                    // upstream at typecheck (E1058) and has no defined Ł3
+                    // null-comparison semantics yet, so it must never reach
+                    // this branch. `left`/`right` are always a bare
+                    // `Place::local` with an EMPTY projection for
+                    // `Statement::BinaryOp` — `triet-lower`'s `Expr::BinaryOp`
+                    // arm always materializes each sub-expression into its own
+                    // temp local before building this statement (verified in
+                    // `triet-lower/src/lib.rs`), so no projection-walk is
+                    // needed here.
+                    let is_string_operand =
+                        |p: &Place| matches!(body.local_decls[p.local.0].ty, MirType::String);
+                    if matches!(op, BinOp::Eq | BinOp::Ne)
+                        && is_string_operand(left)
+                        && is_string_operand(right)
+                    {
+                        let (a_ptr, a_len) = self.load_string_fat(builder, left.local)?;
+                        let (b_ptr, b_len) = self.load_string_fat(builder, right.local)?;
+                        let eq_id = self.get_or_declare_shim("__triet_string_eq")?;
+                        let eref = self.module.declare_func_in_func(eq_id, builder.func);
+                        let call = builder.ins().call(eref, &[a_ptr, a_len, b_ptr, b_len]);
+                        let r = nth_call_result(builder, call, 0, 1, "__triet_string_eq")?;
+                        let one = builder.ins().iconst(I64, 1);
+                        let content_eq = builder.ins().icmp(IntCC::Equal, r, one);
+                        // Trilean! carrier encoding mirrors `lower_binop`'s
+                        // local `cmp` helper EXACTLY: +1 = true, -1 = false,
+                        // never Unknown (non-nullable operands). `Ne` is the
+                        // logical inverse of `Eq` on the same shim result.
+                        let pos_one = builder.ins().iconst(I64, 1);
+                        let neg_one = builder.ins().iconst(I64, -1_i64);
+                        let (true_val, false_val) = match op {
+                            BinOp::Ne => (neg_one, pos_one),
+                            _ => (pos_one, neg_one),
+                        };
+                        let result = builder.ins().select(content_eq, true_val, false_val);
+                        self.store_place(builder, body, dest, result)?;
+                    } else {
+                        let lhs = self.load_place(builder, body, left)?;
+                        let rhs = self.load_place(builder, body, right)?;
+                        let result = lower_binop(builder, *op, lhs, rhs);
+                        self.store_place(builder, body, dest, result)?;
+                    }
                 }
 
                 // ── Outcome ops (provably unreachable through real pipeline) ─

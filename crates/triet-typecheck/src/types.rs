@@ -247,6 +247,32 @@ impl Type {
         }
     }
 
+    /// `WO-String-Eq-Content-Compare-And-Aggregate-Refuse` §3 — is this type
+    /// refused as an `==`/`!=` operand (E1058, fail-closed)? Refused: `Struct`,
+    /// `Vector`, `HashMap`, an enum with at least one payload-carrying variant
+    /// (comparing/ignoring the payload has no defined semantics — see WO §0
+    /// ĐÍNH CHÍNH 2), and `Nullable` wrapping any of those OR wrapping `String`
+    /// (the content-compare shim wired in the same commit only understands a
+    /// bare, non-nullable `String`). NOT refused (explicit — do not extend this
+    /// match without re-reading the WO): numeric types, `Trilean`/`Trit`, bare
+    /// `String`, a payload-free enum (discriminant-only compare, already
+    /// correct), and `Nullable` of any scalar (PA-3c sentinel-encoded single
+    /// i64 — plain `icmp` on the raw carrier is already semantically correct
+    /// there, unlike the fat-pointer `String?` shape).
+    #[must_use]
+    pub fn is_eq_refused(&self) -> bool {
+        match self {
+            Self::UserStruct { .. } | Self::Vector(_) | Self::HashMap(_, _) => true,
+            Self::UserEnum { variants, .. } => {
+                variants.iter().any(|(_, payload)| payload.is_some())
+            }
+            Self::Nullable(inner) => {
+                matches!(inner.as_ref(), Self::String) || inner.is_eq_refused()
+            }
+            _ => false,
+        }
+    }
+
     /// Returns true if this is any Trilean (refined or not). Replaces
     /// the old unit-variant `matches!(t, Type::Trilean)` pattern.
     #[must_use]

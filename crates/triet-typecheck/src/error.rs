@@ -1187,6 +1187,40 @@ pub enum TypeError {
         span: Span,
     },
 
+    /// E1058: `==`/`!=` on an operand type with no defined structural
+    /// equality — refused fail-closed (`WO-String-Eq-Content-Compare-And-
+    /// Aggregate-Refuse`). ADR-0038 §4 DESIGN LOCK keeps `==`/`!=` for
+    /// primitives (result stays `Trilean`/`Trilean!`); a general `compare()`
+    /// trait is an ADR-0038-deferred future. Refused shapes: `Struct`,
+    /// `Vector`, `HashMap`, an enum with at least one payload-carrying
+    /// variant (comparing payloads has no defined semantics yet), and
+    /// `Nullable` wrapping any of the above OR wrapping `String` (the
+    /// content-compare shim added in the same commit only understands a
+    /// bare, non-nullable `String`'s `{ptr,len}` — Ł3 null-comparison
+    /// semantics for `String?` are not yet specified). Explicitly NOT
+    /// refused: numeric types, `Trilean`/`Trit`, bare `String` (content-
+    /// compare), and a payload-FREE enum (discriminant-only compare, an
+    /// already-correct existing behavior — see WO §0 ĐÍNH CHÍNH 2).
+    #[error("E1058: `{operator}` is not defined for `{ty}`")]
+    #[diagnostic(
+        code(triet::typecheck::E1058),
+        help(
+            "`{ty}` has no built-in structural equality — Struct/Vector/HashMap/an enum \
+            with a payload-carrying variant/`Nullable<String>` are refused fail-closed \
+            (ADR-0038 defers a general `compare()`).\n\n\
+            [Fix 1] Compare individual fields or elements explicitly instead of `{operator}`."
+        )
+    )]
+    EqualityUnsupported {
+        /// The operator written (`==` or `!=`).
+        operator: String,
+        /// The refused operand type.
+        ty: Type,
+        /// Source location of the comparison expression.
+        #[label("`{ty}` does not support `{operator}`")]
+        span: Span,
+    },
+
     // === Warning-severity diagnostics (Q2-C: miette severity field) ===
     /// W2001: deprecated `null` keyword (use `~0` canonical literal).
     /// Severity: WARNING (does not block compile until v1.0 per
@@ -1424,6 +1458,7 @@ impl TypeError {
             | Self::DrainHashMapPatternUnsupported { span }
             | Self::DrainHashMapValueUnsupported { span, .. }
             | Self::NestedNullableUnsupported { span, .. }
+            | Self::EqualityUnsupported { span, .. }
             | Self::CapabilityLevelUnsupported { span, .. }
             | Self::CapabilityNotPossessable { span, .. }
             | Self::NullDeprecated { span } => span.clone(),
