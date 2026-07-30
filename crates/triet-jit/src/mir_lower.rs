@@ -361,6 +361,37 @@ impl JitContext {
         Ok((ptr, len))
     }
 
+    /// `WO-Borrowed-String-Eq` §C2: read `{ptr, len}` for a `BinaryOp`
+    /// operand that is either an owned `MirType::String` (delegates to
+    /// `load_string_fat`, the `struct_slots` path) or a
+    /// `MirType::Reference { inner: String, .. }` (`&+`/`&0`/`&-` all
+    /// share this repr — see §C1: the local's Cranelift Variable holds
+    /// the referent's `StackSlot` ADDRESS, never a heap `ptr` directly —
+    /// so this reads `ptr@+0` / `len@+8` through that address via
+    /// `use_var` + `load`, mirroring `emit_key_eq_value`'s
+    /// `MirType::String` arm (`:804-808`), which already reads a fat
+    /// String through a raw pointer + byte offset the same way).
+    fn load_string_fat_operand(
+        &self,
+        builder: &mut FunctionBuilder<'_>,
+        body: &Body,
+        local: Local,
+    ) -> Result<(cranelift_codegen::ir::Value, cranelift_codegen::ir::Value), JitError> {
+        match &body.local_decls[local.0].ty {
+            MirType::String => self.load_string_fat(builder, local),
+            MirType::Reference { inner, .. } if matches!(inner.as_ref(), MirType::String) => {
+                let addr = builder.use_var(self.var(local));
+                let mem = cranelift_codegen::ir::MemFlags::new();
+                let ptr = builder.ins().load(I64, mem, addr, 0);
+                let len = builder.ins().load(I64, mem, addr, 8);
+                Ok((ptr, len))
+            }
+            other => Err(JitError::Internal(format!(
+                "load_string_fat_operand: unsupported operand type {other:?} for local {local:?}"
+            ))),
+        }
+    }
+
     /// Get or declare a shim function ID. Caches the result so multiple
     /// call sites for the same shim use the same `FuncId`.
     fn get_or_declare_shim(&mut self, name: &str) -> Result<cranelift_module::FuncId, JitError> {
@@ -3508,14 +3539,32 @@ impl JitContext {
                     // temp local before building this statement (verified in
                     // `triet-lower/src/lib.rs`), so no projection-walk is
                     // needed here.
+                    // `WO-Borrowed-String-Eq` §C2: dispatch also fires when the
+                    // operand is a `MirType::Reference { inner: String, .. }`
+                    // (a `&+`/`&0`/`&-` borrowed String) — every reference form
+                    // shares the same runtime repr (§C1), so no `form` branch
+                    // is needed. Deliberately checks `**inner == MirType::String`
+                    // only, never `is_string_repr()`: that would also swallow
+                    // `Nullable(String)` (refused upstream at E1058, no defined
+                    // Ł3 null-comparison semantics yet) and
+                    // `Reference{inner: Struct/Vector/HashMap}` (out of scope).
+                    let is_string_type = |ty: &MirType| match ty {
+                        MirType::String => true,
+                        MirType::Reference { inner, .. } => {
+                            matches!(inner.as_ref(), MirType::String)
+                        }
+                        _ => false,
+                    };
                     let is_string_operand =
-                        |p: &Place| matches!(body.local_decls[p.local.0].ty, MirType::String);
+                        |p: &Place| is_string_type(&body.local_decls[p.local.0].ty);
                     if matches!(op, BinOp::Eq | BinOp::Ne)
                         && is_string_operand(left)
                         && is_string_operand(right)
                     {
-                        let (a_ptr, a_len) = self.load_string_fat(builder, left.local)?;
-                        let (b_ptr, b_len) = self.load_string_fat(builder, right.local)?;
+                        let (a_ptr, a_len) =
+                            self.load_string_fat_operand(builder, body, left.local)?;
+                        let (b_ptr, b_len) =
+                            self.load_string_fat_operand(builder, body, right.local)?;
                         let eq_id = self.get_or_declare_shim("__triet_string_eq")?;
                         let eref = self.module.declare_func_in_func(eq_id, builder.func);
                         let call = builder.ins().call(eref, &[a_ptr, a_len, b_ptr, b_len]);

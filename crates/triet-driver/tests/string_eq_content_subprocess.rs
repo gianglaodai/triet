@@ -49,6 +49,33 @@ fn src_long_eq(same_last_byte: bool) -> String {
     )
 }
 
+/// `WO-Borrowed-String-Eq` §C4(c): same 80-byte / diff-last-byte shapes as
+/// `src_long_eq`, but through a `&0 String` PARAMETER operand
+/// (`MirType::Reference { inner: String, .. }`) instead of a bare owned
+/// local — proves `load_string_fat_operand`'s Reference arm reads the
+/// correct `{ptr, len}` pair (via `use_var` + `load`) rather than a wrong
+/// offset that would deref garbage and SIGSEGV over the full 80 bytes.
+fn src_long_borrow_eq(same_last_byte: bool) -> String {
+    let a = long_string(b'a');
+    let b = if same_last_byte {
+        a.clone()
+    } else {
+        let mut s = long_string(b'a');
+        s.replace_range(79..80, "b");
+        s
+    };
+    format!(
+        "function f(s: &0 String, t: &0 String) -> Integer {{\n\
+         \x20   if s == t {{ return 1; }} else {{ return 0; }}\n\
+         }}\n\
+         function main() -> Integer {{\n\
+         \x20   let a = \"{a}\";\n\
+         \x20   let b = \"{b}\";\n\
+         \x20   return f(&0 a, &0 b);\n\
+         }}"
+    )
+}
+
 fn lower_source(source: &str) -> Vec<triet_mir::Body> {
     let (program, parse_errors) = triet_parser::parse(source);
     assert!(parse_errors.is_empty(), "parse errors: {parse_errors:?}");
@@ -141,5 +168,45 @@ fn p2_long_strings_diff_last_byte_eq_false() {
         status.success(),
         "child must exit cleanly (a wrong `len` reading out of bounds over \
          80 bytes would SIGSEGV instead): {status:?}"
+    );
+}
+
+// ══════════════════════════════════════════════════════════════════════
+// P3/P4 — `WO-Borrowed-String-Eq` §C4(c): same 80-byte shapes as P1/P2, but
+// through `&0 String` PARAMETER operands, not bare owned locals.
+// ══════════════════════════════════════════════════════════════════════
+
+#[test]
+fn p3_long_borrow_strings_identical_eq_true() {
+    child_guard("p3_long_borrow_strings_identical_eq_true", || {
+        let r = run(&src_long_borrow_eq(true));
+        assert_eq!(
+            r, 1,
+            "80-byte identical strings through &0 String params must content-compare TRUE"
+        );
+    });
+    let status = spawn_child("p3_long_borrow_strings_identical_eq_true");
+    assert!(
+        status.success(),
+        "child must exit cleanly (a wrong ptr/len read through the Reference \
+         operand would SIGSEGV instead): {status:?}"
+    );
+}
+
+#[test]
+fn p4_long_borrow_strings_diff_last_byte_eq_false() {
+    child_guard("p4_long_borrow_strings_diff_last_byte_eq_false", || {
+        let r = run(&src_long_borrow_eq(false));
+        assert_eq!(
+            r, 0,
+            "80-byte strings differing only in the last byte, through &0 String \
+             params, must content-compare FALSE"
+        );
+    });
+    let status = spawn_child("p4_long_borrow_strings_diff_last_byte_eq_false");
+    assert!(
+        status.success(),
+        "child must exit cleanly (a wrong ptr/len read through the Reference \
+         operand would SIGSEGV instead): {status:?}"
     );
 }

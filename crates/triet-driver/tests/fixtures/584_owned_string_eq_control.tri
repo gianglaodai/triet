@@ -1,0 +1,15 @@
+// EXPECT: 10
+// CONTROL (WO-Borrowed-String-Eq §C3 #6): owned `String ==` (Task A of the
+// base WO, `MirType::String` operand with NO reference wrapper) is untouched
+// by this appendix's Reference-operand extension — the `MirType::String`
+// arm of `load_string_fat_operand` delegates unchanged to the pre-existing
+// `load_string_fat`. Must stay green identically before and after the
+// patch: (a==b)*10 + (a==c) = 10 + 0 = 10.
+function main() -> Integer {
+    let a = "hi";
+    let b = "hi";
+    let c = "xx";
+    let same = if a == b { 1 } else { 0 };
+    let diff = if a == c { 1 } else { 0 };
+    return same * 10 + diff;
+}

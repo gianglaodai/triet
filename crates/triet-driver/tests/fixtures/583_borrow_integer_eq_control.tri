@@ -1,0 +1,21 @@
+// EXPECT: 10
+// CONTROL (WO-Borrowed-String-Eq §C3 #5): `&0 Integer ==` is untouched by
+// this WO's dispatch extension (only `MirType::Reference { inner: String }`
+// is added — `inner: Integer` still falls through to the generic `icmp` on
+// the loaded scalar). Must stay green identically before and after the
+// patch: (5==5)*10 + (5==7) = 10 + 0 = 10.
+function f(s: &0 Integer, t: &0 Integer) -> Integer {
+    if s == t {
+        return 1;
+    }
+    return 0;
+}
+
+function main() -> Integer {
+    let a = 5;
+    let b = 5;
+    let c = 7;
+    let same = f(&0 a, &0 b);
+    let diff = f(&0 a, &0 c);
+    return same * 10 + diff;
+}

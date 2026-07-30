@@ -270,3 +270,91 @@ fn eq_identity_single_alloc_single_free() {
         s.cap_mismatches
     );
 }
+
+// ══════════════════════════════════════════════════════════════════════
+// `WO-Borrowed-String-Eq` §C4(b) — same paired `(ptr, cap)` oracle, now
+// through a `&0 String` PARAMETER operand (`MirType::Reference { inner:
+// String, .. }`), not a bare owned `MirType::String` local. §C2's mortal
+// risk is IDENTICAL to the owned case (a `==` must never consume its
+// operands) but the failure mode if `load_string_fat_operand`'s Reference
+// arm were wired wrong is different: reading `{ptr, len}` at the WRONG
+// offset (e.g. treating the reference's own address as the String's `ptr`
+// instead of dereferencing it first) reads garbage, which this oracle
+// would catch as a wrong return value AND (if the garbage happens to
+// collide with a live allocation) a spurious extra free.
+// ══════════════════════════════════════════════════════════════════════
+
+const SRC_BORROW_EQ_SAME: &str = "function f(s: &0 String, t: &0 String) -> Integer {\n\
+     \x20   if s == t { return 1; } else { return 0; }\n\
+     }\n\
+     function main() -> Integer {\n\
+     \x20   let a = \"hi\";\n\
+     \x20   let b = \"hi\";\n\
+     \x20   return f(&0 a, &0 b);\n\
+     }";
+
+#[test]
+fn borrow_eq_same_content_no_leak_no_dup_free() {
+    let _serial = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    reset();
+    let r = run(SRC_BORROW_EQ_SAME);
+    assert_eq!(
+        r, 1,
+        "&0 String \"hi\" == &0 String \"hi\" (distinct allocations) must \
+         content-compare TRUE — WO-Borrowed-String-Eq §C0 regression"
+    );
+    assert_two_distinct_no_dup_no_corruption(&stats());
+}
+
+const SRC_BORROW_EQ_DIFF: &str = "function f(s: &0 String, t: &0 String) -> Integer {\n\
+     \x20   if s == t { return 1; } else { return 0; }\n\
+     }\n\
+     function main() -> Integer {\n\
+     \x20   let a = \"hi\";\n\
+     \x20   let b = \"xx\";\n\
+     \x20   return f(&0 a, &0 b);\n\
+     }";
+
+#[test]
+fn borrow_eq_diff_content_same_length_no_leak_no_dup_free() {
+    let _serial = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    reset();
+    let r = run(SRC_BORROW_EQ_DIFF);
+    assert_eq!(
+        r, 0,
+        "&0 String \"hi\" == &0 String \"xx\" (same length) must be FALSE"
+    );
+    assert_two_distinct_no_dup_no_corruption(&stats());
+}
+
+const SRC_BORROW_EQ_IDENTITY: &str = "function f(s: &0 String, t: &0 String) -> Integer {\n\
+     \x20   if s == t { return 1; } else { return 0; }\n\
+     }\n\
+     function main() -> Integer {\n\
+     \x20   let a = \"hi\";\n\
+     \x20   return f(&0 a, &0 a);\n\
+     }";
+
+#[test]
+fn borrow_eq_identity_single_alloc_single_free() {
+    let _serial = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    reset();
+    let r = run(SRC_BORROW_EQ_IDENTITY);
+    assert_eq!(r, 1, "f(&0 a, &0 a) must be TRUE (identity)");
+    let s = stats();
+    assert_eq!(
+        s.distinct_alloc, 1,
+        "one owned String `a`, borrowed twice into `f` — only one heap allocation"
+    );
+    assert_eq!(
+        s.distinct_freed, 1,
+        "only `a`'s own scope-end Drop frees; the two &0 params are non-owning \
+         and must never free"
+    );
+    assert_eq!(s.dup_free, 0);
+    assert!(
+        s.cap_mismatches.is_empty(),
+        "cap mismatch (ptr, expected, freed): {:?}",
+        s.cap_mismatches
+    );
+}
