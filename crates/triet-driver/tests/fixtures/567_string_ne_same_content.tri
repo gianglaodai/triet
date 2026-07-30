@@ -1,0 +1,12 @@
+// EXPECT: 0
+// WO-String-Eq-Content-Compare-And-Aggregate-Refuse Task A: `!=` operator
+// variant of 565 — same content must be NOT-not-equal (`!=` → false → 0).
+function main() -> Integer {
+    let a = "hi";
+    let b = "hi";
+    if a != b {
+        return 1;
+    } else {
+        return 0;
+    }
+}

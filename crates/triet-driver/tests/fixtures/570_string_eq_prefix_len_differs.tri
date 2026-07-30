@@ -1,0 +1,14 @@
+// EXPECT: 0
+// WO-String-Eq-Content-Compare-And-Aggregate-Refuse Task A: "hi" vs "hii" —
+// the shorter string is a byte-for-byte PREFIX of the longer one. Paired
+// with 566 (per WO §4): this catches a shim that only compares the first
+// `min(len_a, len_b)` bytes and ignores a `len` mismatch.
+function main() -> Integer {
+    let a = "hi";
+    let b = "hii";
+    if a == b {
+        return 1;
+    } else {
+        return 0;
+    }
+}

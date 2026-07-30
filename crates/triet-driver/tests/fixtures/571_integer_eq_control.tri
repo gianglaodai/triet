@@ -1,0 +1,13 @@
+// EXPECT: 10
+// CONTROL (WO §4): `Integer ==`/`!=` are untouched by this WO's Task A
+// dispatch (only `MirType::String` is dispatched to the shim path) — must
+// stay green identically before and after the patch. Combines a true and a
+// false case into one Integer result: (3==3)*10 + (3==4) = 10 + 0 = 10.
+function main() -> Integer {
+    let a = 3;
+    let b = 3;
+    let c = 4;
+    let same = if a == b { 1 } else { 0 };
+    let diff = if a == c { 1 } else { 0 };
+    return same * 10 + diff;
+}

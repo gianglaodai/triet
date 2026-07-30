@@ -1,0 +1,13 @@
+// EXPECT: 1
+// WO-String-Eq-Content-Compare-And-Aggregate-Refuse Task A: two empty
+// Strings (`len == 0` on both sides) must compare EQUAL — an edge case for
+// a shim implementation that might mishandle a zero-length memcmp.
+function main() -> Integer {
+    let a = "";
+    let b = "";
+    if a == b {
+        return 1;
+    } else {
+        return 0;
+    }
+}

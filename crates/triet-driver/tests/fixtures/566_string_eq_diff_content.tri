@@ -1,0 +1,14 @@
+// EXPECT: 0
+// WO-String-Eq-Content-Compare-And-Aggregate-Refuse Task A: two `let`-bound
+// Strings, DIFFERENT content but SAME length ("hi" vs "xx"). Paired with
+// 570 (same length differs in a way `len`-only compare would miss, this one
+// catches a shim that only compares `len` and never touches the bytes).
+function main() -> Integer {
+    let a = "hi";
+    let b = "xx";
+    if a == b {
+        return 1;
+    } else {
+        return 0;
+    }
+}

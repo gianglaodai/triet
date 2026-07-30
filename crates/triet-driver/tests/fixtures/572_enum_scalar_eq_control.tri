@@ -1,0 +1,15 @@
+// EXPECT: 10
+// CONTROL (WO §0 ĐÍNH CHÍNH 2 + §4): a payload-FREE enum's `==` compares
+// the discriminant only, and this is ALREADY CORRECT (measured: `E::A ==
+// E::A` → 1, `E::A == E::B` → 0) — Task B's E1058 refuse must NOT cover
+// this shape. Must stay green identically before and after the patch:
+// (A==A)*10 + (A==B) = 10 + 0 = 10.
+enum Choice { A, B }
+
+function main() -> Integer {
+    let x = Choice::A;
+    let y = Choice::B;
+    let same = if x == x { 1 } else { 0 };
+    let diff = if x == y { 1 } else { 0 };
+    return same * 10 + diff;
+}

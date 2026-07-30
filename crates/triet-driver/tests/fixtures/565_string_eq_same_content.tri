@@ -1,0 +1,16 @@
+// EXPECT: 1
+// WO-String-Eq-Content-Compare-And-Aggregate-Refuse Task A: two
+// independently-allocated `let`-bound Strings with the SAME content.
+// Pre-fix, `Statement::BinaryOp` fell through to a raw `icmp` on
+// `load_place`'s single i64 (`ptr@0` for a String slot) — two distinct
+// allocations of "hi" never share a pointer, so `a == b` returned FALSE.
+// Content-compare via `__triet_string_eq` must return TRUE.
+function main() -> Integer {
+    let a = "hi";
+    let b = "hi";
+    if a == b {
+        return 1;
+    } else {
+        return 0;
+    }
+}
