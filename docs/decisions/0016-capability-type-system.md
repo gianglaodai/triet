@@ -44,7 +44,7 @@ Three alternatives were rejected:
 | Rejected | Reason (anchored to documentation) |
 |---|---|
 | **A — Capability token (Pony/Roc)** | `caps section` ADR-0011 §5 would become a dead slot. Every function touching a syscall would require a `Capability<X>` argument $\rightarrow$ verbose, violates "AI-first stays" ([VISION §6](../../VISION.md)) due to code bloat. |
-| **B — Effect annotation (Koka/F\*/checked exception)** | Effects propagate per-function $\rightarrow$ `iface_hash` changes every time a function in the call chain is touched $\rightarrow$ breaks compile-time scaling ([ADR-0014 §1](0014-hash-scheme-refinement.md promised term-level hash stability). Java's checked exceptions demonstrated ergonomic failure. |
+| **B — Effect annotation (Koka/F\*/checked exception)** | Effects propagate per-function $\rightarrow$ `iface_hash` changes every time a function in the call chain is touched $\rightarrow$ breaks compile-time scaling ([ADR-0014 §1](0014-hash-scheme-refinement.md). Java's checked exceptions demonstrated ergonomic failure. |
 | **C — Namespace + manifest** | ✅ Selected. Rationale provided in §10 (Consequences). |
 
 ### 2. Granularity — module level, no wildcards, no function level
@@ -240,7 +240,7 @@ The Triet-written compiler must honor the `caps section` semantics — this is a
 - **[Java JPMS](https://openjdk.org/jeps/261)** — `module-info.java` with `requires`/`exports`/`opens`. Borrowed: declarative module-level capability in the manifest, no runtime token. Difference: Triet adds Trit levels (deny + ambient in addition to grant) and Trilean defer.
 - **[Android `<uses-permission>`](https://developer.android.com/guide/topics/manifest/uses-permission-element)** — root app manifest declares all permissions; OS enforces at runtime. Borrowed: root manifest = authority; dependency claims are requests. Difference: Triet enforces at compile + link, not just runtime.
 - **[Pony object capabilities](https://www.ponylang.io/discover/#object-capabilities)** — capability as a type modifier on object refs (`iso`, `tag`, ...). Rejected: per-object token-passing is too verbose and does not match the namespace mental model.
-- **[Genode OS](https://genode.org/documentation/general-overview/index) + [seL4](httpshttps://sel4.systems/About/seL4-whitepaper.pdf)** — cap-based microkernel; parent components grant caps to children explicitly. Borrowed: parent (root pkg) is authoritative; refuse-by-default. Difference: Triet is a language-level static check, not a kernel.
+- **[Genode OS](https://genode.org/documentation/general-overview/index) + [seL4](https://sel4.systems/About/seL4-whitepaper.pdf)** — cap-based microkernel; parent components grant caps to children explicitly. Borrowed: parent (root pkg) is authoritative; refuse-by-default. Difference: Triet is a language-level static check, not a kernel.
 - **[E language](http://www.erights.org/)** — object cap with a defer-to-vat mechanism. Borrowed: the Trilean::Unknown defer pattern was inspired by this (vat $\approx$ runtime policy hook).
 - **[Mojo capabilities](https://docs.modular.com/mojo/manual/structs/) (status: tentative)** — declared in the roadmap but not yet landed. On the watch list, but not adopted.
 - **[Roc platform](https://www.roc-lang.org/platforms)** — platform-injected capabilities. Rejected for similar reasons to Pony: verbose token passing.

@@ -1,6 +1,6 @@
 # ADR 0018 — Capability loader semantics (`dao.package` + eager link-time check + provenance prompt)
 
-**Status:** Decided. Applies to v0.6 Capability System loader stage. Fills `E2208` reserved in [ADR-0016 §6](0016-capability-type-system.md). Finalizes manifest source syntax deferred from [ADR-0016 §1](0016-capability-type-system.md). Finalizes TTY prompt UX + parser implementation strategy deferred from [ADR-0017 §4](0017-trilean-payload-hook.md) + [Addendum §A/§B](0017-trilean-policy-hook.md#addendum--parser-strictness--tty-source--abstain-errata). Locks anti-typosquatting display per author constraint 2026-05-17 (commit `dd6b2f4`). No `abi_version` bump (keep `v=2`), no change to `.triv` wire format, no change to IR shape.
+**Status:** Decided. Applies to v0.6 Capability System loader stage. Fills `E2208` reserved in [ADR-0016 §6](0016-capability-type-system.md). Finalizes manifest source syntax deferred from [ADR-0016 §1](0016-capability-type-system.md). Finalizes TTY prompt UX + parser implementation strategy deferred from [ADR-0017 §4](0017-trilean-policy-hook.md) + [Addendum §A/§B](0017-trilean-policy-hook.md#addendum--parser-strictness--tty-source--abstain-errata). Locks anti-typosquatting display per author constraint 2026-05-17 (commit `dd6b2f4`). No `abi_version` bump (keep `v=2`), no change to `.triv` wire format, no change to IR shape.
 
 **Issue:** ADR-0016 + ADR-0017 locked semantics + protocol, but left 5 areas open for ADR-0018 to finalize:
 

@@ -335,7 +335,7 @@ AOT v2.0 baked-binary: cache is initialized empty at every process start. `dao.p
 - [SPEC §1.5.2 — Trilean type (`Unknown`)](../../SPEC.md)
 - [ADR-0011 §5 — `caps section` ABI metadata](0011-abi-metadata-format.md)
 - [ADR-0015 §6 — `dao.lock` hand-rolled format precedent](0015-package-store-layout.md)
-- [ADR-0015 Addendum — ResolutionOrigin 3-state, dispatch hint](0015-package/package-store-layout.md#addendum--v05xreview-pre-v06-audit)
+- [ADR-0015 Addendum — ResolutionOrigin 3-state, dispatch hint](0015-package-store-layout.md#addendum--v05xreview-pre-v06-audit)
 - [ADR-0016 §3 — Defer slot in CapabilityLevel](0016-capability-type-system.md)
 - [ADR-0016 §6 — E22XX namespace, E2205 reserved](0016-capability-type-system.md)
 - [ADR-0016 §8 — ResolutionOrigin dispatch slot](0016-capability-type-system.md)

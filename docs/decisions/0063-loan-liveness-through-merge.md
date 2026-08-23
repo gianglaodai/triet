@@ -3,7 +3,7 @@
 - **Status:** 🔒 LOCKED — G sign-off 2026-06-19. Drafted by Mentor O 2026-06-19, empirical recon (3 candidate implementations measured and reverted).
 - **Date:** 2026-06-19
 - **Author:** Mentor O (deep-recon of Bug A heap-nullable → unearthed pre-existing UAF in `Expr::If`/match reference-arms).
-- **Related:** [ADR-0046](0046-propagated-loan-liveness.md) (PropagatedLoan return-borrow bounded by dest liveness — this ADR REFINES its Drop-check) · ADR-0045 (Reference = Copy) · CFG-tail Slice 1 (`159fd68`, Bug A block-tail drop escape).
+- **Related:** [ADR-0046](0046-return-borrow-elision.md) (PropagatedLoan return-borrow bounded by dest liveness — this ADR REFINES its Drop-check) · ADR-0045 (Reference = Copy) · CFG-tail Slice 1 (`159fd68`, Bug A block-tail drop escape).
 
 ---
 

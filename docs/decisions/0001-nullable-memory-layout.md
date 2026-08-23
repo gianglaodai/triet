@@ -100,7 +100,7 @@ The encoding in the original body (`-1 = null, +1 = present`) is **superseded**.
 The original "Consequences" section states: "Nullable composition (`T??`) **does not**
 flatten — `T??` is `(is_null₂, (is_null₁, T))`, with two distinguishable layers."
 
-[ADR-0039](003<0xA0>9-nullable-operator-family.md) (2026-06-05, LOCKED) overrides
+[ADR-0039](0039-nullable-operator-family.md) (2026-06-05, LOCKED) overrides
 this: **`T??` does not exist — auto-flatten.** Applying `?` to an already-nullable
 type is a no-op at the type level; the typechecker folds `T??` → `T?`.
 
