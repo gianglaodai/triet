@@ -2,6 +2,7 @@
 
 Cross-reference vào 44 ADRs theo **topic cluster** thay vì chronological number. Hữu ích khi câu hỏi là "rule về X ở đâu?" thay vì "ADR-0NNN nói gì?". (0001-0036: compiler cũ; 0037-0044: rewrite backend — xem §7b.)
 
+> **Tác giả & Kiến trúc sư:** Giang Hoàng ([@gianglaodai](https://github.com/gianglaodai))  
 > **Note:** ADRs là *immutable historical records* — file content không thay đổi sau khi đạt "Quyết định" status. Index này chỉ point đến chúng, không duplicate. Active language semantics nằm ở [`SPEC.md`](../../SPEC.md).
 >
 > **Hai axis của index:**

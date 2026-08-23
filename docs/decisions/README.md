@@ -1,8 +1,9 @@
 # ADR Index — chronological
 
-Architectural Decision Records for Triết. Each ADR captures one
-significant choice — *why* this design over alternatives — so future
-readers (including AI assistants) can reconstruct the reasoning
+Architectural Decision Records for Triết. All decisions authored and approved
+by the Language Creator & Architect **Giang Hoàng** ([@gianglaodai](https://github.com/gianglaodai)).
+Each ADR captures one significant choice — *why* this design over alternatives —
+so future readers (including AI assistants) can reconstruct the reasoning
 without spelunking through git history.
 
 ADRs are immutable once "Quyết định" status is reached. To change a
