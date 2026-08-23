@@ -1,70 +1,46 @@
 # Triết (哲)
 
-> **A balanced-ternary-first systems programming language engineered for zero-cost memory safety, algebraic 3-valued logic, and bare-metal performance without the cognitive overhead of lifetime annotations.**
+> A **balanced-ternary-first** programming language with first-class three-valued logic, deterministic memory management, and a native Cranelift compiler backend.
 
-Triết (Sino-Vietnamese 哲, *"philosophy"*) is a deterministic systems language designed on the mathematical elegance of **Balanced Ternary arithmetic `{-1, 0, +1}`** and **Łukasiewicz Ł3 three-valued logic**. Its design provides a unified, coherent algebraic foundation across logic, data absence, memory placement, and capabilities—delivering the uncompromising performance and safety of modern systems languages while eliminating their historic design debts.
-
----
-
-## 🌟 Core Pillars & Breakthroughs
-
-### 1. First-Class 3-Valued Logic (`Trilean` & `Trilean!`)
-Unlike classical languages that bolt on missing data via `Option<bool>` (introducing branch misprediction penalties) or SQL's flawed 3VL (where `NULL` causes silent query bugs):
-- **Algebraically Closed Ł3/K3 Logic:** Primitive `Trilean` values (`True (+1)`, `Unknown (0)`, `False (-1)`) evaluate with mathematical consistency.
-- **Refinement Subtyping (`Trilean!`):** `if` conditions strictly require `Trilean!` (statically proven $\neq Unknown$), catching unhandled ambiguity at compile time via **`E1033`** (ADR-0021).
-- **100% Branchless Machine Codegen:** Lowered to native CPU `min`/`max`/`neg` instructions in Cranelift without branching overhead.
-
-### 2. Lifetimes Without the Syntax Matrix (`&0`, `&+`, `&-`)
-Triết eliminates Rust's complex named lifetime annotations (`'a`, `'b`, `where 'a: 'b`) in favor of **Directional Flow Polarities**:
-- **`&0 T` (Neutral / Local Sink):** Strictly bound to local scope; guaranteed never to escape or be returned.
-- **`&- T` (Negative / Outward Flow):** Flow-connected to caller context; permitted to return or back-reference parent nodes.
-- **`&+ T` (Positive / Universal Read):** Shared immutable view of ambient or arena memory.
-
-### 3. Balanced-Ternary Memory Placement (`+T`, `T`, `-T`)
-Replaces library allocation wrappers like `Box<T>` with zero-cost constructor and type-level placement polarities:
-- **`+T{}` / `+T` (Heap - Dynamic):** Unique owning pointer (8-byte allocation, automatically freed on drop).
-- **`T{}` / `T` (Stack - Frame):** Flat inline stack slot with zero allocation latency.
-- **`-T{}` / `-T` (Static - Immortal):** Application lifetime in `.rodata`, zero allocation, no-op drop.
-
-### 4. Data-Oriented "Pit of Success" (Banishing `Rc<T>`)
-- **90% Hierarchical Domain:** Managed cleanly via top-down `+T` ownership and upward `&-` loans with $O(1)$ linear cleanup.
-- **10% Non-Hierarchical Graphs / Cycles:** Handled via **Arena Allocation + NodeID (`u32`)**, forcing optimal CPU L1/L2 cache locality and eradicating cyclical memory leaks by construction.
-
-### 5. Two-Tier `unsafe` Capability Protection
-- **Macro Level:** Manifest-level capability declarations in `dao.package` (e.g. `dev::raw_memory`, `dev::ffi`) block third-party supply chain attacks.
-- **Micro Level:** Explicit `unsafe { ... }` lexical blocks isolate raw memory operations for instant fault localization during debugging.
+Triết (Sino-Vietnamese 哲, *"philosophy"*) uses the balanced ternary arithmetic system `{-1, 0, +1}` and three-valued Łukasiewicz Ł3 logic as its foundation. Its design anchors on **internal coherence**—a single unified Ł3 algebra across logic and data absence—combined with a strict, panic-free compiler architecture.
 
 ---
 
-## 🚦 Status — Clean-Architecture Ground-Up Pipeline (v0.1.0-dev)
+## Status — Ground-up Rewrite in Progress (v0.1.0-dev)
 
-> **Honest Engineering Status:** The compiler backend underwent a complete ground-up architectural rewrite starting June 2026. The pipeline is lean, robust, and verification-driven (`source → AST → MIR → NLL Borrowck → Cranelift JIT`).
+> **Engineering Reality:** A full compiler shipped v0.2–v0.10. On **2026-06-04, the old backend was deleted** to rebuild a clean, robust architecture from the ground up (`source → AST → MIR → NLL Borrowck → Cranelift JIT`). The compiler is young and strictly disciplined; we document only what is proven by working tests.
 
-### ✅ Running End-to-End Today:
-- **Balanced-Ternary Arithmetic:** Full symmetric integer range with range-enforced trap-on-overflow (ADR-0044).
-- **Łukasiewicz Ł3 / Kleene K3 Logic:** Native operators (`&&`, `||`, `!`, `^`, `=>`, `<=>`) and `Trilean!` type refinement.
-- **Control Flow:** `if`/`else`, `if?` fallback, `while`, recursion, cross-function calls, and external math shims.
-- **Memory & Aggregates:** `struct` (StackSlot + sret ABI per ADR-0066), `enum` (discriminant switch).
-- **Native Nullable `T?`:** 1-trit sentinel (`i64::MIN`), Elvis operator `?:`, and exhaustive `match ~+ / ~0` (ADR-0041/0065).
-- **Heap Types:** `String`, `Vector<T>`, `HashMap<K, V>` (move-only semantics with inline drop glue).
-- **Flat Heap-in-Struct:** Structs holding heap fields with recursive-walk drop-glue and move tombstones.
-- **NLL Borrow Checker:** Flow-sensitive borrow checking catching use-after-move (E2420), aliasing violations (E2440), and drop-while-borrowed (E2450).
-- **Native Standard I/O:** Cranelift JIT printing via ABI shims (ADR-0087).
+### ✅ What Works Today (End-to-End Native Execution)
 
-### 🎯 Active Frontiers (On the Roadmap):
+- **Balanced-Ternary Arithmetic:** `Trit`, `Tryte`, `Integer` (27-trit), and `Long` (81-trit) with symmetric ranges and range-enforced trap-on-overflow (ADR-0044).
+- **Three-Valued Logic (3VL):** `Trilean` with native Łukasiewicz Ł3 and Kleene K3 operators (`&&`, `||`, `!`, `^`, `=>`, `<=>`).
+- **Compile-Time Refinement (`Trilean!`):** `if cond` strictly requires `Trilean!` (statically proven $\neq Unknown$), catching unhandled ambiguity at compile time with **`E1033`** (ADR-0021). `if?` provides explicit fallback.
+- **Native Nullable `T?`:** 1-trit sentinel representation (`i64::MIN`), Elvis operator `?:`, and exhaustive `match ~+ / ~0` (including `Struct?` and `Enum?` per ADR-0041/0065).
+- **Control Flow:** `if`/`else`, `while`, recursion, cross-function calls, and external math shims (`pow`).
+- **Aggregates & ABI:** `struct` (flat StackSlot + SRet convention per ADR-0066), `enum` (discriminant switch).
+- **Heap Types:** `String`, `Vector<T>`, and `HashMap<K, V>` with move-only semantics and inline drop glue.
+- **Flat Heap-in-Struct:** Structs containing heap fields (`String`/`Vector`/`HashMap`) with recursive drop-glue and move tombstones (ADR-0066).
+- **NLL Borrow Checker:** Flow-sensitive dataflow borrow checking enforcing use-after-move (E2420), aliasing exclusivity (E2440), and drop-while-borrowed (E2450).
+- **Native Output:** Cranelift JIT printing via ABI shims (ADR-0087).
+
+### ⏳ Not Yet Rebuilt / In Progress
+
 - Nested/recursive heap-in-aggregate (`Struct { inner: HasHeap }`, ADR-0066 Lát 2).
-- `comptime` metaprogramming and Data-Oriented `SoaVector<T>` collections.
-- Binary Package Distribution (`.tripkg` = `.so` + `.trimeta`).
-- Pure freestanding/no-std native AOT backend.
+- Partial field moves (`let s = p.name`).
+- Capability loader runtime (ADR-0016/0017/0018).
+- Freestanding / no-std AOT binary compiler.
+- Package bundling and linker (`triet-pack` wiring).
 
 ---
 
-## 💻 Code Examples
+## Language Highlights & Verified Examples
+
+All code examples below reflect verified behavior currently running in the test harness.
 
 ### 1. Reasoning Under Uncertainty with Ł3 Logic
 ```triet
-// Evaluating diagnostic risk with incomplete sensor data
-function evaluate_risk(fever: Trilean, rash: Trilean, vaccinated: Trilean) -> Trilean {
+// Logic under uncertainty — Łukasiewicz Ł3 algebra
+function risk_assessment(fever: Trilean, rash: Trilean, vaccinated: Trilean) -> Trilean {
     let symptoms = fever && rash;
     // If symptoms are True but vaccination status is Unknown -> Result is Unknown
     return symptoms && !vaccinated;
@@ -74,42 +50,51 @@ function main() -> Integer {
     let sensor_a: Trilean = true;
     let sensor_b: Trilean = unknown;
     
-    // Typecheck enforces refinement: `if` requires `Trilean!`
-    let is_safe: Trilean = evaluate_risk(sensor_a, sensor_b, false);
+    let risk: Trilean = risk_assessment(sensor_a, sensor_b, false);
     
-    // Using `if?` for explicit fallback on Unknown:
-    if? is_safe {
-        return 1; // Safe
+    // `if?` provides safe fallback for unrefined Trilean values
+    if? risk {
+        return 1; // High risk
     } else {
-        return 0; // Hazard or Indeterminate
+        return 0; // Low risk or Indeterminate
     }
 }
 ```
 
-### 2. Native Nullable `T?` & Pattern Matching
+### 2. Native Nullable `T?` & Elvis Operator
 ```triet
-function compute_discount(age: Integer?) -> Integer {
-    // Widening from Integer to Integer? is 100% implicit and zero-cost
+function get_discount(age: Integer?) -> Integer {
+    // Widening from Integer to Integer? is implicit and zero-cost
+    let safe_age: Integer = age ?: 0; // Elvis operator: unwrap or fallback to 0
+    
+    if safe_age >= 65 {
+        return 20;
+    }
+    return 0;
+}
+
+function match_discount(age: Integer?) -> Integer {
+    // Exhaustive pattern matching on Nullable
     return match age {
         ~+ val => if val >= 65 { 20 } else { 0 },
-        ~0     => 5, // Default discount when age is missing
+        ~0     => 5, // Missing age default
     };
 }
 ```
 
-### 3. Directional Reference Flow (No `<'a>` Lifetimes)
+### 3. Balanced-Ternary Arithmetic & Symmetric Overflow Trap
 ```triet
-// The compiler statically knows the return value borrows from `src`, not `query`
-function find_keyword(src: &- String, query: &0 String) -> &- String {
-    // &0 guarantees `query` cannot escape
-    // &- connects `src` directly to caller context
-    return src;
+function main() -> Integer {
+    let a: Integer = 1000000;
+    let b: Integer = 2;
+    // Arithmetic operations trap immediately on overflow instead of silent wrapping
+    return a * b;
 }
 ```
 
 ---
 
-## 🏗️ Compiler Architecture & Pipeline
+## Pipeline Architecture
 
 ```text
 .tri Source
@@ -123,13 +108,13 @@ function find_keyword(src: &- String, query: &0 String) -> &- String {
     ├──► triet-mir         Flat non-nested Control Flow Graph (CFG) + Verifier
     ├──► triet-borrowck    NLL dataflow borrow checker (Affine moves & lifetimes)
     │
-    ├──► triet-jit         Cranelift native machine code generator (JIT Tier 1/2)
+    ├──► triet-jit         Cranelift native machine code generator
     └──► triet-driver      Unified CLI pipeline runner (check / run)
 ```
 
 ---
 
-## 📦 Workspace Layout
+## Workspace Layout
 
 ```text
 triet/
@@ -150,44 +135,53 @@ triet/
 ├── spec/                  # Formal language schema & phase plans
 ├── docs/
 │   ├── decisions/         # Architecture Decision Records (ADRs)
-│   ├── proposals/         # Pre-ADR design foundations & RFCs
-│   └── HIGHLIGHTS.md      # In-depth language highlights & verified fixtures
+│   ├── proposals/         # Pre-ADR design explorations & RFCs
+│   ├── HIGHLIGHTS.md      # Verified language highlights & fixtures
+│   └── ARCHIVE.md         # History of the deleted v0.2–v0.10 compiler
 ├── SPEC.md                # Language specification & semantics
 └── VISION.md              # Long-term design north star & invariants
 ```
 
 ---
 
-## 🚀 Getting Started
+## Quick Start
 
 ### Prerequisites
-- **Rust Toolchain:** Stable Rust (edition 2021/2024) via `rustup`.
+- Stable Rust toolchain via `rustup`.
 
 ### Build & Run
 ```bash
-# Build the workspace in release mode
+# Build the workspace
 cargo build --release
 
-# Run end-to-end tests across all crates
+# Run the test suite
 cargo test --workspace
 
-# Execute a Triết program using the native JIT driver
+# Execute a program via the Cranelift JIT driver
 ./target/release/triet-driver run examples/hello_jit.tri
 ```
 
 ---
 
-## 📖 Deep References
+## Design Principles
 
-- [`VISION.md`](VISION.md) — The long-term design philosophy, invariants, and OS-capable constraint.
-- [`SPEC.md`](SPEC.md) — Authoritative language specification and semantics.
-- [`docs/proposals/post_rust_architecture_foundations.md`](docs/proposals/post_rust_architecture_foundations.md) — In-depth architectural treatise on 3VL, Memory Placement, Reference Polarities, and Two-Tier Safety.
-- [`docs/decisions/`](docs/decisions/) — 36+ Architectural Decision Records (ADRs).
+1. **Explicit > Implicit:** Glob imports, default-public exports, and ambient capabilities are rejected.
+2. **Refuse over Guess:** If the compiler is not 100% certain, it emits a clear diagnostic rather than guessing silently.
+3. **Coherence over Novelty:** A single Ł3 algebra runs consistently across logic, data absence, and error handling.
+4. **Stability over Speed:** Every architectural decision is recorded in an ADR with explicit verification gates.
 
 ---
 
-## 📜 License
+## Documentation
 
-Dual-licensed under either:
-- **MIT License** ([LICENSE-MIT](LICENSE-MIT))
-- **Apache License, Version 2.0** ([LICENSE-APACHE](LICENSE-APACHE))
+- [`SPEC.md`](SPEC.md) — Authoritative language specification and semantics.
+- [`VISION.md`](VISION.md) — Long-term design philosophy, constraints, and invariants.
+- [`docs/HIGHLIGHTS.md`](docs/HIGHLIGHTS.md) — Detailed language highlights backed by working fixtures.
+- [`docs/decisions/`](docs/decisions/) — Architectural Decision Records (ADRs).
+- [`docs/proposals/`](docs/proposals/) — Pre-ADR design explorations and RFCs.
+
+---
+
+## License
+
+Dual-licensed under [MIT](LICENSE-MIT) or [Apache-2.0](LICENSE-APACHE).
