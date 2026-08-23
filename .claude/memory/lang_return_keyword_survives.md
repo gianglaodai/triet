@@ -1,23 +1,23 @@
 ---
 name: lang_return_keyword_survives
-description: "Quyết định ngôn ngữ 2026-06-17 — Triết GIỮ keyword `return` (không trảm). Đọc trước khi ai hỏi lại 'có cần return không'."
+description: "A language decision, 2026-06-17 — Triết KEEPS the `return` keyword (not beheaded). Read this before anyone asks again whether return is needed."
 metadata: 
   node_type: memory
   type: project
   originSessionId: 2e8fd692-48b0-4f38-b76d-815d7e054b83
 ---
 
-**2026-06-17 — G hỏi O "Triết có cần keyword `return` khi đã có `~+`/`~0`/`~-`?". G nghiêng về TRẢM HOÀN TOÀN return (expression-oriented thuần). O phản biện có máu → G HỦY phán quyết trảm. `return` SỐNG.**
+**2026-06-17 — G asked O "does Triết need the `return` keyword now that it has `~+`/`~0`/`~-`?". G leaned toward BEHEADING return entirely (purely expression-oriented). O pushed back with blood → G CANCELLED the beheading. `return` LIVES.**
 
-Ngộ nhận phải bóc: `~+`/`~0`/`~-` là **constructor** (trục VALUE — tạo Outcome value, gắn discriminant Trit), KHÔNG phải control-flow. `return` là **control-flow** (điểm thoát + đưa value cho caller). Hai trục TRỰC GIAO — trio không thay được return.
+The misconception to strip away: `~+`/`~0`/`~-` are **constructors** (the VALUE axis — they build an Outcome value and attach the Trit discriminant), NOT control flow. `return` is **control flow** (an exit point that hands a value to the caller). The two axes are ORTHOGONAL — the trio cannot replace return.
 
-Ba đòn O bác G (file:line, không suông):
-1. **`~?` đã CHẾT** — G lôi toán tử propagate `~?` làm trụ đỡ "đã chiếm mặt trận early-exit", nhưng `~?`/`~:` bị khai tử ở commit `d6e8680` (Phase 14.5, ADR-0020 §3.7). E1030/E1031 DELETED (typecheck/error.rs:476), no OutcomePropagate node (parser tests.rs:778). G đánh trận với quân ma.
-2. **`~->` (cơ chế SỐNG) DÙNG `return`** — fixture 115/116: `~+ (succeed() ~-> |e| return ~- e)`. SPEC §397: compiler suy ra MAP vs EARLY-RETURN mode **dựa vào sự hiện diện của `return`**. `return` = token phân biệt mode trong chính hệ Outcome. Trảm return = mở lại ADR-0020 §3.0 + mint token mới.
-3. **"đã tiến hóa vượt return" là tương lai, không hiện tại** — nợ CFG Tail-Expr (ADR-0055) CHƯA wire (`function f()->Int{match…}` trả 0 sai, workaround `let r=match…; return r`); **136/174 fixture dùng return**. Early-exit hàm non-Outcome bằng if/else expression thuần → kim tự tháp lồng.
+The three blows O landed on G (with file:line, not rhetoric):
+1. **`~?` is already DEAD** — G leaned on the propagate operator `~?` as the pillar of "early exit is already covered", but `~?`/`~:` were killed in commit `d6e8680` (Phase 14.5, ADR-0020 §3.7). E1030/E1031 are DELETED (typecheck/error.rs:476), and there is no OutcomePropagate node (parser tests.rs:778). G was fighting with a ghost army.
+2. **`~->` (the LIVING mechanism) USES `return`** — fixtures 115/116: `~+ (succeed() ~-> |e| return ~- e)`. SPEC §397: the compiler infers MAP versus EARLY-RETURN mode **from the presence of `return`**. `return` is the token that distinguishes the mode inside the Outcome system itself. Beheading return means reopening ADR-0020 §3.0 and minting a new token.
+3. **"we have evolved past return" is the future, not the present** — the CFG tail-expression debt (ADR-0055) is NOT wired (`function f()->Int{match…}` wrongly returns 0, with the workaround `let r=match…; return r`); **136 of 174 fixtures use return**. Early exit in a non-Outcome function using pure if/else expressions produces a pyramid of nesting.
 
-**Tách hai nghĩa "bỏ return" (G đã trộn):**
-- **(i) bỏ return CUỐI HÀM (happy path):** CẢ HAI đồng thuận = chân lý Triết. Đường đúng = **đóng nợ CFG Tail-Expression (ADR-0055)** → chiến dịch riêng G sẽ mở. Tail-expr gánh giá trị cuối.
-- **(ii) trảm return HOÀN TOÀN:** **HỦY BỎ chính thức** (lệnh G 2026-06-17). Giá quá đắt: va ADR-0020 đã ký + 136 fixture. Điều kiện tiên quyết nếu tái xét: phải có ADR mới thiết kế mode-inference của `~->` KHÔNG-dùng-`return`.
+**Separating the two meanings of "drop return" (G had conflated them):**
+- **(i) dropping the FINAL return of a function (the happy path):** BOTH of us agree = a Triết truth. The correct route is **closing the CFG tail-expression debt (ADR-0055)** → its own campaign, which G will open. The tail expression carries the final value.
+- **(ii) beheading return ENTIRELY:** **OFFICIALLY CANCELLED** (G's order, 2026-06-17). The cost is too high: it collides with the signed ADR-0020 and 136 fixtures. Precondition if it is ever reconsidered: a new ADR designing `~->`'s mode inference WITHOUT `return`.
 
-G chốt: "`return` không còn là rác C/Java — nó là chốt an toàn định hướng `~->` + gánh early-return hàm non-Outcome." Bài học G tự rút: ADR + đo đạc thực tế bóp chết lý thuyết suông, kể cả từ mồm G. [[mentor_o_persona]] [[reference_spec]]
+G's ruling: "`return` is no longer C/Java garbage — it is the safety latch that steers `~->` and it carries early return for non-Outcome functions." The lesson G drew himself: ADRs plus real measurements strangle pure theory, including theory from G's own mouth. [[mentor_o_persona]] [[reference_spec]]

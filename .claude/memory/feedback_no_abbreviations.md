@@ -9,7 +9,7 @@ metadata:
 
 User is a Java developer and is allergic to abbreviated identifiers. Triết code (types, builtin names, stdlib paths, parameter names, struct fields) must always spell words out fully — follow Java's naming convention.
 
-**Why:** explicit confirmation 2026-05-17 after proposing `Vec` as TypeTag name. User reply: *"tôi rất dị ứng với viết tắt, việc viết tắt Vector thành Vec là không hợp ý tôi. Nguyên tắc đặt tên của java luôn phải được duy trì cho tôi nhé."* Connects to earlier verbose-keyword preference ([[feedback-syntax-verbose-dot-paths]]) — same Java-sensibility principle applied to identifiers, not just keywords.
+**Why:** explicit confirmation 2026-05-17 after proposing `Vec` as a TypeTag name. The user replied (in Vietnamese): *"I am very allergic to abbreviations; shortening Vector to Vec does not suit me. Java's naming convention must always be maintained for me."* Connects to earlier verbose-keyword preference ([[feedback-syntax-verbose-dot-paths]]) — same Java-sensibility principle applied to identifiers, not just keywords.
 
 **How to apply:**
 

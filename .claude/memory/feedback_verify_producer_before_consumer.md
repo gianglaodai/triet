@@ -1,19 +1,19 @@
 ---
 name: feedback-verify-producer-before-consumer
-description: "Nguyên tắc review O (G chuẩn thuận 2026-06-09) — flip field type mà producer còn round-trip qua parse = chưa migrate, fake producer."
+description: "An O review principle (approved by G 2026-06-09) — flipping a field's type while the producer still round-trips through a parse means the migration never happened; the producer is fake."
 metadata: 
   node_type: memory
   type: feedback
   originSessionId: 7f9fbd79-3ba3-4ebd-b376-fd8db532831b
 ---
 
-**Nguyên tắc review (O đề xuất, G chuẩn thuận 2026-06-09 sau B1a S2 Vòng 3).** Khi duyệt một stage "migrate type/representation": **verify PRODUCER trước CONSUMER.** Flip field type trên bề mặt (vd `ty: String → ty: MirType`) mà producer còn **đẻ ra biểu diễn cũ rồi parse ngược** vào type mới = **CHƯA migrate, chỉ sơn vỏ.**
+**Review principle (proposed by O, approved by G on 2026-06-09 after B1a S2 round 3).** When reviewing a "migrate a type/representation" stage: **verify the PRODUCER before the CONSUMER.** Flipping a field type on the surface (e.g. `ty: String → ty: MirType`) while the producer still **emits the old representation and parses it back** into the new type = **NOT migrated, just repainted.**
 
-**Why (bom thật B1a S2):** D nộp S2 với field flip sang `MirType` ✓ + unit test xanh ✓ — nhưng `type_name() -> String` vẫn đẻ string-grammar (`"&0 "`, `"Vector<Integer>?"`) rồi `MirType::parse()` nuốt ngược về enum tại 3 production site. → `parse` (shim "MUST KILL at S4") thành **xương sống producer**; xóa ở S4 thì producer gãy từ gốc → **bất biến G ③ vỡ**, kéo sập compiler. String-grammar KHÔNG bị diệt — chỉ giấu sau round-trip String→parse→enum. Unit test trên bề mặt không bắt được; chỉ lộ khi O **đào chỗ để teeth** (tìm producer để poison).
+**Why (the real bomb, B1a S2):** D submitted S2 with the field flipped to `MirType` ✓ and green unit tests ✓ — but `type_name() -> String` still emitted the string grammar (`"&0 "`, `"Vector<Integer>?"`) and `MirType::parse()` swallowed it back into the enum at 3 production sites. → `parse` (a shim marked "MUST KILL at S4") had become the **backbone of the producer**; deleting it at S4 would break the producer at the root → **G's invariant ③ shatters**, taking the compiler down. The string grammar was NOT killed — merely hidden behind a String→parse→enum round trip. Surface unit tests cannot catch that; it only surfaced when O **went looking for a place to plant teeth** (hunting for a producer to poison).
 
 **How to apply:**
-1. Duyệt migrate: grep `fn <producer>() -> <OldType>` + mọi call `NewType::parse(<producer>(...))`. Nếu producer còn trả OldType → REJECT, đòi map trực tiếp `Source → NewType`.
-2. `parse`/bridge shim chỉ được sống trong `#[cfg(test)]` hoặc biên string→enum một-lần; CẤM làm đường sinh type chính.
-3. Teeth-driven: poison producer (vd map `"String"→Unknown`) → fixture production phải ĐỎ. Đào chỗ poison thường lộ producer ngụy trang.
+1. Reviewing a migration: grep `fn <producer>() -> <OldType>` plus every call of `NewType::parse(<producer>(...))`. If the producer still returns OldType → REJECT and demand a direct `Source → NewType` mapping.
+2. A `parse`/bridge shim may live only inside `#[cfg(test)]` or at a one-time string→enum boundary; it is FORBIDDEN to be the main type-production path.
+3. Teeth-driven: poison the producer (e.g. map `"String"→Unknown`) → a production fixture must go RED. Hunting for somewhere to poison is what usually exposes a disguised producer.
 
-Liên quan [[feedback-poison-must-be-red]] (cùng tinh thần verify), [[feedback-collaboration-loop]] (O = chốt chặn), [[mentor-o-persona]].
+Related: [[feedback-poison-must-be-red]] (the same verification spirit), [[feedback-collaboration-loop]] (O is the checkpoint), [[mentor-o-persona]].

@@ -1,28 +1,28 @@
 ---
 name: project-triet-overview
-description: Workspace structure Triết + pointers tới canonical docs. Version-agnostic — luôn đọc TODO/ROADMAP để biết state hiện tại.
+description: The Triết workspace structure plus pointers to the canonical docs. Version-agnostic — always read TODO/ROADMAP for the current state.
 metadata: 
   node_type: memory
   type: project
   originSessionId: d3755127-60f6-49a7-a0b7-ef557745ea2f
 ---
 
-Triết (哲) là ngôn ngữ balanced-ternary, AI-first, OS-capable trajectory, viết bằng Rust. Cảm hứng từ Setun (1958).
+Triết (哲) is a balanced-ternary language on an OS-capable trajectory, written in Rust. Inspired by Setun (1958). ⚠️ STALE: this entry originally called it "AI-first"; that claim was REMOVED on 2026-06-22 (see VISION §5 tombstone).
 
 **Workspace shape (Cargo, Rust 2024):**
 
-Pipeline crates: `triet-lexer` → `triet-parser` → `triet-modules` → `triet-typecheck` → `triet-ir` → `triet-vm` → `triet-pack` → `triet-cli`.
+⚠️ STALE pipeline (this is the DELETED v0.2-v0.10 compiler): `triet-lexer` → `triet-parser` → `triet-modules` → `triet-typecheck` → `triet-ir` → `triet-vm` → `triet-pack` → `triet-cli`. The current pipeline is in CLAUDE.md (`triet-lower` → `triet-mir` → `triet-borrowck` → `triet-jit` → `triet-driver`); `triet-ir`, `triet-vm`/`triet-interpreter`, `triet-bootstrap`, and `triet-cli` no longer exist.
 
-Foundation crates: `triet-core` (Trit/Tryte/Integer/Long), `triet-logic` (Trilean Ł3/K3), `triet-syntax` (AST arena).
+Foundation crates: `triet-core` (Trit/Tryte/Integer/Long), `triet-logic` (Trilean Ł3/K3), `triet-syntax` (the AST arena).
 
-**Khi cần biết state hiện tại (version, phase, test count, commit hash)** — đừng dựa vào memory này, đọc:
-- `ROADMAP.md` — phasing v0.2.x → v3.0 + changelog các phase đã ship
-- `TODO.md` — sub-task hiện tại + commit short-hashes
-- `docs/decisions/README.md` — ADR index theo phase
-- `SPEC.md` — semantics authoritative
-- `VISION.md` — 5 trụ cột kiến trúc
-- `CLAUDE.md` — collaboration model + conventions
+**When you need the current state (version, phase, test count, commit hash)** — do not rely on this memory, read:
+- `ROADMAP.md` — the v0.2.x → v3.0 phasing + a changelog of shipped phases
+- `TODO.md` — the current sub-task + commit short hashes
+- `docs/decisions/README.md` — the ADR index by phase
+- `SPEC.md` — authoritative semantics
+- `VISION.md` — the 5 architectural pillars
+- `CLAUDE.md` — the collaboration model + conventions
 
-**Why:** State version-cụ-thể drift sau mỗi phase ship. Memory chỉ giữ những thứ KHÔNG đổi (workspace shape, doc pointers, identity).
+**Why:** version-specific state drifts after every shipped phase. Memory keeps only what does NOT change (workspace shape, doc pointers, identity).
 
-**How to apply:** Khi user hỏi "đang ở version nào / phase tiếp theo là gì / bao nhiêu test", đọc TODO.md + ROADMAP.md trực tiếp trước khi trả lời. Không recall snapshot version cũ. Liên quan: [[project-vision-os-capable]], [[reference-spec]].
+**How to apply:** when the user asks "what version are we on / what is the next phase / how many tests", read TODO.md + ROADMAP.md directly before answering. Never recall an old version snapshot. Related: [[project-vision-os-capable]], [[reference-spec]].

@@ -1,6 +1,6 @@
 ---
 name: campaign_str0_coverage_and_triage
-description: "✅ ĐÓNG 2026-07-25(c) — TRIAGE toàn sổ nợ (chôn 2 zombie + 1 phantom) + &0 String read-borrow coverage (len/eq/concat). origin/main 5dd2aeb, gate 0·clean·0·458·0."
+description: "✅ CLOSED 2026-07-25(c) — a TRIAGE of the whole debt ledger (burying 2 zombies + 1 phantom) + `&0 String` read-borrow coverage (len/eq/concat). origin/main 5dd2aeb, gate 0·clean·0·458·0."
 metadata: 
   node_type: memory
   type: project
@@ -8,75 +8,89 @@ metadata:
   modified: 2026-07-25T07:54:58.625Z
 ---
 
-## ✅ ĐÓNG — 3 commit PUSHED (O+G ký, 2026-07-25(c))
+## ✅ CLOSED — 3 commits PUSHED (signed by O and G, 2026-07-25(c))
 
 ```
 5dd2aeb  docs(todo): close &0 String coverage, log WO-JIT-Print debt
 31fd2d6  feat(track-c): &0 String read-borrow overload coverage — len/eq/concat
-4904c55  docs(mentor): dọn G-state — chôn zombie Enum? param + phantom &+ T, reclassify N1, fix fixture 177
+4904c55  docs(mentor): clean the G state — bury the Enum? param zombie and the &+ T phantom, reclassify N1, fix fixture 177
 ```
 Gate `0·clean·0·458·0`, fixtures 455→458 (462/463/464).
 
-## 🔑 BÀI HỌC LỚN NHẤT: NHÃN BACKLOG KHÔNG ĐÁNG TIN — RECON-TRƯỚC-WO CỨU HAI LẦN
+## 🔑 THE BIGGEST LESSON: BACKLOG LABELS ARE NOT TRUSTWORTHY — RECON-BEFORE-WO SAVED US TWICE
 
-Giang chọn front "Enum? param SIGILL 132" từ sổ nợ. O recon-trước (verify-don't-trust):
-- **Enum? param = ZOMBIE**: đã đóng `ccb8db3` (WO-NullableEnumParamABI, 2026-07-19, teeth 419-427).
-  O dựng worktree pristine `564f0f7` → tái hiện exit 132; HEAD → chạy đúng (1/99/42). Debt sống ở
-  forward-list `MENTOR_G_STATE.md` nhưng đã đóng trong code + TODO.md.
-- Giang lệnh **triage-tươi TOÀN sổ nợ** → lộ thêm **borrow-params `&+ T` = PHANTOM**: ADR-0022 §4.1
-  `&+` KHÔNG phải borrow mà là unique-OWNER, pass = MOVE; move-in heap ĐÃ CÓ qua plain param
-  `f(v: Vector)`; share cross-thread = ADR-0026 **BYOS FROZEN**. Không mở khóa năng lực gì. CHÔN.
-- Triage cũng thấy: **N1 widening** nay = refuse `E1120` sạch (feature ADR-0065, KHÔNG hố miscompile);
-  comment fixture 177 "tail-expr fat-struct return SIGILL" = STALE (verify plain-free-fn expr-body →30 exit 0).
-- **KHÔNG entry nào còn là hố soundness/crash sống.** Mọi thứ genuinely-open = feature-completeness gap.
+Giang picked the front "Enum? param SIGILL 132" from the debt ledger. O reconned first (verify-don't-trust):
+- **The Enum? param is a ZOMBIE**: already closed by `ccb8db3` (WO-NullableEnumParamABI, 2026-07-19, teeth
+  419-427). O built a pristine worktree at `564f0f7` → reproduced exit 132; at HEAD → it runs correctly
+  (1/99/42). The debt lived on in the forward list of `MENTOR_G_STATE.md` while being closed in the code and
+  in TODO.md.
+- Giang ordered a **fresh triage of the ENTIRE debt ledger** → which exposed another one: **the `&+ T`
+  borrow params are a PHANTOM**: ADR-0022 §4.1 says `&+` is not a borrow but a unique OWNER, so passing it
+  is a MOVE; moving heap values in ALREADY works through a plain param `f(v: Vector)`; and sharing across
+  threads is ADR-0026 **BYOS, FROZEN**. It unlocks no capability at all. BURIED.
+- The triage also found: **N1 widening** is now a clean `E1120` refusal (an ADR-0065 feature, NOT a
+  miscompile pit); and the comment on fixture 177, "tail-expr fat-struct return SIGILL", is STALE (verified:
+  a plain free function with an expression body → 30, exit 0).
+- **NO entry was still a live soundness or crash pit.** Everything genuinely open is a feature-completeness gap.
 
-🩸 **Vết O:** ban đầu nói quá "G-state đầy zombie"; grep chính xác thấy nhẹ hơn. Read hiển thị bản
-working-tree lệch HEAD (bất thường) → O **revert về HEAD thật rồi tự tay tái áp từng dòng** (auditable,
-không ship thay đổi không rõ nguồn vào file boot G — tiền lệ `3417c4f` clobber). Verify-don't-trust áp lên
-chính output của mình.
+🩸 **O's blemish:** it initially overstated "the G state is full of zombies"; a precise grep showed it was
+milder. Read displayed a working-tree version that differed from HEAD (abnormal) → O **reverted to the real
+HEAD and re-applied each line by hand** (auditable, refusing to ship changes of unknown provenance into G's
+boot file — the `3417c4f` clobber precedent). Verify-don't-trust applied to its own output.
 
-## FRONT &0 String COVERAGE (G chọn Option 2: len+eq+concat, Phương án A)
+## THE `&0 String` COVERAGE FRONT (G chose Option 2: len+eq+concat, via Option A)
 
-**Ma trận hố** (probe thật CHECK+RUN): Vector/HashMap `&0`-read phủ KÍN; hố CHỈ ở String, lẻ:
-`length/contains/is_empty(&0 String)`✓ nhưng `len(&0 String)`→E1041, `concat/eq(&0 String)`→E1003.
+**The hole matrix** (real CHECK+RUN probes): Vector/HashMap `&0` reads are FULLY covered; the holes are only
+in String, and scattered: `length/contains/is_empty(&0 String)` ✓ but `len(&0 String)`→E1041 and
+`concat/eq(&0 String)`→E1003.
 
-**Bề mặt vá = typecheck-only (env.rs), C-shim ĐÃ nhận `&0 String`** (chứng minh sống: `length(&0)`→5,
-`contains(&0)`→9):
-- **len**: thêm 1 `declare_overload("len",(ref_string)->Integer)` cạnh khối ADR-0059 C.2 (`env.rs:747`);
-  arm `"len"|"length"` (`triet-lower/src/lib.rs:2685`) đã strip Reference → ZERO lowering.
-- **eq**: `declare`→`declare_overload` + 3 combo `(ref,owned)/(owned,ref)/(ref,ref)`; JIT class `bung_fields`
-  đã có nhánh `is_reference()` → ZERO JIT.
-- **concat**: cần MỞ RỘNG JIT. Class `concat_sret` (`mir_lower.rs:3968-3979`) chỉ đọc `struct_slots`,
-  thiếu nhánh Reference-fallback như `bung_fields` (`:3993-4012`). Fix = **MIRROR nguyên văn** nhánh
-  `is_reference()` (`use_var`→`load {ptr,len}@0/@8`) vào else của concat_sret. Đồng nhất marshaling 2 class.
+**The patch surface is typecheck-only (env.rs); the C shims ALREADY accept `&0 String`** (live proof:
+`length(&0)`→5, `contains(&0)`→9):
+- **len**: add one `declare_overload("len",(ref_string)->Integer)` next to the ADR-0059 C.2 block
+  (`env.rs:747`); the `"len"|"length"` arm (`triet-lower/src/lib.rs:2685`) already strips the Reference →
+  ZERO lowering changes.
+- **eq**: `declare`→`declare_overload` + 3 combinations `(ref,owned)/(owned,ref)/(ref,ref)`; the JIT's
+  `bung_fields` class already has an `is_reference()` branch → ZERO JIT changes.
+- **concat**: this one needs the JIT EXTENDED. The `concat_sret` class (`mir_lower.rs:3968-3979`) reads only
+  `struct_slots` and lacks the Reference fallback branch that `bung_fields` has (`:3993-4012`). The fix is a
+  **verbatim MIRROR** of the `is_reference()` branch (`use_var`→`load {ptr,len}@0/@8`) into concat_sret's
+  else. That unifies the marshalling of the two classes.
 
-**Phương án A (explicit overloads)** — G BÁC coercion `&0 T→T` ngầm ("rác câm typecheck").
+**Option A (explicit overloads)** — G REJECTED an implicit `&0 T→T` coercion ("silent typecheck garbage").
 
-**print/println LOẠI** (O dùng thẩm quyền G trao "nếu cần"): KHÔNG có JIT shim (`grep __triet_print`=rỗng;
-chạy owned String cũng `callee print not found`). Thêm `&0` overload = NO-OP (dời E1003→JIT-not-found).
-→ ghi nợ **WO-JIT-Print** (front I/O riêng: dựng stdout shim + wire).
+**print/println were EXCLUDED** (O used the authority G delegated "if needed"): there is no JIT shim
+(`grep __triet_print` = empty; even an owned String gives `callee print not found`). Adding a `&0` overload
+would be a NO-OP (merely moving E1003 to a JIT not-found). → recorded as the debt **WO-JIT-Print** (its own
+I/O front: build the stdout shim and wire it).
 
-## 🦷 TEETH MÁU (string_ref_overload_free_counting.rs, --test-threads=1, dedup con trỏ)
-- Healthy: `len(&0 s)` FREE=1, `eq(&0,&0)` FREE=2, `concat(&0,&0)` FREE=3 (2 mượn + 1 result alloc), dup=0.
-- Poison SHIM (chứng minh counter sống): leak-shim→FREE 0; dup-shim→FREE 2×N/dup>0.
-- **O tự poison ĐỘC LẬP 2 tầng** (cp-snapshot /tmp, md5 khớp, KHÔNG git checkout):
-  gỡ overload len→462 E1041; gỡ nhánh `is_reference` concat_sret→464 exit 4 "concat: String arg without slot".
-  Cả hai load-bearing.
+## 🦷 BLOOD TEETH (string_ref_overload_free_counting.rs, --test-threads=1, with pointer dedup)
+- Healthy: `len(&0 s)` FREE=1, `eq(&0,&0)` FREE=2, `concat(&0,&0)` FREE=3 (2 borrowed + 1 result allocation),
+  dup=0.
+- Poisoning the SHIM (proving the counter is alive): a leaking shim → FREE 0; a duplicating shim → FREE 2×N
+  with dup>0.
+- **O poisoned INDEPENDENTLY at 2 layers** (a /tmp cp snapshot, matching md5, NO git checkout):
+  removing the len overload → 462 gives E1041; removing the `is_reference` branch from concat_sret → 464
+  exits 4 with "concat: String arg without slot". Both are load-bearing.
 
-## ⚖ VAI (phiên sạch)
-- **D=Sonnet 5 subagent**: WO-1 (len+eq) DỪNG đúng LUẬT 4 ở concat (concat_sret bế tắc — báo O, revert sạch,
-  KHÔNG tự nới sang mir_lower.rs). WO-2 (concat) hoàn tất khi G mở scope, mirror đúng chỉ định KHÔNG phát minh.
-  0 vết bịa. Commit WIP không push.
-- **O**: recon-trước-WO (chôn 2 zombie+1 phantom trước khi đốt công), ra 2 WO, verify máu độc lập cả 3 lát
-  (tự gate, tự poison 2 tầng), squash commit gọn, push + ls-remote xác nhận.
-- **G**: ký kết liễu; BÁC coercion; đòi MIR-dump concat + hỏi print/println (O trả lời có bằng chứng → loại).
+## ⚖ ROLES (a clean session)
+- **D = a Sonnet 5 subagent**: WO-1 (len+eq) STOPPED correctly per LAW 4 at concat (stuck on concat_sret —
+  reported to O, reverted cleanly, did NOT widen into mir_lower.rs on its own). WO-2 (concat) was completed
+  once G opened the scope, mirroring the specified idiom without inventing anything. 0 fabrications. WIP
+  commits, no push.
+- **O**: reconned before the WO (burying 2 zombies + 1 phantom before burning effort), issued 2 WOs, verified
+  all 3 slices independently with blood (its own gate, its own 2-layer poison), squashed the commits neatly,
+  pushed, and confirmed with ls-remote.
+- **G**: signed the kill; REJECTED the coercion; demanded a MIR dump for concat and asked about print/println
+  (O answered with evidence → excluded).
 
-## 🔴 NỢ MỚI + CÒN TREO (chờ G+Giang chốt mở)
-- **WO-JIT-Print** (MỚI, định nghĩa rõ): `print`/`println` thiếu JIT shim `__triet_print`/`__triet_println`
-  stdout side-effect. Cần dựng shim + wire lowerer + JIT declare. Front I/O, KHÔNG thuộc `&0 coverage`.
-- method-return `Struct?`/`Enum?` (E1100 ConstructNotYetLowered) · get_ref V=Nullable (E1003, lowerer
-  `&0 Nullable`) · §15.6 `Vector<Leaf?>` chạy (feature, drop-glue nhạy) · Deep-Clone (campaign lớn) ·
-  drain (ADR Iteration) · `&0 Enum` tiêu thụ (basic borrow đã chạy, "tiêu thụ" concern chưa rõ) ·
-  mir_lower panic Nhóm B/C (B bia-mộ, C defer `D-JIT-OOM`).
+## 🔴 NEW AND OUTSTANDING DEBTS (awaiting G and Giang to open one)
+- **WO-JIT-Print** (NEW, clearly defined): `print`/`println` have no JIT shims
+  `__triet_print`/`__triet_println` for the stdout side effect. It needs the shims built, the lowerer wired,
+  and JIT declarations. An I/O front, NOT part of `&0` coverage.
+- method returns of `Struct?`/`Enum?` (E1100 ConstructNotYetLowered) · get_ref with V=Nullable (E1003, the
+  lowerer's `&0 Nullable`) · §15.6 making `Vector<Leaf?>` run (a feature, with sensitive drop glue) · deep
+  Clone (a large campaign) · drain (the Iteration ADR) · `&0 Enum` consumption (basic borrowing already
+  works; the "consumption" concern is not yet clear) · the mir_lower panic groups B/C (B is a tombstone, C
+  is deferred as `D-JIT-OOM`).
 
 [[campaign_shim_meta_spof_adr0085]] [[campaign_typed_collections]] [[mentor_o_persona]] [[colleague_d_persona]] [[feedback_poison_must_be_red]] [[feedback_teeth_never_git_checkout]]

@@ -1,18 +1,18 @@
 ---
 name: User — webapp dev, vision-driven, defers technical decisions
-description: User là lập trình viên webapp, không có background system-level. Đưa tầm nhìn và mong muốn; ủy quyền toàn bộ quyết định kỹ thuật cho assistant.
+description: The user is a webapp developer with no system-level background. They supply the vision and the requirements, and delegate every technical decision to the assistant.
 type: user
 originSessionId: d3755127-60f6-49a7-a0b7-ef557745ea2f
 ---
-User profile (từ self-disclosure 2026-05-09):
-- Background: lập trình viên phần mềm chủ yếu webapp.
-- Không có kinh nghiệm sâu về system languages, ABI, OS internals, compiler internals.
-- Đưa được vision và requirements rõ ràng (e.g., "ngôn ngữ phải viết được OS").
-- **Ủy quyền toàn bộ technical/architectural decisions cho assistant** với phạm vi: triển khai ngôn ngữ Triết.
+User profile (from self-disclosure 2026-05-09):
+- Background: a software developer working mainly on webapps.
+- No deep experience with system languages, ABIs, OS internals, or compiler internals.
+- Supplies clear vision and requirements (e.g. "the language must be able to write an OS").
+- **Delegates all technical and architectural decisions to the assistant**, scoped to implementing the Triết language.
 
 **How to apply:**
-- Không hỏi user "should we use witness tables or monomorphization?" — đó là quyết định của tôi.
-- HỎI khi: user-facing UX, philosophy, scope, priorities, hoặc trade-off mà chỉ user biết (ví dụ: tên ngôn ngữ, cú pháp lựa chọn aesthetic).
-- KHÔNG HỎI khi: implementation strategy, prior art selection, ADR content, kỹ thuật nội bộ.
-- Tài liệu hóa quyết định ở ADR — user đọc được nhưng không phải duyệt từng dòng.
-- Khi giải thích, dùng analogy với webapp (Java/Spring, npm packages, REST API) hơn là deep system internals — user sẽ hiểu "DLL Hell" qua "version conflict in node_modules" tốt hơn.
+- Do not ask the user "should we use witness tables or monomorphization?" — that is my decision.
+- ASK about: user-facing UX, philosophy, scope, priorities, or a trade-off only the user can settle (e.g. the language name, an aesthetic syntax choice).
+- DO NOT ASK about: implementation strategy, prior-art selection, ADR content, internal technique.
+- Document decisions in ADRs — the user can read them but does not approve them line by line.
+- When explaining, use webapp analogies (Java/Spring, npm packages, REST APIs) rather than deep system internals — the user will understand "DLL Hell" better through "a version conflict in node_modules".

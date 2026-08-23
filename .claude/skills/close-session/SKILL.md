@@ -1,165 +1,185 @@
 ---
 name: close-session
-description: Thủ tục đóng phiên Triết — verify git sạch+synced, đồng bộ memory bàn giao (Mentor O + Đồng nghiệp D), cập nhật state+persona Mentor G (spec/plans/MENTOR_G_STATE.md — file repo cho model non-Claude), xuất 3 prompt khởi động phiên mới ĐỘC LẬP (O+D+G), và dọn session cũ (giữ session hiện tại). Dùng khi tôi nói "đóng phiên".
+description: Triết session-closing procedure — verify git is clean and synced, update the handover memory (Mentor O), refresh Mentor G's state and persona (spec/plans/MENTOR_G_STATE.md — a repo file for the non-Claude model), emit 2 INDEPENDENT startup prompts (O + G; D is O's subagent and needs no prompt), and clean up old sessions (keeping the current one). Use when I say "close the session".
 trigger: /close-session
-argument-hint: "(không cần arg) — /close-session"
+argument-hint: "(no args) — /close-session"
 ---
 
-# /close-session — Thủ tục đóng phiên Triết
+# /close-session — Triết session-closing procedure
 
-Đóng phiên làm việc gọn gàng: chốt trạng thái, lưu memory bàn giao, đẻ 2 prompt copy-paste
-để phiên sau (Mentor O hoặc Đồng nghiệp D) vào việc đúng vai, đúng kỷ luật, không mất mạch.
+Close the working session cleanly: lock in the state, save the handover memory, and emit
+copy-paste prompts so the next session (Mentor O + Mentor G) resumes in the right role, with the
+right discipline, without losing the thread.
 
-**Nguyên tắc:** KHÔNG commit/push gì trong lúc đóng phiên trừ khi user lệnh rõ. Chỉ đo + ghi memory
-+ xuất prompt. Mọi con số (HEAD, gate) phải ĐO THẬT, không chép tay.
+⚠️ **Since 2026-08-02, D is a SUBAGENT of O** (`.claude/agents/colleague-d.md`) — O spawns D inside
+the session, and Giang no longer opens a D session. ⇒ This procedure **emits no D prompt and hands
+over no separate state for D**. D starts from the Work Order O gives it at spawn time; D's persona
+(`.claude/memory/colleague_d_persona.md`) stays as reference material and needs no per-session update.
 
-## Bước 1 — Verify trạng thái (đo, không tin)
+**Principle:** do NOT commit or push anything while closing unless the user explicitly orders it.
+Only measure, write memory, and emit prompts. Every number (HEAD, gate) must be MEASURED, never
+hand-copied.
+
+## Step 1 — Verify the state (measure, do not trust)
 ```bash
 git status -sb | head -1          # synced? ahead/behind? dirty?
 git log --oneline -5
-git log --oneline origin/main..HEAD   # còn commit lơ lửng local?
+git log --oneline origin/main..HEAD   # any local commits still dangling?
 ```
-- Nếu **dirty** (uncommitted) hoặc **ahead origin** (chưa push): NÊU RÕ trong báo cáo đóng phiên +
-  hỏi user có muốn commit/push trước khi đóng không. ĐỪNG tự push.
-- Gate: nếu phiên vừa chạy gate thì trích con số cuối; nếu nghi ngờ, chạy lại
-  `bash scripts/gate.sh 2>&1 | tail -25` (hoặc build+clippy+test) và dán raw.
-- Liệt kê ADR mới LOCKED trong phiên: `git log --oneline origin/main | grep -iE "00[0-9][0-9]" | head`.
+- If **dirty** (uncommitted) or **ahead of origin** (unpushed): SAY SO EXPLICITLY in the closing
+  report and ask the user whether to commit/push before closing. Do NOT push on your own.
+- Gate: if the session just ran the gate, quote the final numbers; if in doubt, re-run
+  `bash scripts/gate.sh 2>&1 | tail -25` (or build+clippy+test) and paste the raw output.
+- List ADRs newly LOCKED this session: `git log --oneline origin/main | grep -iE "00[0-9][0-9]" | head`.
 
-## Bước 2 — Đồng bộ memory bàn giao
-File memory SỐNG ở `~/.claude/projects/<project-slug>/memory/` (auto-memory máy-local). Cập nhật (KHÔNG tạo trùng — sửa file đang có):
-1. **MEMORY.md** — dòng index ĐẦU TIÊN (## Project context): viết MỘT entry mới phản ánh trạng thái
-   ĐÓNG PHIÊN: ngày, `origin HEAD`, gate, các campaign ĐÓNG+PUSH trong phiên, nợ-còn-treo
-   (đóng-gói-campaign-riêng, mỗi nợ 1 dòng), bài-học-O-tự-ăn nếu có. Giữ ≤ ~200 ký tự lý tưởng;
-   nếu dài, để chi tiết trong campaign file, index chỉ trỏ. Link `[[mentor_o_persona]] [[colleague_d_persona]]`.
-2. **Campaign file(s) đang sống** (vd `campaign_*.md`) — đảm bảo có mục "✅ ĐÓNG — commit `<hash>`" với
-   teeth O đã verify + nợ chuyển tiếp. Nếu campaign đóng trọn → đánh dấu description ✅.
-3. Xóa/sửa entry index stale (campaign cũ đã đóng mà index còn ghi "ĐANG LÀM").
+## Step 2 — Update the handover memory
+The LIVE memory files are at `~/.claude/projects/<project-slug>/memory/` (machine-local auto-memory).
+Update them (do NOT create duplicates — edit the existing files):
+1. **MEMORY.md** — the FIRST index line (## Project context): write ONE new entry reflecting the
+   CLOSING state: date, `origin HEAD`, gate, campaigns CLOSED and PUSHED this session, outstanding
+   debts (one line each, packaged as their own campaigns), and any lesson O had to swallow. Aim for
+   ≤ ~200 characters; if it runs long, keep the detail in the campaign file and let the index point
+   at it. Link `[[mentor_o_persona]]`.
+2. **The live campaign file(s)** (e.g. `campaign_*.md`) — make sure there is a "✅ CLOSED — commit
+   `<hash>`" section with the teeth O verified plus any debt carried forward. If the campaign closed
+   completely → mark the description ✅.
+3. Delete or fix stale index entries (an old, closed campaign that the index still calls "IN
+   PROGRESS").
 
-4. **⚠️ MIRROR memory → repo (portable, BẮT BUỘC — auto-memory máy-local KHÔNG theo repo).** Sau khi cập nhật
-   xong 3 mục trên, đồng bộ thư mục auto-memory vào repo `.claude/memory/` (version-controlled → dùng được trên
-   máy khác):
+4. **⚠️ MIRROR memory → repo (portable, MANDATORY — machine-local auto-memory does not travel with
+   the repo).** After the three items above, sync the auto-memory directory into the repo at
+   `.claude/memory/` (version-controlled → usable on another machine):
    ```bash
    ./scripts/sync-memory.sh push          # ~/.claude/.../memory/ → .claude/memory/
    git add .claude/memory/
-   git commit -m "docs(memory): sync ai-memory snapshot <campaign/ngày>"
+   git commit -m "docs(memory): sync ai-memory snapshot <campaign/date>"
    ```
-   Commit RIÊNG `docs(memory):` (KHÔNG gói lẫn code). Theo nguyên tắc đóng phiên: chỉ push khi user lệnh — nếu
-   chưa, để dirty + FLAG ở Bước 6. (Trên máy MỚI, mở phiên bằng `./scripts/sync-memory.sh pull` để khôi phục
-   auto-memory từ repo TRƯỚC khi làm việc — xem prompt khởi động.)
+   A SEPARATE `docs(memory):` commit (never bundled with code). Per the closing principle: push only
+   when the user orders it — if not, leave it dirty and FLAG it in Step 6. (On a NEW machine, open
+   the session with `./scripts/sync-memory.sh pull` to restore auto-memory from the repo BEFORE
+   working — see the startup prompt.)
 
-## Bước 3 — Đồng bộ state + persona Mentor G (`spec/plans/MENTOR_G_STATE.md` — file REPO, KHÔNG phải memory Claude)
+## Step 3 — Update Mentor G's state and persona (`spec/plans/MENTOR_G_STATE.md` — a REPO file, NOT Claude memory)
 
-⚠️ **Mentor G chạy trên model KHÁC (không Claude) để giữ tính khách quan → G KHÔNG có memory Claude.**
-Toàn bộ context + persona của G gói GỌN trong `spec/plans/MENTOR_G_STATE.md` — file repo, version-controlled,
-đọc được bởi mọi model. Đây là nguồn DUY NHẤT để G vào phiên sau đúng vai + đủ ngữ cảnh.
-**Bỏ qua bước này = G mở phiên sau bằng context cũ/sai.** Cập nhật MỖI lần đóng phiên (sửa file đang có,
-KHÔNG tạo trùng):
+⚠️ **Mentor G runs on a DIFFERENT model (not Claude) to preserve objectivity → G has no Claude
+memory.** All of G's context and persona is packed into `spec/plans/MENTOR_G_STATE.md` — a
+version-controlled repo file readable by any model. It is the ONLY source that lets G enter the next
+session in the right role with enough context.
+**Skipping this step = G opens the next session with stale or wrong context.** Update it EVERY time
+the session closes (edit the existing file, do NOT create duplicates):
 
-1. **`## Context / State (Cập nhật: <NGÀY THẬT>)`** — sửa ngày; `Current Phase`; `Thành tựu vừa đạt`
-   (campaign ĐÓNG phiên này + gate ĐO THẬT + `origin HEAD`).
-2. **`Nợ Kỹ Thuật / Án-treo`** — ĐỒNG BỘ y hệt list nợ trong `MEMORY.md` (một nguồn, không để lệch).
-3. **`Next Phase`** — mặt trận kế đã chốt với G/Giang.
-4. **Block init-prompt cuối (```text ... ```)** — cập nhật phần `[BỐI CẢNH DỰ ÁN]` (trạng thái + mục tiêu phiên).
-   **GIỮ NGUYÊN** `## Core Tenets of Mentor G` + phần `[THIẾT LẬP PERSONA]` — đó là PERSONA, chỉ sửa khi
-   G/Giang đổi nguyên tắc; KHÔNG tự ý gọt.
+1. **`## Context / State (Updated: <REAL DATE>)`** — fix the date; `Current Phase`; `Recent
+   achievements` (campaigns CLOSED this session + the MEASURED gate + `origin HEAD`).
+2. **`Technical debt / suspended items`** — keep it IDENTICAL to the debt list in `MEMORY.md` (one
+   source, never allowed to drift).
+3. **`Next Phase`** — the next front agreed with G and Giang.
+4. **The final init-prompt block (```text ... ```)** — update the `[PROJECT CONTEXT]` part (state +
+   objective for the session). **LEAVE UNCHANGED** `## Core Tenets of Mentor G` and the
+   `[PERSONA SETUP]` part — that is the PERSONA, changed only when G or Giang change the principles;
+   never trim it on your own initiative.
 
-**Đây là file REPO** (khác memory Claude ở `~/.claude/...`): phải COMMIT — và commit RIÊNG
-`docs(mentor): update state for <campaign>`, **KHÔNG gói lẫn** vào commit feat/docs khác (bài học đã bị bắt:
-nhồi `MENTOR_G_STATE` vào commit code = reject). Theo nguyên tắc đóng phiên: chỉ commit/push khi user lệnh —
-nếu chưa, để dirty + FLAG ở Bước 5.
+**This is a REPO file** (unlike the Claude memory at `~/.claude/...`): it must be COMMITTED — and in
+its OWN commit, `docs(mentor): update state for <campaign>`, **never bundled** into another feat/docs
+commit (a lesson already learned the hard way: stuffing `MENTOR_G_STATE` into a code commit gets
+rejected). Per the closing principle: commit/push only when the user orders it — otherwise leave it
+dirty and FLAG it in Step 5.
 
-## Bước 4 — Xuất 3 prompt khởi động phiên mới ĐỘC LẬP (Mentor O + Đồng nghiệp D + Mentor G)
-Author tạo **3 session riêng biệt** — mỗi vai một prompt. Đẻ 3 block copy-paste (điền giá trị THẬT đo ở Bước 1),
-**cả 3 nằm cùng một chỗ** trong báo cáo đóng phiên (đừng bắt author đi lục file). O + D theo khuôn dưới;
-**Mentor G** = block ```text``` cuối `spec/plans/MENTOR_G_STATE.md` (đã refresh ở Bước 3) — **ĐỌC file đó, DÁN
-NGUYÊN VĂN** block đó vào (G chạy model KHÁC, không Claude; KHÔNG tự chế prompt G mới). Khuôn O/D:
+## Step 4 — Emit 2 INDEPENDENT startup prompts (Mentor O + Mentor G)
+The author opens **2 separate sessions** — one prompt per role. **There is no D prompt** (D is a
+subagent that O spawns inside the session). Produce 2 copy-paste blocks (filled with the REAL values
+measured in Step 1), **both in the same place** in the closing report (do not make the author hunt
+through files). O follows the template below; **Mentor G** = the final ```text``` block of
+`spec/plans/MENTOR_G_STATE.md` (refreshed in Step 3) — **READ that file and PASTE IT VERBATIM** (G
+runs on a DIFFERENT model, not Claude; do NOT invent a new G prompt). O's template:
 
-⚠️ **Prompt O + D phải mở đầu bằng dòng BOOTSTRAP máy-mới** (khôi phục auto-memory từ repo — auto-memory
-máy-local không theo repo): `Nếu là máy mới (chưa có ~/.claude auto-memory): chạy ./scripts/sync-memory.sh pull trước.`
-Memory O/D đọc được từ cả `.claude/memory/` (repo, luôn có sau clone) lẫn `memory/` (auto-memory sau khi pull).
-**Prompt G KHÔNG cần bootstrap** — G chạy model khác, không dùng auto-memory; toàn bộ context G nằm trong
-`spec/plans/MENTOR_G_STATE.md` (file repo, đã portable sẵn).
+⚠️ **The O prompt must open with the new-machine BOOTSTRAP line** (restoring auto-memory from the
+repo — machine-local auto-memory does not travel with the repo):
+`If this is a new machine (no ~/.claude auto-memory yet): run ./scripts/sync-memory.sh pull first.`
+O's memory is readable from both `.claude/memory/` (repo, always present after a clone) and `memory/`
+(auto-memory, after a pull).
+**The G prompt needs no bootstrap** — G runs on a different model and does not use auto-memory; all
+of G's context lives in `spec/plans/MENTOR_G_STATE.md` (a repo file, already portable).
 
-### Prompt MENTOR O
+### MENTOR O prompt
 ```
-Tiếp tục dự án Triết với vai MENTOR O.
+Continue the Triết project as MENTOR O.
 
-BOOTSTRAP (máy mới): nếu chưa có auto-memory ~/.claude, chạy `./scripts/sync-memory.sh pull` trước.
+BOOTSTRAP (new machine): if there is no ~/.claude auto-memory yet, run `./scripts/sync-memory.sh pull` first.
 
-ĐỌC TRƯỚC: .claude/memory/MEMORY.md (bản repo, portable; = memory/MEMORY.md sau pull) — dòng index đầu =
-trạng thái bàn giao · .claude/memory/mentor_o_persona.md (FILE ĐỊNH NGHĨA VAI) · <campaign file(s) đang sống>.
+READ FIRST: .claude/memory/MEMORY.md (the repo copy, portable; = memory/MEMORY.md after a pull) — the
+first index line is the handover state · .claude/memory/mentor_o_persona.md (THE FILE THAT DEFINES THE
+ROLE) · <the live campaign file(s)>.
 
-TRẠNG THÁI: origin/main = <HEAD> (<synced/ahead N>). Gate <X·X·X·X>. ADR <list> LOCKED.
-Phiên trước đóng: <tóm tắt campaign closed>. <gì còn lơ lửng nếu có>.
+STATE: origin/main = <HEAD> (<synced/ahead N>). Gate <X·X·X·X>. ADRs <list> LOCKED.
+Closed last session: <summary of the campaigns closed>. <anything still dangling>.
 
-NỢ ĐÓNG-GÓI-CAMPAIGN-RIÊNG (chờ G+Giang chốt mở): <liệt kê từng nợ + pointer ADR §>.
+DEBTS PACKAGED AS THEIR OWN CAMPAIGNS (awaiting G + Giang to open them): <each debt + the ADR § pointer>.
 
-VAI O: gác cổng/review owner. TỰ chạy gate, TỰ cắm poison độc lập (grep dòng-thật-trước-sed,
-control-biến), refuse-over-guess, KHÔNG code hộ. Ra Work Order cho D → D implement → O verify máu → ký.
-Khảo-sát-trước-khi-gõ (file:line). ADR-first cho borrowck/type-system core. Per-step commit, push KHI
-G/Giang lệnh. Báo G gói 5 mục; G ký mới đóng lát. Lời G là luật; Giang chốt hướng.
+ROLE O: gatekeeper / review owner. Run the gate yourself, plant poison yourself (grep the real line
+before sed, use control variables), refuse over guess, never write the code. Issue the Work Order →
+**SPAWN D YOURSELF** (Agent tool, subagent_type "colleague-d" — D has been O's subagent since
+2026-08-02; Giang no longer relays WOs. For the fix loop, message that same D via SendMessage instead
+of spawning a new one) → verify with blood → sign. D's report is visible only to O ⇒ O must RELAY the
+raw gate, the commit hash, and the poison results to G and Giang; summarizing is forbidden. Recon
+before typing (file:line). ADR-first for the borrowck and type-system core. Per-step commits; push
+when G or Giang order it. Report to G in the 5-section package; a slice closes only once G signs.
+G's word is law; Giang decides direction.
 
-VIỆC ĐẦU PHIÊN: verify trạng thái bàn giao còn đúng (git log, gate) → HỎI G+Giang muốn mở mặt trận nào
-trong các nợ trên. Được giao → recon-trước (file:line) → trình bản đồ + ADR-lite nếu đụng core → chờ G
-duyệt → soạn WO. KHÔNG code/mở campaign trước khi G chốt.
-```
+Every document is written in English (`*.vi.md` is the only exception); speak Vietnamese with the author.
 
-### Prompt ĐỒNG NGHIỆP D
-```
-Tiếp tục dự án Triết với vai ĐỒNG NGHIỆP D (Strict Colleague — implement-side, KHÁC Mentor O).
-
-BOOTSTRAP (máy mới): nếu chưa có auto-memory ~/.claude, chạy `./scripts/sync-memory.sh pull` trước.
-
-ĐỌC TRƯỚC: .claude/memory/MEMORY.md (bản repo, portable; = memory/MEMORY.md sau pull) — dòng index đầu ·
-.claude/memory/colleague_d_persona.md (FILE GỐC ĐỊNH NGHĨA VAI: 6 rule + Rule #7 refuse-over-guess +
-4 LUẬT THÉP G) · <campaign file(s) đang sống>.
-
-TRẠNG THÁI: origin/main = <HEAD> (<synced>). Gate <X·X·X·X>. ADR <list> LOCKED.
-
-KỶ LUẬT (giữ nguyên): nhận WO từ O → khảo sát → implement → nộp cây committed + RAW GATE 4 dòng nguyên khối
-(tóm tắt = O reject "Dán Raw Gate hoặc cút"). POISON PHẢI ĐỎ trước claim. MIRROR khuôn có sẵn, cấm sáng tạo
-pattern mới khi đã có tiền lệ. GREP dòng thật trước sed, cargo fmt trước commit. Lệch WO → flag "TÔI XIN PHÉP
-LỆCH LỆNH" + DATA. Refuse-fabricate (UNVERIFIED giữ biển báo, không test giả) NHƯNG vét-cạn-hướng trước khi
-cắm UNVERIFIED. KHÔNG commit/push khi O chưa ký + chưa có lệnh. KHÔNG đụng memory của O (chỉ docs repo).
-
-VIỆC ĐẦU PHIÊN: đọc trạng thái + 4 LUẬT THÉP, xác nhận đã nắm, ĐỨNG CHỜ Work Order từ Mentor O. KHÔNG tự mở việc.
+FIRST TASK OF THE SESSION: verify the handover state still holds (git log, gate) → ASK G and Giang
+which front to open among the debts above. Once assigned → recon first (file:line) → present the map
+plus an ADR-lite if it touches the core → wait for G's approval → then write the WO. Do not code or
+open a campaign before G agrees.
 ```
 
-### Prompt MENTOR G (model KHÁC — không Claude, không memory)
-KHÔNG có khuôn rời ở đây: prompt khởi động G = block ```text``` cuối `spec/plans/MENTOR_G_STATE.md` (đã refresh ở
-Bước 3 — gồm `[BỐI CẢNH DỰ ÁN]` trạng thái+nợ+mục tiêu và `[THIẾT LẬP PERSONA]` 5 nguyên tắc kể cả hands-off).
-**ĐỌC file đó, DÁN NGUYÊN VĂN block ```text``` vào báo cáo đóng phiên** để author có đủ 3 prompt cùng chỗ.
-G chỉ review+ký, KHÔNG đụng code/commit/push/agent — prompt đã gói ràng buộc này, đừng tự gọt.
+### (There is no COLLEAGUE D prompt)
+D is **O's subagent** as of 2026-08-02 — no separate session, no startup prompt. D's role and
+discipline live in `.claude/agents/colleague-d.md` (the agent file O spawns with
+`subagent_type: "colleague-d"`) and `.claude/memory/colleague_d_persona.md` (the source persona D
+reads at step 0). Closing a session **touches nothing about D**.
 
-## Bước 5 — Dọn session cũ (GIỮ session hiện tại + thư mục `memory/`)
-Author KHÔNG muốn rối vì quá nhiều session. Xóa mọi transcript session CŨ trong thư mục project, **CHỈ GIỮ session
-đang chạy**. ⚠️ **An toàn tuyệt đối — chỉ xóa file `*.jsonl` của session cũ; KHÔNG đụng `memory/`, KHÔNG đụng
-thư mục con, KHÔNG đụng file nào khác. Thao tác KHÔNG hoàn tác → liệt kê TRƯỚC, xóa SAU.**
+### MENTOR G prompt (a DIFFERENT model — not Claude, no memory)
+There is no separate template here: G's startup prompt IS the final ```text``` block of
+`spec/plans/MENTOR_G_STATE.md` (refreshed in Step 3 — containing `[PROJECT CONTEXT]` with the state,
+debts, and objective, plus `[PERSONA SETUP]` with the 5 principles including hands-off).
+**READ that file and PASTE THE ```text``` BLOCK VERBATIM into the closing report** so the author has
+both prompts in one place. G only reviews and signs — G never touches code, commits, pushes, or
+agents — and the prompt already encodes those constraints, so do not trim it.
 
-Thư mục session = thư mục CHA của `memory/`: `~/.claude/projects/<project-slug>/` (chứa `<uuid>.jsonl` + `memory/`).
-Với repo này: `~/.claude/projects/-mnt-M2-STORAGE-Work-workspace-gh-rust-triet/`.
+## Step 5 — Clean up old sessions (KEEP the current session and the `memory/` directory)
+The author does not want to drown in sessions. Delete every OLD session transcript in the project
+directory, **keeping ONLY the running session**. ⚠️ **Absolute safety — delete only the old sessions'
+`*.jsonl` files; do NOT touch `memory/`, do NOT touch subdirectories, do NOT touch any other file.
+This is irreversible → LIST FIRST, delete AFTER.**
 
-1. **Xác định session HIỆN TẠI** = file `.jsonl` mtime mới nhất (đang được ghi ngay lúc này). Nếu runtime lộ
-   session-id (path scratchpad `/tmp/claude-*/<project>/<session-id>/`) thì ƯU TIÊN dùng id đó cho chắc.
+The session directory is the PARENT of `memory/`: `~/.claude/projects/<project-slug>/` (containing
+`<uuid>.jsonl` plus `memory/`). For this repo:
+`~/.claude/projects/-mnt-M2-STORAGE-Work-workspace-gh-rust-triet/`.
+
+1. **Identify the CURRENT session** = the `.jsonl` file with the newest mtime (being written right
+   now). If the runtime exposes the session id (the scratchpad path
+   `/tmp/claude-*/<project>/<session-id>/`), PREFER that id to be safe.
    ```bash
    DIR=~/.claude/projects/-mnt-M2-STORAGE-Work-workspace-gh-rust-triet
-   CUR=$(ls -t "$DIR"/*.jsonl 2>/dev/null | head -1); echo "GIỮ (current): $CUR"
+   CUR=$(ls -t "$DIR"/*.jsonl 2>/dev/null | head -1); echo "KEEP (current): $CUR"
    ```
-2. **LIỆT KÊ cái sẽ xóa TRƯỚC** (cho author thấy, cấm xóa mù):
+2. **LIST what will be deleted FIRST** (show the author; never delete blind):
    ```bash
    ls -t "$DIR"/*.jsonl | tail -n +2
    ```
-3. **Xóa** (chỉ session cũ; current + `memory/` còn nguyên):
+3. **Delete** (old sessions only; the current one and `memory/` remain untouched):
    ```bash
    ls -t "$DIR"/*.jsonl | tail -n +2 | xargs -r rm -v
    ```
-4. **Xác nhận:** `ls "$DIR"/*.jsonl` chỉ còn 1 (current); `ls "$DIR"/memory/` còn NGUYÊN.
+4. **Confirm:** `ls "$DIR"/*.jsonl` shows only 1 (the current one); `ls "$DIR"/memory/` is INTACT.
 
-⚠️ **CẤM** `rm -rf "$DIR"`, **CẤM** xóa `memory/`, **CẤM** xóa khi chưa chắc đâu là current. `ls -t` mơ hồ
-(cùng mtime / 0 file) → DỪNG, hỏi author, đừng đoán.
+⚠️ **NEVER** `rm -rf "$DIR"`, **NEVER** delete `memory/`, **NEVER** delete while unsure which session
+is current. If `ls -t` is ambiguous (identical mtimes / no files) → STOP, ask the author, do not guess.
 
-## Bước 6 — Báo cáo đóng phiên
-Một đoạn ngắn: trạng thái cuối (HEAD synced/dirty), memory Claude đã lưu (O+D), `MENTOR_G_STATE.md` đã cập nhật
-(+ commit `docs(mentor):` nếu user lệnh), **3 prompt O+D+G** đã xuất (cùng chỗ), **session cũ đã dọn** (giữ current).
-Nếu có gì lơ lửng (unpushed/dirty/gate đỏ, `MENTOR_G_STATE.md` chưa commit, hoặc không chắc session current) →
-CẢNH BÁO rõ, đừng giấu. Rồi rút lui.
+## Step 6 — Closing report
+One short paragraph: the final state (HEAD synced/dirty), the Claude memory saved (O),
+`MENTOR_G_STATE.md` updated (+ the `docs(mentor):` commit if the user ordered it), the **2 prompts
+O + G** emitted (in one place), and **old sessions cleaned up** (current kept). If anything is left
+dangling (unpushed/dirty/red gate, `MENTOR_G_STATE.md` uncommitted, or uncertainty about which
+session is current) → WARN clearly, do not hide it. Then withdraw.

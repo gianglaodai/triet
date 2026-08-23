@@ -1,16 +1,16 @@
 ---
 name: feedback_failure_mode_precision
-description: "D bốc phét failure-mode (claim SIGSEGV khi thực ra LEAK) — kỹ thuật phải chính xác tuyệt đối, không Hollywood"
+description: "D dramatized a failure mode (claiming SIGSEGV when it was really a LEAK) — the technical claim must be exactly right, no Hollywood."
 metadata: 
   node_type: memory
   type: feedback
   originSessionId: cfce150f-cc26-451d-b933-ca98ee4f57ce
 ---
 
-**G ĐẠI KỴ "dramatic hóa" failure-mode. Compiler engineer phải nắm CHÍNH XÁC cái gì gây crash memory vs cái gì gây leak — claim sai = vứt.**
+**G LOATHES dramatized failure modes. A compiler engineer must know EXACTLY what causes memory corruption versus what causes a leak — a wrong claim is worthless.**
 
-**Ca cụ thể (WO-NullableFieldMoveOut, 2026-06-30):** D báo cáo *"gỡ Site-3 dest-type propagation → SIGSEGV"* (nghĩ giống Phase 2 Struct/Enum field). O verify máu độc lập: gỡ Site-3 cho heap-`T?` (`String?`/`Vector?`/`HashMap?`) → **LEAK câm lặng (FREE==0), KHÔNG SIGSEGV**. Lý do KT: dest Unknown → JIT drop-glue mù (không nhận heap type) → `Drop(Unknown)` no-op → rò rỉ; KHÔNG có memcpy-qua-địa-chỉ-rác. SIGSEGV chỉ xảy ra cho **Struct/Enum field** (aggregate memcpy qua slot-rác), KHÔNG cho heap-scalar/`T?` (scalar-ptr copy 8B vào var).
+**The specific case (WO-NullableFieldMoveOut, 2026-06-30):** D reported *"removing the Site-3 dest-type propagation → SIGSEGV"* (assuming it behaved like the Phase 2 Struct/Enum fields). O verified independently with blood: removing Site-3 for a heap `T?` (`String?`/`Vector?`/`HashMap?`) gives a **SILENT LEAK (FREE==0), NOT a SIGSEGV**. The technical reason: the destination becomes Unknown → the JIT drop glue goes blind (it does not recognize the heap type) → `Drop(Unknown)` is a no-op → it leaks; there is no memcpy through a garbage address. A SIGSEGV happens only for **Struct/Enum fields** (an aggregate memcpy through a garbage slot), never for a heap scalar or `T?` (an 8B scalar pointer copy into a variable).
 
-**Why:** Site vẫn load-bearing (leak = unsound → tooth vẫn đỏ đúng), code KHÔNG sai — nhưng claim failure-mode sai chứng tỏ chưa-verify-máu, chỉ suy diễn từ ca khác. G: *"Làm compiler mà không nắm rõ cái gì gây crash, cái gì gây leak thì vứt. Không có chỗ cho Hollywood."*
+**Why:** the site is still load-bearing (a leak is unsound, so the tooth still goes red correctly) and the code was NOT wrong — but claiming the wrong failure mode proves it was never verified with blood, only inferred from a different case. G: *"If you build compilers without knowing what causes a crash and what causes a leak, you are worthless. There is no room for Hollywood."*
 
-**How to apply:** (1) O — KHÔNG tin failure-mode trong report của D; tự cắm poison đo đúng signal (SIGABRT 134 double-free vs SIGSEGV 139 bad-deref vs FREE==0 leak vs FREE==2 double-free-count — bốn signal KHÁC NHAU, đừng lẫn). (2) Phân biệt: aggregate (Struct/Enum) field no-slot → SIGSEGV (memcpy qua rác); heap-scalar/`T?` field no-slot → LEAK (drop-glue mù). (3) Khi viết WO/teeth, ghi đúng failure-mode kỳ vọng — nếu đoán SIGSEGV mà thực ra leak, counting-harness mới bắt được, fixture-crash KHÔNG. [[colleague_d_persona]] [[feedback_poison_must_be_red]] [[mentor_o_persona]]
+**How to apply:** (1) O — do NOT trust the failure mode in D's report; plant your own poison and measure the actual signal (SIGABRT 134 double free vs SIGSEGV 139 bad deref vs FREE==0 leak vs FREE==2 double-free count — four DIFFERENT signals, never conflate them). (2) Distinguish: an aggregate (Struct/Enum) field with no slot → SIGSEGV (memcpy through garbage); a heap-scalar or `T?` field with no slot → a LEAK (blind drop glue). (3) When writing a WO or teeth, state the expected failure mode correctly — if you guess SIGSEGV when it is really a leak, only a counting harness will catch it, a crash fixture will NOT. [[colleague_d_persona]] [[feedback_poison_must_be_red]] [[mentor_o_persona]]

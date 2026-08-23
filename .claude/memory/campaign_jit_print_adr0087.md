@@ -1,6 +1,6 @@
 ---
 name: campaign_jit_print_adr0087
-description: WO-JIT-Print / ADR-0087 — print/println stdout hoạt động lần đầu sau rewrite; 4-overload × 4 extern-C shim; 2× LUẬT-4 phơi lỗ recon O
+description: WO-JIT-Print / ADR-0087 — print/println stdout works for the first time since the rewrite; 4 overloads × 4 extern-C shims; LAW 4 exposed holes in O's recon twice
 metadata: 
   node_type: memory
   type: project
@@ -8,61 +8,75 @@ metadata:
   modified: 2026-07-25T12:11:10.744Z
 ---
 
-# WO-JIT-Print / ADR-0087 — I/O stdout đầu tiên sau rewrite (2026-07-25)
+# WO-JIT-Print / ADR-0087 — the first stdout I/O since the rewrite (2026-07-25)
 
-origin/main feat-head **`25cb2cc`**, gate `0·clean·0·458·0`, 6 commit. O+G ký.
-Đây là **stdout-write ĐẦU TIÊN** trên backend rewrite — trước đó `print`/`println`
-chỉ `declare` trong typecheck, rớt default-arm lower → JIT `callee not found` exit 4
-(feature-gap, KHÔNG silent-miscompile).
+origin/main feature head **`25cb2cc`**, gate `0·clean·0·458·0`, 6 commits. Signed by O and G.
+This is the **FIRST stdout write** on the rewritten backend — before it, `print`/`println` were
+only `declare`d in typecheck, fell into the lowerer's default arm, and hit the JIT as
+`callee not found`, exit 4 (a feature gap, NOT a silent miscompile).
 
-## Thiết kế (G ký 5 quyết định, ADR-0087)
-- **4 overload:** `print(String)`, `print(&0 String)`, `println(String)`, `println(&0 String)`.
-  Owned=MOVE=tiêu thụ; `&0 String`=borrow (Reference là Copy)=tái dùng được sau in.
-- **4 extern-C shim** (memory-responsibility hardcode vào TÊN symbol, KHÔNG cờ `is_owned`):
-  `__triet_print`/`__triet_println` owned `arity:3 (ptr,len,cap)` `arg_consumes:[true]` → write rồi `__triet_string_free`;
-  `__triet_print_ref`/`__triet_println_ref` `arity:2 (ptr,len)` `arg_consumes:[false]` → write only.
-  Owned move-in ⇒ shim sở hữu+free; M3 zero caller-slot ⇒ caller Deinit=free(0) no-op ⇒ single free (mẫu `vector_push`).
-- **Unit return đàng hoàng:** `emit_shim_call` (`triet-lower/src/lib.rs`) thêm nhánh
-  `MirType::Unit` → `dest:vec![]` + `ReturnShape::Unit`, trả **Unit local thật** (`ConstValue::Unit`),
-  KHÔNG throwaway-i64-rebound. **G BÁC thẳng trick i64-0 của O** ("nợ kỹ thuật, mọi hàm Unit tương lai lặp rác").
-  `ShimSymbol{has_return:false}` (mẫu void đã có sẵn); register ở `triet-driver/src/main.rs`.
-- **Cap compile-time only** (`capability_check.rs` E2200/E2201; `std`=ambient, `sys.io`=grant). KHÔNG runtime `__triet_cap_check`. Bám VISION §capability.
-- Route arm `triet-lower/src/lib.rs:2661` `"print"|"println"` TRƯỚC default: strip Reference-prefix (mẫu `len`), base phải String, dispatch `(op,is_ref)`→1/4 shim.
+## The design (G signed 5 decisions, ADR-0087)
+- **4 overloads:** `print(String)`, `print(&0 String)`, `println(String)`, `println(&0 String)`.
+  Owned = MOVE = consuming; `&0 String` = a borrow (a Reference is Copy) = reusable after printing.
+- **4 extern-C shims** (memory responsibility hardcoded into the SYMBOL NAME, with no `is_owned` flag):
+  `__triet_print`/`__triet_println` for owned values, `arity:3 (ptr,len,cap)`, `arg_consumes:[true]` → write
+  then `__triet_string_free`;
+  `__triet_print_ref`/`__triet_println_ref`, `arity:2 (ptr,len)`, `arg_consumes:[false]` → write only.
+  An owned move-in ⇒ the shim owns and frees it; M3 zeroes the caller's slot ⇒ the caller's Deinit becomes
+  free(0), a no-op ⇒ a single free (the `vector_push` pattern).
+- **A proper Unit return:** `emit_shim_call` (`triet-lower/src/lib.rs`) gained a `MirType::Unit` branch →
+  `dest:vec![]` + `ReturnShape::Unit`, returning a **real Unit local** (`ConstValue::Unit`) instead of a
+  throwaway i64 rebind. **G flatly REJECTED O's i64-0 trick** ("technical debt; every future Unit function
+  would repeat the garbage"). `ShimSymbol{has_return:false}` (the void pattern already existed); registered in
+  `triet-driver/src/main.rs`.
+- **Capabilities are compile-time only** (`capability_check.rs` E2200/E2201; `std` is ambient, `sys.io` is
+  grant). NO runtime `__triet_cap_check`. This follows VISION §capability.
+- The routing arm at `triet-lower/src/lib.rs:2661`, `"print"|"println"`, sits BEFORE the default: strip the
+  Reference prefix (the `len` pattern), require a String base, and dispatch `(op,is_ref)` → 1 of the 4 shims.
 
-## 🔑 BÀI HỌC LỚN: recon-trước-WO của O vẫn SÓT tầng typecheck — D cứu 2 lần qua LUẬT-4
-1. **Lỗ recon (a):** WO Task-3 liệt kê thiếu `env.rs`. `print`/`println` khai bằng `env.declare`
-   ĐƠN (không `declare_overload`); mà `check_call` chỉ chạy `resolve_overload` khi
-   `env.lookup(name).is_none()` (`exprs.rs:879`); và `Type::matches` (`types.rs:274`) KHÔNG
-   coerce `Reference(String)`→`String`. ⇒ `println(&0 s)` bị typecheck từ chối TRƯỚC lowerer
-   ⇒ T2/T4 (dùng `&0 s`) **không reachable**. D DỪNG hỏi. O verify 4 claim đúng hết → fix:
-   đổi CẢ HAI sang `declare_overload` + thêm overload `Reference(BorrowReadOnly,String)` (mirror len/eq/concat).
-2. **Lỗ recon (b):** 2 test `flags_call_arity_mismatch`/`flags_call_argument_type_mismatch`
-   (`triet-typecheck/src/lib.rs`) mượn tạm `print` để test cơ chế WrongArity/Mismatch chung;
-   giờ `print` overload → gọi sai đẻ `NoMatchingOverload` (đúng hành vi mới) → 2 test vỡ.
-   D đề (a) đổi sang `to_string` (single-sig). **O chọn (a) NHƯNG dùng USER-DEFINED fn** —
-   fix GỐC: tách test khỏi trạng-thái-overload của builtin (to_string sau này overload lại vỡ y hệt);
-   user-fn là single-sig điển hình, không bao giờ overload ⇒ giết cả lớp fragility.
+## 🔑 THE BIG LESSON: O's recon-before-WO still MISSED the typecheck layer — D saved it twice via LAW 4
+1. **Recon hole (a):** WO Task 3 omitted `env.rs`. `print`/`println` were declared with a SINGLE
+   `env.declare` (not `declare_overload`); and `check_call` only runs `resolve_overload` when
+   `env.lookup(name).is_none()` (`exprs.rs:879`); and `Type::matches` (`types.rs:274`) does NOT coerce
+   `Reference(String)`→`String`. ⇒ `println(&0 s)` was rejected by typecheck BEFORE the lowerer ⇒ T2/T4
+   (which use `&0 s`) were **unreachable**. D STOPPED and asked. O verified all 4 claims as correct → the fix:
+   switch BOTH to `declare_overload` + add the `Reference(BorrowReadOnly,String)` overload (mirroring
+   len/eq/concat).
+2. **Recon hole (b):** 2 tests, `flags_call_arity_mismatch`/`flags_call_argument_type_mismatch`
+   (`triet-typecheck/src/lib.rs`), borrowed `print` to test the generic WrongArity/Mismatch mechanism;
+   once `print` became overloaded, a bad call produced `NoMatchingOverload` (the correct new behaviour) →
+   both tests broke. D proposed (a) switching to `to_string` (single signature). **O chose (a) BUT with a
+   USER-DEFINED function** — the ROOT fix: decouple the test from a builtin's overload state (if to_string is
+   ever overloaded, it breaks identically); a user function is the canonical single-signature case and will
+   never be overloaded ⇒ killing the whole class of fragility.
 
-**Khắc: recon-trước-WO PHẢI phủ typecheck env (declare vs declare_overload) khi mở overload builtin —
-mẫu chuẩn là mọi `&0`-overload đi qua `declare_overload`, regular binding sẽ nuốt resolve_overload.**
-Đây là biến thể của [[feedback_verify_producer_before_consumer]]: bản đồ O/Giang cũng là giả định tới khi chạm compiler thật.
+**Carved: recon-before-WO MUST cover the typecheck env (declare versus declare_overload) whenever a builtin
+gains an overload — the standard pattern is that every `&0` overload goes through `declare_overload`, since a
+regular binding swallows resolve_overload.**
+This is a variant of [[feedback_verify_producer_before_consumer]]: a map drawn by O or Giang is also an
+assumption until it touches the real compiler.
 
-## 🦷 Teeth (O verify độc lập, không tin raw D)
-File `crates/triet-driver/tests/print_println_overload_subprocess.rs` — subprocess fork-guard
-(UB→crash child) + delegating counting-free `__ppo_str_free` (đếm-rồi-free-thật, bắt double-dealloc)
-+ assert CẢ stdout content LẪN FREE-count. T1 owned FREE=1 · T2 ref-reuse "x\nx\n" FREE=1 · T3 no-newline · T4 routing "a\nb\na\n" FREE=2.
-**🩸 O TỰ re-poison T1:** meta `__triet_println [true]→[false]` → child crash
-`free(): double free detected in tcache 2` (UB THẬT glibc), restore cp md5 `bade48f3` khớp, xanh lại.
-**T4 failure-mode lệch dự đoán** (O đoán "leak FREE==0"; thực = refuse-compile qua guard marshalling
-`arg_ty.is_reference()`) — D báo ĐÚNG thực tế quan sát ([[feedback_failure_mode_precision]]), tooth vẫn đỏ, refuse-over-guess tốt hơn.
+## 🦷 Teeth (O verified independently, trusting nothing in D's raw output)
+The file `crates/triet-driver/tests/print_println_overload_subprocess.rs` — a subprocess fork guard (UB →
+crashes the child) + a delegating counting free `__ppo_str_free` (count then really free, catching a double
+dealloc) + assertions on BOTH the stdout content AND the FREE count. T1 owned FREE=1 · T2 ref reuse "x\nx\n"
+FREE=1 · T3 no newline · T4 routing "a\nb\na\n" FREE=2.
+**🩸 O re-poisoned T1 ITSELF:** the meta `__triet_println [true]→[false]` → the child crashed with
+`free(): double free detected in tcache 2` (REAL glibc UB); restored from the cp snapshot with md5
+`bade48f3` matching, and it went green again.
+**T4's failure mode differed from the prediction** (O guessed "a leak, FREE==0"; the reality was a compile
+refusal through the marshalling guard `arg_ty.is_reference()`) — D reported what it actually observed
+([[feedback_failure_mode_precision]]), the tooth still went red, and refuse-over-guess is better.
 
-## ⚖ D=Sonnet 5 subagent (O spawn theo lệnh G)
-2× DỪNG đúng LUẬT-4 (blocker THẬT, không tự chế), khai thật main.rs (file WO O ghi nhầm chỗ)
-+ T4-lệch, 0 vết bịa, cp-restore đúng luật (KHÔNG git checkout). O gатекeeper verify máu:
-git-state, code review soundness, E2E run thật (stdout hiện + `s` tái dùng qua 2 println_ref, Drop 1 lần),
-self-gate, re-poison T1. **HỌNG chốt: O tự chạy gate + tự đóng T1, không ký trên raw D.**
+## ⚖ D = a Sonnet 5 subagent (spawned by O on G's order)
+It STOPPED correctly per LAW 4 twice (both were REAL blockers, not invented), honestly reported main.rs (the
+WO had named the wrong file), reported T4's divergence, produced 0 fabrications, and restored via cp per the
+law (NEVER git checkout). O gatekept with blood: the git state, a soundness code review, a real end-to-end run
+(stdout appeared, and `s` was reused across 2 println_ref calls with a single Drop), its own gate, and the T1
+re-poison. **The decisive point: O ran the gate itself and closed T1 itself, never signing off on D's raw output.**
 
-## Nợ defer (đáy sổ, chưa mở)
-`read_line` (input) · f-string/format runtime · buffering policy (line vs unbuffered).
+## Deferred debts (bottom of the ledger, not opened)
+`read_line` (input) · f-strings / runtime formatting · the buffering policy (line-buffered versus unbuffered).
 
-→ [[campaign_str0_coverage_and_triage]] (phiên trước, `&0 String` coverage — cùng mẫu declare_overload)
+→ [[campaign_str0_coverage_and_triage]] (the previous session, `&0 String` coverage — the same
+declare_overload pattern)

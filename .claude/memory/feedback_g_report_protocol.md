@@ -1,29 +1,21 @@
 ---
 name: feedback-g-report-protocol
-description: "Khi O duyệt 'gửi G được', O PHẢI soạn sẵn gói báo cáo đầy đủ cho G — author chỉ chuyển tiếp. Lý do: G chỉ thấy lát cắt cuối → suy diễn lấp chỗ trống → 5 lần dữ liệu sai."
+description: "When O decides 'this is ready for G', O MUST assemble the complete report package for G — the author only forwards it. Reason: G sees only the final slice → fills the gaps by inference → 5 instances of wrong data."
 metadata: 
   node_type: memory
   type: feedback
   originSessionId: 98556ed7-368a-4e9e-8d7a-6c651fbf342e
 ---
 
-**Author yêu cầu (2026-06-07):** quy trình thực tế là author iterate với Mentor O
-nhiều vòng, rồi chỉ gửi G đoạn trao đổi CUỐI — G không thấy diễn biến giữa chừng.
-Đó là gốc rễ của chuỗi "dữ liệu sai" phía G (`triet-mir` ×3, `shims.c`, "59
-fixtures" — đều là suy diễn lấp chỗ thiếu input, không phải G ẩu). O đã quy nhầm
-cho G trong sổ — entry này sửa lại chẩn đoán.
+**The author's requirement (2026-06-07):** in practice the author iterates with Mentor O over many rounds and then forwards only the FINAL exchange to G — G never sees what happened in between. That is the root of the "wrong data" streak on G's side (`triet-mir` ×3, `shims.c`, "59 fixtures" — all inference filling missing input, not carelessness on G's part). O had blamed G for it in the ledger; this entry corrects the diagnosis.
 
-**Why:** người review thiếu context thì điền khoảng trống bằng suy diễn; chất
-lượng review của G phụ thuộc trực tiếp vào gói input mà phía này gửi.
+**Why:** a reviewer starved of context fills the gaps with inference; the quality of G's review depends directly on the input package sent from this side.
 
-**How to apply:** mỗi lần Mentor O kết luận "gửi G được", O soạn luôn GÓI BÁO CÁO
-HOÀN CHỈNH trong cùng message (author chỉ copy-chuyển):
-1. Mốc cây: HEAD + chuỗi hash từ lần G thấy gần nhất.
-2. Gate 4 hàng (build / test / clippy location-set / fixtures) — số O tự đo, nguyên văn.
-3. Diễn biến từ lần G review trước: findings từng vòng + cách sửa (cả vòng đỏ).
-4. Delta thiết kế so với cái G đã biết hoặc đã ra lệnh — nêu thẳng (tiền lệ wrap→trap).
-5. Câu hỏi cụ thể cần G trả lời, đúng scope chữ ký của ông ấy (layout/ABI/codegen).
+**How to apply:** every time Mentor O concludes "ready for G", O assembles the COMPLETE REPORT PACKAGE in the same message (the author only copies and forwards):
+1. Tree markers: HEAD + the hash chain since G last saw it.
+2. The 4-line gate (build / tests / clippy location set / fixtures) — measured by O, verbatim.
+3. What happened since G's last review: the findings from each round and how they were fixed (including the red rounds).
+4. Design deltas relative to what G already knows or ordered — state them plainly (precedent: wrap→trap).
+5. The specific questions G must answer, within the scope of his signature (layout/ABI/codegen).
 
-KHÔNG ĐỔI: thư G về vẫn đối chiếu số-trong-thư vs số-trong-cây trước khi chép
-vào hồ sơ ([[mentor_o_persona]] nghi thức 10) — input đầy đủ giảm lỗi, không
-miễn kiểm chứng.
+UNCHANGED: when G's reply comes back, reconcile the numbers in the letter against the numbers in the tree before recording anything ([[mentor_o_persona]] ritual 10) — complete input reduces errors, it does not waive verification.

@@ -1,47 +1,47 @@
 ---
 name: feedback-proactive-audit
-description: "User chủ động yêu cầu audit tech-debt + doc sync trước khi đóng phase. AI nên SUGGEST audit window khi gần freeze, không đợi user nhớ."
+description: "The user proactively asks for a tech-debt audit and doc sync before closing a phase. The AI should SUGGEST the audit window as a freeze approaches instead of waiting to be reminded."
 metadata: 
   node_type: memory
   type: feedback
   originSessionId: d3755127-60f6-49a7-a0b7-ef557745ea2f
 ---
 
-Trước khi đóng version/phase, user thường ask explicit cho audit:
-- **Tech-debt audit** ("còn chỗ nào binary thinking không?" → dẫn tới ADR-0010 + phase v0.3.x.ternary)
-- **Doc sync** ("trước khi sang triển khai 0.5, bạn có cần update bất kỳ tài liệu nào thì hãy thực hiện đi" → commit doc sync trước v0.5)
-- **Gate-closing phase** (v0.3.x.cleanup per ADR-0009 — phase riêng để đóng debt thay vì kéo sang version sau)
+Before closing a version or phase, the user usually asks explicitly for an audit:
+- **A tech-debt audit** ("is there any binary thinking left?" → led to ADR-0010 + the v0.3.x.ternary phase)
+- **A doc sync** ("before we move on to implementing 0.5, update any documents that need it" → a doc-sync commit before v0.5)
+- **A gate-closing phase** (v0.3.x.cleanup per ADR-0009 — a dedicated phase to close debt instead of dragging it into the next version)
 
-User direct quote: "không muốn vội, những chỗ có thể cải tiến được thì hãy làm ngay, tránh tăng thêm nợ kỹ thuật, sau này sửa tốn nhiều thời gian và chi phí hơn"
+The user's own words: "I do not want to rush; wherever something can be improved, do it now, to avoid adding technical debt that costs more time and money to fix later."
 
-Lặp lại sau v0.5.9 (đã đóng phase): user prompt "đây là cơ hội tốt để review trước khi sang 0.6. Hãy review lại một vòng nhé. testing, tư duy tam phân." → AI audit thấy 1 binary leak + 3 testing gap → user "hãy fix tất cả" → phase v0.5.x.review (4 commits: 20076d5, d7f1beb, b167717, b285a1f).
+It repeated after v0.5.9 (the phase was already closed): the user wrote "this is a good chance to review before moving to 0.6. Do another pass — testing, ternary thinking." → the AI's audit found 1 binary leak + 3 testing gaps → the user said "fix them all" → the v0.5.x.review phase (4 commits: 20076d5, d7f1beb, b167717, b285a1f).
 
-**v0.7.x.audit data point (2026-05-18):** Pattern repeats mid-phase, NOT just at freeze. User prompt sau 9-commit v0.7 series (v0.7.1 → v0.7.4.3-error docs): *"đây là một thời điểm tốt để chúng ta review lại tất cả các tài liệu 1 cách tổng thể"*. Audit surfaced 11 findings (3 CRITICAL + 5 MAJOR + 3 MINOR) — CLAUDE.md stuck v0.6 state (highest priority), missing ADR-0007/0008 cross-refs cho ADR-0020 work, stale numbers (test count, ADR count), broken markdown anchors, TODO.md không track v0.7. User approved 3-commit fix plan; SPEC header version stays v0.6 per Q2-C (bumps only at v0.7.13 verify gate). Commits: 46dd59a (audit.1 CRITICAL), 0b2d336 (audit.2 MAJOR), audit.3 MINOR pending. **Cadence insight:** audit pattern valuable not only at phase freeze, but also at **major sub-phase boundaries** (e.g. before large implementation work like v0.7.4.3-error) — author's intuition was right to trigger pre-implementation rather than wait for phase end.
+**The v0.7.x.audit data point (2026-05-18):** the pattern repeats mid-phase, NOT only at a freeze. The user's prompt after the 9-commit v0.7 series (v0.7.1 → the v0.7.4.3-error docs): *"this is a good moment for us to review all the documents as a whole"*. The audit surfaced 11 findings (3 CRITICAL + 5 MAJOR + 3 MINOR) — CLAUDE.md was stuck in the v0.6 state (highest priority), ADR-0007/0008 cross-references were missing for the ADR-0020 work, numbers were stale (test count, ADR count), markdown anchors were broken, and TODO.md was not tracking v0.7. The user approved a 3-commit fix plan; the SPEC header version stays at v0.6 per Q2-C (it only bumps at the v0.7.13 verify gate). Commits: 46dd59a (audit.1 CRITICAL), 0b2d336 (audit.2 MAJOR), audit.3 MINOR pending. **Cadence insight:** the audit pattern is valuable not only at a phase freeze but also at **major sub-phase boundaries** (e.g. before large implementation work like v0.7.4.3-error) — the author's instinct to trigger it pre-implementation rather than wait for the phase end was right.
 
-**Why:** Bổ sung [[feedback-stability-over-speed]] — user chọn trả phí cleanup *trước* freeze hơn là tích nợ. Pattern này lặp đủ nhiều (v0.3.x.cleanup, v0.3.x.ternary, doc sync trước v0.5, audit memory này) để AI chủ động đề xuất thay vì đợi user nhớ.
+**Why:** it complements [[feedback-stability-over-speed]] — the user chooses to pay the cleanup cost *before* a freeze rather than accumulate debt. The pattern has repeated often enough (v0.3.x.cleanup, v0.3.x.ternary, the doc sync before v0.5, this memory's audits) that the AI should propose it instead of waiting to be reminded.
 
-**How to apply:** Two trigger contexts (refined post-v0.7.x.audit):
+**How to apply:** two trigger contexts (refined after v0.7.x.audit):
 
-**Context A — Pre-freeze (phase end):** Khi sub-tasks của một phase đã `[x]` hết trong TODO.md, AI proactive suggest 1 lần. Use ADR-0009 4-gate matrix as checklist:
+**Context A — pre-freeze (phase end):** when every sub-task of a phase is `[x]` in TODO.md, the AI proactively suggests it ONCE. Use the ADR-0009 4-gate matrix as the checklist:
 
-1. "Trước khi đóng phase X có muốn audit Y không?" — Y = tech-debt area liên quan:
-   - Binary thinking leak (control flow, comparison ops, types)
+1. "Before closing phase X, do you want to audit Y?" — where Y is the relevant tech-debt area:
+   - Binary-thinking leaks (control flow, comparison ops, types)
    - Doc drift (SPEC ↔ implementation, ADR ↔ code, CLAUDE.md ↔ reality)
-   - Naming convention drift (verbose keywords, dot paths, error codes)
-   - ADR gap (decision đã ship mà chưa có ADR)
-   - Memory file staleness
+   - Naming-convention drift (verbose keywords, path syntax, error codes)
+   - ADR gaps (a decision that shipped without an ADR)
+   - Stale memory files
 
-2. Đề xuất gate-closing phase nếu pattern muốn freeze cleanly (theo ADR-0009 4-gate matrix)
+2. Propose a gate-closing phase if the pattern calls for a clean freeze (per the ADR-0009 4-gate matrix)
 
-**Context B — Pre-implementation (sub-phase boundary):** Khi đã có ≥5 commits trong một sub-phase, hoặc sắp vào major implementation work (large LOC, multi-crate touch), AI proactive suggest cross-doc consistency check:
+**Context B — pre-implementation (sub-phase boundary):** when there have been ≥5 commits in a sub-phase, or when large implementation work is about to start (large LOC, multi-crate reach), the AI proactively suggests a cross-doc consistency check:
 
-1. "Đã có N commits liên tiếp trong sub-phase. Trước khi vào [next-large-task] có muốn audit consistency không?" — categories:
-   - State declarations stale (CLAUDE.md, README.md, SPEC header)
-   - Cross-references rot (ADR ↔ ADR, ADR ↔ SPEC)
+1. "There have been N consecutive commits in this sub-phase. Before starting [next large task], do you want a consistency audit?" — categories:
+   - Stale state declarations (CLAUDE.md, README.md, the SPEC header)
+   - Rotten cross-references (ADR ↔ ADR, ADR ↔ SPEC)
    - Numerical drift (test count, version, ADR count, opcode count)
-   - Anchor links broken (GitHub markdown anchors)
-   - TODO.md tracking sub-phase commits
+   - Broken anchor links (GitHub markdown anchors)
+   - TODO.md not tracking the sub-phase commits
 
-2. Categorize findings by SEVERITY (CRITICAL/MAJOR/MINOR), propose per-category commits cho granular review
+2. Categorize the findings by SEVERITY (CRITICAL/MAJOR/MINOR) and propose one commit per category for granular review
 
-Không spam: 1 lần per trigger context. Pre-freeze + Pre-implementation are SEPARATE triggers (can both fire in same phase). User decline → accept silently, không nhắc lại trong cùng context.
+Do not spam: once per trigger context. Pre-freeze and pre-implementation are SEPARATE triggers (both can fire in the same phase). If the user declines → accept silently and do not raise it again in the same context.

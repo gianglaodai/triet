@@ -7,7 +7,7 @@ metadata:
   originSessionId: cce4839a-27d6-47a3-b80a-e44188e9d404
 ---
 
-Author explicit 2026-05-30 (v0.9.x.jit.4): *"ồ tôi chỉ có thể đưa ra ý kiến nếu sự thay đổi đó ảnh hưởng đến cú pháp của ngôn ngữ. Nếu đứng ở vai trò coder mà điều này không ảnh hưởng đến cú pháp code thì hãy triển khai theo recommend của bạn"*.
+The author said explicitly on 2026-05-30 (v0.9.x.jit.4), in Vietnamese: *"I can only have an opinion if the change affects the language's syntax. If, from a coder's point of view, it does not affect what the code looks like, then implement it according to your recommendation."*
 
 **Rule:** AI decides implementation-internal choices autonomously when the decision doesn't change what Triết source code looks like or behaves like (from a user's perspective). Author intervenes for syntax/semantics decisions.
 
@@ -30,7 +30,7 @@ Author explicit 2026-05-30 (v0.9.x.jit.4): *"ồ tôi chỉ có thể đưa ra �
 
 **Examples where this DOESN'T apply (asked author):**
 
-- v0.9.x.atomic.7 borrow expression scope cliff — affects Triết source syntax (`spawn_worker(&+ counter)`). Author chose Phương án A.
+- v0.9.x.atomic.7 borrow expression scope cliff — affects Triết source syntax (`spawn_worker(&+ counter)`). The author chose Option A.
 - ADR-0031 §2 operand grammar — affects what user can write. Author confirmed scope reduction.
 
 **Token-efficiency note:** This delegation pattern means thread-spanning conversations stay focused on author-attention items. AI can implement + commit without round-trips on internal mechanics, only checking in for review or for language-visible decisions.

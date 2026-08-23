@@ -1,24 +1,25 @@
 ---
 name: user-communication-vietnamese
-description: "User dùng tiếng Việt làm ngôn ngữ chính. Tone tùy ngữ cảnh — analogy webapp/Java khi user hỏi explain, technical hơn khi user hỏi detail."
+description: "The user's primary language is Vietnamese. Tone depends on context — webapp/Java analogies when they ask for an explanation, more technical when they ask for detail. Note: every document is still written in English; only the conversation is Vietnamese."
 metadata: 
   node_type: memory
   type: user
   originSessionId: d3755127-60f6-49a7-a0b7-ef557745ea2f
 ---
 
-User dùng tiếng Việt khi chat. Reply nên tiếng Việt trừ những chỗ buộc phải tiếng Anh:
-- Code, identifier, error code (`E2100`), ADR title, file path
-- Commit message — conventional format tiếng Anh (vd. `feat(v0.4.5): add witness table dispatch`)
-- Doc comments rustdoc của public API
-- Tên section trong SPEC/VISION khi cite
+The user chats in Vietnamese. Replies should be in Vietnamese, except where English is mandatory:
+- Code, identifiers, error codes (`E2100`), ADR titles, file paths
+- Commit messages — conventional format in English (e.g. `feat(v0.4.5): add witness table dispatch`)
+- Rustdoc comments on public APIs
+- Section names in SPEC/VISION when citing them
+- **Every document in the repo** — all `.md` files are written entirely in English; `*.vi.md` is the only exception (locked 2026-08-02)
 
 **Tone defaults:**
-- Concise, technical đủ để actionable, không academic
-- Khi user nói "giải thích lại cho non-engineer" / "tôi không có kiến thức X" — dùng analogy webapp / Java / Spring / npm / REST / database migration. Tránh compiler-theory jargon (SSA, monomorphization, witness table, …) trừ khi đã explain trước
-- Khi present tradeoffs: phrase theo những gì user quan tâm (UX, philosophy, scope, risk timing, identity tam phân) — không bias theo performance/elegance trừ khi user hỏi
-- Khi user hỏi detail technical cụ thể (vd. "BLAKE3 vs SHA-256", "witness table là gì") — OK technical hơn, user là dev và muốn hiểu
+- Concise, technical enough to be actionable, never academic
+- When the user says "explain it again for a non-engineer" / "I have no knowledge of X" — use webapp / Java / Spring / npm / REST / database-migration analogies. Avoid compiler-theory jargon (SSA, monomorphization, witness tables, …) unless it has already been explained
+- When presenting trade-offs: frame them in terms the user cares about (UX, philosophy, scope, risk timing, the ternary identity) — do not bias toward performance or elegance unless asked
+- When the user asks about a specific technical detail (e.g. "BLAKE3 vs SHA-256", "what is a witness table") — being more technical is fine; they are a developer and want to understand
 
-**Why:** User là webapp dev người Việt, không có kiến thức system/compiler/language-design. Ngôn ngữ + analogy phù hợp giúp user verify recommend trước khi approve. Pattern "build a house" analogy explain v0.1→v0.4 đã thấy work tốt nhiều lần.
+**Why:** the user is a Vietnamese webapp developer with no system/compiler/language-design background. The right language and analogies let them verify a recommendation before approving it. The "build a house" analogy used to explain v0.1→v0.4 has worked well many times.
 
-**How to apply:** Reply tiếng Việt mặc định. Khi explain kiến trúc lớn, mở bằng analogy webapp/Java rồi mới đi vào detail. Khi present option, format `Option A — <ngắn>`, `Option B (recommend) — <ngắn>` rồi explain tradeoff bằng từ user-facing. Liên quan: [[user-role-webapp-dev-visionary]].
+**How to apply:** reply in Vietnamese by default. When explaining a large piece of architecture, open with a webapp/Java analogy before the details. When presenting options, format them as `Option A — <short>`, `Option B (recommended) — <short>` and then explain the trade-off in user-facing terms. Related: [[user-role-webapp-dev-visionary]].

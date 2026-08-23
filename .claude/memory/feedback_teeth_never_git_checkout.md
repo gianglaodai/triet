@@ -7,35 +7,39 @@ metadata:
   originSessionId: 4aa6e5c2-24e4-4456-9ddd-354c21dc684f
 ---
 
-**2026-06-08 — tôi (Mentor O) gây mất dữ liệu thật.** Trong lúc teeth-verify
-ADR-0045 (gỡ guard `Deinit` ở `triet-lower/src/lib.rs` để xác nhận double-free
-regression đỏ), tôi khôi phục bằng `git checkout crates/triet-lower/src/lib.rs`.
-Lệnh đó revert file về **HEAD (đã commit)**, KHÔNG phải về bản working-tree của
-author. Toàn bộ việc lower của author (B1 type_name reference + simple_is_copy,
-B2 push_owned guard, B3 to_zero borrow-skip, wiring `length`→shim) **CHƯA
-commit** → bị xóa sạch. Không cứu được: unstaged nên không có blob; dangling
-blob của fsck không chứa nó; không có editor swap.
+**2026-06-08 — I (Mentor O) caused real data loss.** While teeth-verifying
+ADR-0045 (removing the `Deinit` guard in `triet-lower/src/lib.rs` to confirm the
+double-free regression went red), I restored the file with
+`git checkout crates/triet-lower/src/lib.rs`. That command reverts the file to
+**HEAD (committed)**, NOT to the author's working-tree version. All of the
+author's lowering work (B1 type_name reference + simple_is_copy, B2 push_owned
+guard, B3 to_zero borrow-skip, wiring `length`→shim) was **UNCOMMITTED** → wiped
+out. Unrecoverable: unstaged means no blob; fsck's dangling blobs did not contain
+it; there was no editor swap file.
 
-**Why:** `git checkout <path>` = "restore từ index/HEAD", phá mọi sửa chưa staged.
-Teeth là thao tác cố ý phá-rồi-khôi-phục trên CHÍNH file author đang sửa dở —
-đúng tình huống nguy hiểm nhất cho lệnh này.
+**Why:** `git checkout <path>` means "restore from the index/HEAD" and destroys
+every unstaged edit. Teeth work is a deliberate break-then-restore operation on
+THE VERY FILE the author is midway through editing — precisely the most dangerous
+situation for that command.
 
-**How to apply — quy tắc teeth mới (bổ sung [[mentor_o_persona]] nghi thức 2):**
-1. TRƯỚC khi sửa file để teeth: `cp <file> /tmp/teeth_backup.rs` (snapshot bản
-   working-tree thật của author).
-2. Sửa → build → chạy → xác nhận đỏ.
-3. Khôi phục bằng `cp /tmp/teeth_backup.rs <file>` HOẶC bằng Edit đảo đúng đoạn
-   đã sửa — **KHÔNG BAO GIỜ** `git checkout`/`git restore`/`git stash` trên file
-   có uncommitted work.
-4. Nếu lỡ tay: dừng ngay, `git fsck --lost-found`, kiểm editor backup, báo author
-   thẳng — không tự dựng lại code hộ (vai mentor + sẽ đoán sai form).
+**How to apply — the new teeth rule (extending [[mentor_o_persona]] ritual 2):**
+1. BEFORE editing a file for teeth: `cp <file> /tmp/teeth_backup.rs` (snapshot the
+   author's real working-tree version).
+2. Edit → build → run → confirm red.
+3. Restore with `cp /tmp/teeth_backup.rs <file>` OR by using Edit to reverse exactly
+   the passage you changed — **NEVER** `git checkout`/`git restore`/`git stash` on a
+   file with uncommitted work.
+4. If you slip: stop immediately, run `git fsck --lost-found`, check for editor
+   backups, and tell the author straight — do not rebuild the code for them (that is
+   the mentor role, and you will guess the shape wrong).
 
-Hệ quả lần này: mọi file ADR-0045 KHÁC còn sống (checker, mir is_copy, typecheck
-env/check/error, driver/main); chỉ `lower/lib.rs` mất → author phải re-apply
-riêng phần lower.
+The consequence that time: every OTHER ADR-0045 file survived (checker, mir is_copy,
+typecheck env/check/error, driver/main); only `lower/lib.rs` was lost → the author
+had to re-apply the lowering part alone.
 
-**2026-07-02 — D vi phạm luật này (KHÔNG phải O).** WO-Outcome-param-ABI: D dùng
-`git stash`/`stash pop` để so pre/post-fix thay vì cp-snapshot. Kết quả tình cờ
-đúng (O verify lại độc lập bằng cp, ra cùng kết luận RED→GREEN), nhưng G ghi sổ
-đen cảnh cáo: "lần sau còn vi phạm, WO vứt sọt rác khỏi cần đọc". Luật áp cho
-CẢ D, không chỉ O — bất kỳ ai teeth-verify trên file có uncommitted work.
+**2026-07-02 — D violated this law (not O).** In WO-Outcome-param-ABI, D used
+`git stash`/`stash pop` to compare pre and post fix instead of a cp snapshot. The
+result happened to be correct (O re-verified independently with cp and reached the
+same RED→GREEN conclusion), but G recorded a black mark: "violate it again and the
+WO goes in the bin unread". The law applies to D as well as O — to anyone doing
+teeth verification on a file with uncommitted work.

@@ -4,7 +4,7 @@ description: User prefers full/verbose keywords over abbreviations (Java sensibi
 type: feedback
 originSessionId: d3755127-60f6-49a7-a0b7-ef557745ea2f
 ---
-**Rule (đã user xác nhận 2026-05-09):**
+**Rule (confirmed by the user 2026-05-09):** ⚠️ SUPERSEDED IN PART — the dot path separator was replaced by `::` in ADR-0071 (`use std::io::{a, b as c}`); the verbose-keyword half of this rule is still in force.
 
 1. **Verbose/full keywords > abbreviations.** When choosing a new keyword or naming a syntactic construct, default to the full word.
    - `module` over `mod` ✓
@@ -15,7 +15,7 @@ originSessionId: d3755127-60f6-49a7-a0b7-ef557745ea2f
    - `use std.io.println` not `use std::io::println`
    - `std.io` not `std::io`
 
-**Why:** User is a Java developer with strong aesthetic preference. "viết đầy đủ chẳng có vấn đề gì với tôi" — verbosity is not a cost for them. They explicitly find `module` "nhìn thuận mắt hơn" (more visually pleasing) than `mod`, and `.` "ngắn gọn và đẹp mắt hơn" (cleaner and more beautiful) than `::`.
+**Why:** the user is a Java developer with a strong aesthetic preference. In their words: "writing things out in full is no problem for me" — verbosity costs them nothing. They explicitly find `module` "easier on the eye" than `mod`, and at the time found `.` "shorter and more beautiful" than `::` (that half was later reversed by ADR-0071).
 
 **How to apply:**
 - When designing NEW syntax (path syntax, new keywords): default to verbose form + dot separator. Don't assume Rust convention.

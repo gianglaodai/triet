@@ -1,183 +1,205 @@
 ---
 name: campaign_hashmap_drain_pa2
-description: "✅ ĐÓNG 2026-07-27 — HashMap.drain() LANDED qua PA-2 destructuring-only desugar (ADR-0089 §AMEND-2). PA-1 Tuple hạng nhất bị G đạp chết (729 site MirType). Bất biến: Tuple sống ở front, chết tại lower. Lần đầu move-out đồng thời heap-key × heap-value. 816a729, gate 0·clean·0·522·0."
+description: "✅ CLOSED 2026-07-27 — HashMap.drain() LANDED via PA-2 destructuring-only desugar (ADR-0089 §AMEND-2). PA-1 first-class Tuple was killed by G (729 MirType sites). Invariant: Tuple lives at the front, dies at lower. First simultaneous move-out of heap-key × heap-value. 816a729, gate 0·clean·0·522·0."
 metadata:
   node_type: memory
   type: project
 ---
 
-## ✅ ĐÓNG — `816a729` (D) + docs (O co-sign). O✅/G✅/Giang✅ 2026-07-27
+## ✅ CLOSED — `816a729` (D) + docs (O co-sign). O✅/G✅/Giang✅ 2026-07-27
 
-Gate `0·clean·0·522·0 CLEAN`. Fixture 511 → **522 file** (số hiệu 520-530).
+Gate `0·clean·0·522·0 CLEAN`. Fixtures 511 → **522 files** (numbers 520-530).
 
-## 🎯 RECON LẬT CẢ KHUNG CỦA CHÍNH NHÃN
+## 🎯 RECON OVERTURNS THE ENTIRE FRAME OF THE LABEL ITSELF
 
-Giang chốt *"Tuple lowering để xử lý HashMap.drain()"*. Nhãn defer cũ
-(ADR-0089 §AMEND) ghi **2 bức tường**. Đo lại:
+Giang settled on *"Tuple lowering to handle HashMap.drain()"*. The old deferral label
+(ADR-0089 §AMEND) recorded **2 walls**. Re-measured:
 
-- **Bức tường 2 (không có enumerate-shim key-less) = KHÔNG PHẢI BỨC TƯỜNG.**
+- **Wall 2 (no key-less enumerate-shim) = NOT A WALL AT ALL.**
   Drop-glue `mir_lower.rs:1940` (free KEY) / `:2038` (free VALUE) / rehash
-  `:6583` **ĐÃ walk toàn bộ `cap` key-less, lọc `state==1`** từ lâu. Cơ chế
-  CÓ SẴN và đã được kiểm chứng bằng máu — chỉ chưa expose thành shim công khai.
-  Nhãn đúng ở mức *shim*, sai ở mức *cơ chế*.
-- **Bức tường 1 (Tuple) KHÔNG NÊN PHÁ — nên ĐI VÒNG.**
+  `:6583` **already walks the entire key-less `cap`, filtering `state==1`**, for a
+  long time. The mechanism EXISTS and has been verified in blood — it just hadn't
+  been exposed as a public shim yet.
+  The label was right at the *shim* level, wrong at the *mechanism* level.
+- **Wall 1 (Tuple) should NOT be broken through — it should be GONE AROUND.**
 
-## 💀 PA-1 (Tuple hạng nhất) BỊ G ĐẠP CHẾT
+## 💀 PA-1 (first-class Tuple) KILLED BY G
 
-`MirType::` bị match tại **729 site** (`mir_lower.rs` riêng có 29 match
-exhaustive). Thêm 1 variant = **tự gieo lại họ bug "match exact, QUÊN
-variant"** mà dự án VỪA tốn trọn một chiến dịch để quét (họ "quên `Nullable`":
-6 thành viên, **2 nằm bên trong chính lưới an toàn**). Lại chạm **B-γ
-multi-reg return** (defer vô hạn) + kề **B-β sub-8B** (đã đạp chết).
+`MirType::` is matched at **729 sites** (`mir_lower.rs` alone has 29 exhaustive
+matches). Adding 1 variant = **re-seeding the exact "match exact, FORGOT the
+variant" bug family** the project JUST spent an entire campaign sweeping ("forgot
+`Nullable`" family: 6 members, **2 of them inside the safety net itself**). It also
+touches **B-γ multi-reg return** (deferred indefinitely) + sits next to **B-β
+sub-8B** (already killed).
 
-🔑 **Câu hỏi kiến trúc quyết định:** `for (k,v) in m.drain()` cần **HAI BIẾN
-trong thân vòng**, KHÔNG cần một **GIÁ TRỊ tuple**. PA-1 xây kiểu hạng nhất
-chỉ để lập tức phá ra làm hai — trả 729 site cho một trung gian không ai giữ
-lại. G: *"tự châm lửa đốt nhà mình"*.
+🔑 **Decisive architectural question:** `for (k,v) in m.drain()` needs **TWO
+VARIABLES in the loop body**, NOT a **tuple VALUE**. PA-1 builds a first-class
+type only to immediately break it back into two — paying 729 sites for an
+intermediary nobody keeps around. G: *"burning down your own house to light a
+match."*
 
-## 🔒 BẤT BIẾN: Tuple SỐNG ở front, CHẾT tại lower
+## 🔒 INVARIANT: Tuple lives at the front, DIES at lower
 
-`MirType::Tuple` = **0** toàn backend (O verify). PA-2 = **0 variant mới,
-0-hit trên 729 site cũ**.
+`MirType::Tuple` = **0** across the entire backend (O verified). PA-2 = **0 new
+variants, 0 hits on the 729 existing sites**.
 
-⚠️ **TIÊU CHÍ KIỂM SAI — O ăn đòn:** `grep -c Tuple` trần **KHÔNG** phải tiêu
-chí. Lowerer **BẮT BUỘC** match `triet_syntax::Pattern::Tuple`
-(`triet-lower/src/lib.rs:2036`) để destructure — đó CHÍNH LÀ thiết kế PA-2,
-không phải vi phạm. **D bác tiêu chí proxy thô của O bằng số đo — D ĐÚNG.**
-Tiêu chí duy nhất đúng: **`MirType::Tuple` = 0**.
+⚠️ **VERIFICATION CRITERION — O takes a hit:** a bare `grep -c Tuple` is **NOT**
+the criterion. The lowerer **MUST** match `triet_syntax::Pattern::Tuple`
+(`triet-lower/src/lib.rs:2036`) to destructure — that IS EXACTLY the PA-2 design,
+not a violation. **D refutes O's crude proxy criterion with a measurement — D is
+RIGHT.** The only correct criterion is: **`MirType::Tuple` = 0**.
 
-## 🔑 CHUỖI 4 BƯỚC MOVE-OUT — một cờ `state` đóng CẢ BA tử huyệt
+## 🔑 THE 4-STEP MOVE-OUT CHAIN — one `state` flag closes ALL THREE fatal weak points
 
-Shim `__triet_hashmap_drain_next` (`mir_lower.rs:7005+`), mirror
-`__triet_hashmap_remove:6824`: surface K+V ra out-ptr → **zero key-cell** →
-**`state→2`** → **`len--`** → trả `idx+1`.
+Shim `__triet_hashmap_drain_next` (`mir_lower.rs:7005+`), mirroring
+`__triet_hashmap_remove:6824`: surface K+V to out-ptr → **zero the key-cell** →
+**`state→2`** → **`len--`** → return `idx+1`.
 
-Drop-glue **chỉ walk `state==1`** ⇒ ① move-out sound (tombstone miễn
-double-free) · ② break-mid (đã-drain `2` bỏ qua, còn-lại `1` drop-glue dọn
-nốt) · ③ container-survives (`len--` ⇒ drain trọn `len==0`, re-insert hợp lệ).
+Drop-glue **only walks `state==1`** ⇒ ① move-out is sound (tombstone exempts
+from double-free) · ② break-mid (already-drained `2` is skipped, remaining `1`
+is cleaned up by drop-glue) · ③ container survives (`len--` ⇒ a full drain
+reaches `len==0`, re-insert is valid).
 
-**Cursor O(N)** không rescan O(N²): `cap=1000,len=10` → **1000** vs **10.000**
-lượt đọc state. Sound-stop `while idx<cap` kiểm ĐK **TRƯỚC** khi đọc byte ⇒
-`cap==0` an toàn (fixture 525 canh).
+**O(N) cursor** avoids O(N²) rescans: `cap=1000,len=10` → **1000** vs **10,000**
+state-reads. Sound-stop `while idx<cap` checks the condition **BEFORE** reading
+the byte ⇒ `cap==0` is safe (fixture 525 guards this).
 
-## 🔑 QUY ƯỚC SENTINEL (G bắt ghi vào ADR)
+## 🔑 SENTINEL CONVENTION (G required this be written into the ADR)
 
-| Sentinel | Giá trị | Nghĩa |
+| Sentinel | Value | Meaning |
 |---|---|---|
-| `NULL_SENTINEL` | `i64::MIN` | **giá trị vắng mặt** (nullable PA-3c) |
-| cursor-stop (mới) | **`-1`** | **hết slot để quét** |
+| `NULL_SENTINEL` | `i64::MIN` | **absent value** (nullable PA-3c) |
+| cursor-stop (new) | **`-1`** | **no more slots to scan** |
 
-Miền cursor luôn `≥0` ⇒ `-1` không đụng dải hợp lệ. **CẤM trộn hai khái niệm.**
+The cursor domain is always `≥0` ⇒ `-1` never collides with the valid range.
+**MIXING THE TWO CONCEPTS IS FORBIDDEN.**
 
-## 🩸 O VERIFY MÁU — 3 mũi poison ĐỘC LẬP
+## 🩸 O VERIFIES IN BLOOD — 3 INDEPENDENT poison probes
 
-| Mũi | Poison | Đo được |
+| Probe | Poison | Measured |
 |---|---|---|
-| **P1** | `state→2` thành `1u8` | `drain_full` **9 vs 6** · `break_mid` **10 vs 8**, con trỏ lặp = **double-free THẬT** |
-| **P2** | bỏ `len--` | `drain_full_leaves_len_exactly_zero` **3 vs 0** |
-| **P3** | guard fail-**open** `if true` | 527-530 đỏ **+ fixture CŨ 510 đỏ lây**; 520-525 **không** đỏ |
+| **P1** | `state→2` becomes `1u8` | `drain_full` **9 vs 6** · `break_mid` **10 vs 8**, repeated pointer = **REAL double-free** |
+| **P2** | drop `len--` | `drain_full_leaves_len_exactly_zero` **3 vs 0** |
+| **P3** | fail-**open** guard `if true` | 527-530 go red **+ pre-existing fixture 510 goes red in sympathy**; 520-525 do **not** go red |
 
-**Lần đầu trong lịch sử dự án: move-out ĐỒNG THỜI heap-key (String) × heap-value
-(String/Vector) ra khỏi cùng một bucket.** P1 là răng canh chính bãi mìn đó.
-Counting teeth **dedup CON TRỎ** (`count==N` VÀ `dup==0`) — FREE-count đơn
-thuần mù trước double-free (3 free có thể là 3 object HOẶC 2 object + 1 trùng).
+**First time in the project's history: simultaneous move-out of heap-key
+(String) × heap-value (String/Vector) from the same bucket.** P1 is the tooth
+guarding the main minefield. Counting teeth **dedup POINTERS** (`count==N` AND
+`dup==0`) — a plain FREE-count is blind to double-free (3 frees could be 3
+objects OR 2 objects + 1 duplicate).
 
-## ⚔ HAI BÀI HỌC POISON
+## ⚔ TWO POISON LESSONS
 
-**P2 — "không đỏ" phải phân định (a)/(b) bằng ĐƯỜNG-CHẠM-ĐƯỢC.** Vòng drain
-dừng theo `state` qua cursor, **KHÔNG theo `len`**; re-insert `cap=4` chưa
-chạm ngưỡng resize ⇒ **(b) test yếu**, không phải (a) bất-khả-observable.
-**D báo TRUNG THỰC rồi TỰ cắm thêm răng** đọc thẳng `len(m)` — không bịa mũi
-giả cho nổ để qua cửa (đúng lối thoát O viết sẵn trong WO).
+**P2 — "not red" must be resolved into (a)/(b) via a REACHABLE PATH.** The drain
+loop stops via `state` through the cursor, **NOT via `len`**; re-insert at
+`cap=4` never touches the resize threshold ⇒ **(b) weak test**, not (a)
+unobservable-in-principle. **D reported HONESTLY and THEN added a tooth
+themself** reading `len(m)` directly — not faking a probe just to get past the
+gate (exactly the escape hatch O had written into the WO).
 
-**P3 — "tháo guard" nghĩa là fail-OPEN, KHÔNG phải fail-closed.** D làm sai
-hướng lần đầu (`if false &&` = siết chặt hơn ⇒ chứng minh 0), **tự phát hiện,
-sửa `if true ||`, đo lại, báo cả hai lần**. Dưới poison đúng hướng các hình
-refuse **không lọt** mà bị lowerer chặn bằng `LowerError` khác ⇒ **defense-in-
-depth 2 lớp** (typecheck = mã đúng, lower = fail-closed cuối) — cùng kiến trúc
-ADR-0088 Lane A.
+**P3 — "removing the guard" means fail-OPEN, NOT fail-closed.** D got the
+direction wrong the first time (`if false &&` = tighter ⇒ proves 0), **caught it
+themself, fixed to `if true ||`, re-measured, reported both attempts**. Under
+the correctly-directed poison, the refuse shapes **do NOT slip through** but are
+caught by a different `LowerError` in the lowerer ⇒ **2-layer defense-in-depth**
+(typecheck = correct code, lower = final fail-closed backstop) — the same
+architecture as ADR-0088 Lane A.
 
-## 🩸 O SAI 2 TIÊU CHÍ — D bác cả hai bằng số đo
+## 🩸 O WRONG ON 2 CRITERIA — D refutes both with measurements
 
-1. **`grep -c Tuple` = 0/0/0** — proxy thô, sẽ reject chính thiết kế O ra lệnh.
-2. **"gate mục tiêu 530 fixtures"** — nhầm **số hiệu cao nhất** (530) với
-   **TỔNG SỐ FILE** (522), trong khi **chính O đã chạy `ls|wc -l` = 511 cùng
-   phiên**. Dữ liệu bác O nằm sẵn trong tay O.
+1. **`grep -c Tuple` = 0/0/0** — crude proxy, would reject the very design O
+   ordered.
+2. **"gate target 530 fixtures"** — confused the **highest fixture number**
+   (530) with the **TOTAL FILE COUNT** (522), while **O themself had run
+   `ls|wc -l` = 511 in the same session**. The data refuting O was already in
+   O's own hands.
 
-Cùng gốc **"hành động trước khi đo"** — nay lộ ra ở tầng *tiêu chí nghiệm thu*,
-đúng vết luật 16. Kỷ luật "đo trước" vẫn **chưa thành phản xạ**.
+Same root cause **"acting before measuring"** — now surfacing at the
+*acceptance-criteria* layer, exactly matching the pattern of Rule 16. The "measure
+first" discipline is **still not a reflex**.
 
-## Fence lát 1 + nợ mở
+## Slice 1 fence + open debt
 
-**MỞ:** `K` ∈ {scalar, String} · `V` ∈ {scalar, String, Vector, HashMap}.
+**OPEN:** `K` ∈ {scalar, String} · `V` ∈ {scalar, String, Vector, HashMap}.
 **REFUSE E1054:** pattern≠tuple-2 · tuple-3 · aggregate key/value · `V=Nullable`.
-**Ngoài for-guard → E1015** (tiền lệ Vector 491, giữ for-guard-ONLY).
+**Outside for-guard → E1015** (precedent from Vector 491, keeping for-guard-ONLY).
 
-⚠️ **E1054 nay mang 4 NGHĨA** — ca pattern-shape vẫn in `key`/`value` dù nguyên
-nhân là hình pattern. G tạm chấp nhận lát 1; tách sau nếu siết "một E-code một
-hợp đồng".
+⚠️ **E1054 now carries 4 MEANINGS** — pattern-shape cases still print `key`/`value`
+even though the actual cause is the pattern shape. G temporarily accepts this for
+Slice 1; split it later if "one E-code, one contract" is tightened.
 
-**Nợ:** aggregate key/value drain (move-out key aggregate = ABI mới) ·
-`V=Nullable` (xem 🩸 ĐÍNH CHÍNH bên dưới) · tách E1054 · **PA-1 vẫn BỊ BÁC**.
+**Debt:** aggregate key/value drain (move-out of an aggregate key = new ABI) ·
+`V=Nullable` (see 🩸 CORRECTION below) · split E1054 · **PA-1 remains REJECTED**.
 
-## 🩸 ĐÍNH CHÍNH 2026-07-27(e) — G BÁC "UB double-free" của O (verify-don't-trust ngược)
+## 🩸 CORRECTION 2026-07-27(e) — G REFUTES O's "UB double-free" (reverse verify-don't-trust)
 
-O recon `V=Nullable drain` (Giang chốt mặt trận), nới 2 fence probe →
-`HashMap<_,Integer?>`/`HashMap<_,Vector?>` + stored-null `~0` → **SIGABRT 134**;
-`String?` sạch. O **đoán** "double-free pre-existing ở drop-glue, độc lập drain"
-→ **SAI**. **G bác bằng file:line:** `__triet_hashmap_insert:6620` có
-`if v == NULL_SENTINEL { abort() }` = **canary D2 (ADR-0044 Q4)**. `insert(k, ~0)`
-với V **stride-8** (Integer?/Vector?/HashMap?) truyền `v = i64::MIN` by-value →
-đạp D2 → **abort TẠI INSERT, chưa tới drop**. `String?` lọt vì truyền POINTER
-24B (địa chỉ ≠ MIN); present Integer lọt vì ≠ MIN; drop Integer? skip
-(`aggregate_needs_drop`=false). **Một cơ chế giải trọn bảng — KHÔNG có
-double-free, KHÔNG có UB.** Đây là **giới hạn thiết kế (trap fail-closed)**,
-không phải memory corruption.
+O reconned `V=Nullable drain` (Giang settled this battlefront), widened 2 fence
+probes → `HashMap<_,Integer?>`/`HashMap<_,Vector?>` + stored-null `~0` →
+**SIGABRT 134**; `String?` clean. O **guessed** "pre-existing double-free in
+drop-glue, independent of drain" → **WRONG**. **G refutes with file:line:**
+`__triet_hashmap_insert:6620` has `if v == NULL_SENTINEL { abort() }` = **canary
+D2 (ADR-0044 Q4)**. `insert(k, ~0)` with V of **stride-8** (Integer?/Vector?/HashMap?)
+passes `v = i64::MIN` by-value → hits D2 → **aborts AT INSERT, never reaching
+drop**. `String?` slips through because it passes a 24B POINTER (address ≠
+MIN); present Integer slips through because it's ≠ MIN; drop for Integer? is
+skipped (`aggregate_needs_drop`=false). **One mechanism explains the entire
+table — there is NO double-free, NO UB.** This is a **design limit
+(fail-closed trap)**, not memory corruption.
 
-🔑 **Sự thật ghi sổ (lệnh G):** `HashMap<K, V?>` với V stride-8 nổ 134 khi
-`insert(k, null)` = **D2 trap ADR-0044 Q4** (`__triet_hashmap_insert:6620`),
-KHÔNG phải drop-glue. Khi nào mở trọn `V=Nullable` cho HashMap **PHẢI có ADR**
-(amend ADR-0044/0083) phân xử gỡ/thay D2 cho đúng ngữ nghĩa Nullable.
-⚠️ **Latent (gated sau D2, chưa live):** nếu D2 gỡ, `Vector?` value drop chạy
-`emit_hashmap_value_free_loop` (aggregate_needs_drop(Vector)=true) →
-`emit_heap_free_at` trên sentinel-cell — cần kiểm nó skip NULL_SENTINEL. Hôm nay
-BẤT KHẢ ĐẠT (D2 chặn ở insert) ⇒ KHÔNG phải lỗ sống.
+🔑 **Fact for the record (G's order):** `HashMap<K, V?>` with V of stride-8
+exploding 134 on `insert(k, null)` = **D2 trap ADR-0044 Q4**
+(`__triet_hashmap_insert:6620`), NOT drop-glue. Whenever `V=Nullable` for
+HashMap is fully opened, an ADR **MUST** exist (amending ADR-0044/0083) to
+arbitrate removing/replacing D2 to properly match Nullable semantics.
+⚠️ **Latent (gated behind D2, not yet live):** if D2 is removed, `Vector?`
+value-drop runs `emit_hashmap_value_free_loop`
+(aggregate_needs_drop(Vector)=true) → `emit_heap_free_at` on the sentinel
+cell — needs checking that it skips NULL_SENTINEL. Today this is
+UNREACHABLE (D2 blocks it at insert) ⇒ NOT a live hole.
 
-**Bài học O (lần 12+ "hành động/đoán trước khi đo"):** thấy 134 → chọn ngay
-"double-free" thay vì "trap cố ý", dù CLAUDE.md ghi rõ "ADR-0044 shim traps →
-SIGABRT". Vi phạm feedback_failure_mode_precision (134 = double-free HOẶC abort;
-phải ĐỊNH VỊ site trước khi gọi tên). G VERIFY-DON'T-TRUST ngược O đúng lần này.
+**Lesson for O (12th+ instance of "acting/guessing before measuring"):** seeing
+134 → immediately jumping to "double-free" instead of "intentional trap", even
+though CLAUDE.md explicitly states "ADR-0044 shim traps → SIGABRT". Violates
+feedback_failure_mode_precision (134 = double-free OR abort; the site must be
+LOCATED before naming it). G's reverse verify-don't-trust of O was correct this
+time.
 
-## ✅ ĐÓNG 2026-07-27(e) — (C) TÁCH E1054 4-NGHĨA → PA-3-mã (`d4baf60`)
+## ✅ CLOSED 2026-07-27(e) — (C) SPLIT E1054's 4 MEANINGS → 3-CODE PA (`d4baf60`)
 
-Front (C) landed. `d4baf60` (D) + ADR §AMEND-3 (O soạn WO, D pre-fill sig).
-O✅/G✅. Gate `0·clean·0·522·0` (O tự chạy độc lập). **KHÔNG đụng soundness/JIT
-— thuần diagnostic taxonomy** (ADR-0086 một-mã-một-hợp-đồng).
+Front (C) landed. `d4baf60` (D) + ADR §AMEND-3 (O drafted the WO, D pre-filled
+the signature). O✅/G✅. Gate `0·clean·0·522·0` (O ran it independently).
+**Does NOT touch soundness/JIT — purely diagnostic taxonomy** (ADR-0086
+one-code-one-contract).
 
-E1054 nhồi 3 trục vào 1 `if&&` → tách cascade **pattern→key→value**:
-| Mã | Variant | Trục | Fixture |
+E1054 crammed 3 axes into a single `if&&` → split into a cascade
+**pattern→key→value**:
+| Code | Variant | Axis | Fixture |
 |---|---|---|---|
-| **E1056** | `DrainHashMapPatternUnsupported` | pattern≠`(k,v)` — **message CẤM in key/value** | 510,527,528 |
-| **E1054** | `DrainHashMapKeyUnsupported` (thu hẹp, bỏ field `value`) | K aggregate — `HashMap<{key},_>` | 529 |
+| **E1056** | `DrainHashMapPatternUnsupported` | pattern≠`(k,v)` — **message MUST NOT print key/value** | 510,527,528 |
+| **E1054** | `DrainHashMapKeyUnsupported` (narrowed, dropped the `value` field) | K aggregate — `HashMap<{key},_>` | 529 |
 | **E1057** | `DrainHashMapValueUnsupported` | V nullable/aggregate — `HashMap<_,{value}>` | 530 |
 
-5 điểm chạm typecheck (`check.rs` cascade + `error.rs` 3 variant + `error_span`
-3 arm) + 4 fixture header + ADR. **526 giữ E1015** (drain ngoài for-guard).
+5 typecheck touch points (`check.rs` cascade + `error.rs` 3 variants + 3
+`error_span` arms) + 4 fixture headers + ADR. **526 keeps E1015** (drain outside
+for-guard).
 
-🩸 **O VERIFY MÁU:** Poison A (flip 5 header→5/5 FAIL, "got:" lộ mã THẬT mỗi
-fixture — 510/527/528=E1056 no-key/value · 529=E1054 `<KP,_>` · 530=E1057
-`<_,Integer?>`) + cascade-order live probe (multi-axis sai-cả-3→E1056 pattern
-thắng; key+value sai→E1054 key-trước-value). Restore byte-identical md5.
+🩸 **O VERIFIES IN BLOOD:** Poison A (flip 5 headers→5/5 FAIL, "got:" reveals
+the REAL code for every fixture — 510/527/528=E1056 no-key/value ·
+529=E1054 `<KP,_>` · 530=E1057 `<_,Integer?>`) + live cascade-order probe
+(multi-axis all-3-wrong→E1056 pattern wins; key+value both wrong→E1054
+key-before-value). Restore byte-identical md5.
 
-⚔ **VẾT O: recon-gap — quên nối fixture 510 vào WO** (đọc 510 đầu phiên rồi
-bỏ sót). **D DỪNG-và-báo đúng LUẬT 4**; O verify 510 (bare-var + K/V hợp lệ →
-chỉ vi phạm pattern → E1056 cơ giới 100%). WO nửa-map là lỗi O, D xử đúng.
+⚔ **O'S BLEMISH: recon-gap — forgot to link fixture 510 into the WO** (read 510
+at the start of the session then lost track of it). **D STOPPED-and-reported
+per LAW 4 correctly**; O verified 510 (bare-var + valid K/V → violates only the
+pattern → E1056, 100% mechanical). The half-mapped WO was O's error, D handled
+it correctly.
 
-**Nợ follow-up nhẹ (G duyệt KHÔNG block):** thêm 1 fixture đa-trục
-(`HashMap<Struct,Integer?>`+`for x in`→E1056) khóa cứng cascade order trong
-corpus (nay chỉ verify live). 0 rủi ro (mọi trục fail-closed).
+**Light follow-up debt (G approved, NOT blocking):** add 1 multi-axis fixture
+(`HashMap<Struct,Integer?>`+`for x in`→E1056) to lock the cascade order into
+the corpus (currently only verified live). 0 risk (every axis is fail-closed).
 
-**Nợ CÒN treo:** aggregate key/value drain (ABI mới) · V=Nullable drain (cần
-ADR gỡ/thay D2 canary) · PA-1 vẫn BỊ BÁC.
+**Debt still OUTSTANDING:** aggregate key/value drain (new ABI) · V=Nullable
+drain (needs an ADR to remove/replace the D2 canary) · PA-1 remains REJECTED.
 
 [[campaign_iteration_slice2b_drain]] [[campaign_iteration_slice2d_borrow_drain]] [[campaign_adr0088_lane_a_nested_nullable]] [[mentor_o_persona]] [[colleague_d_persona]] [[feedback_poison_must_be_red]]

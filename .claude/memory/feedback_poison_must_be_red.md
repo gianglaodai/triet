@@ -1,22 +1,22 @@
 ---
 name: feedback-poison-must-be-red
-description: "LUẬT THÉP G (2026-06-09) — mọi test \"fix bug cấu trúc\" phải bị poison-đỏ trước khi nhận; không tin tên test."
+description: "G's IRON LAW (2026-06-09) — every test claiming to fix a structural bug must be poisoned red before it is accepted; never trust a test's name."
 metadata: 
   node_type: memory
   type: feedback
   originSessionId: 7f9fbd79-3ba3-4ebd-b376-fd8db532831b
 ---
 
-**LUẬT THÉP (G chính thức hoá 2026-06-09, sau bài học B1a S1 Vòng 4):** Với mọi PR/commit tuyên bố "fix bug cấu trúc / structural-fix", quy trình duyệt của O **BẮT BUỘC** thêm bước: **poison logic cốt lõi → test không đỏ → REJECT thẳng mặt author.**
+**IRON LAW (formalized by G on 2026-06-09, after the B1a S1 round-4 lesson):** for every PR or commit claiming a "structural fix", O's review procedure **MUST** add one step: **poison the core logic → if the test does not go red → REJECT to the author's face.**
 
-**Why:** B1a S1 có test `mirtype_structural_fixes_nullable_vec_misclassification` — tên đúng (bảo vệ ordering-bug `Vector<Integer>?`), nhưng input là `Integer?` (= Nullable(Integer)). Integer không bao giờ là vec → assert `!is_vec()` đúng một cách vô nghĩa, KHÔNG chạm case nguy hiểm. O poison `is_vec` match-xuyên-Nullable → 44 pass (không cắn). Test xanh nhạt nhẽo vô giá trị hơn code không test — nó tạo ảo giác an toàn cho đúng cái bug nó tự nhận đã vá.
+**Why:** B1a S1 had a test named `mirtype_structural_fixes_nullable_vec_misclassification` — the name was right (it was meant to guard the `Vector<Integer>?` ordering bug), but the input was `Integer?` (= Nullable(Integer)). An Integer is never a vec → asserting `!is_vec()` was trivially true and NEVER touched the dangerous case. O poisoned `is_vec` to match through Nullable → 44 tests passed (no bite). A bland green test is worth less than no test at all — it manufactures a feeling of safety about exactly the bug it claims to have fixed.
 
 **How to apply:**
-1. Đừng bao giờ tin TÊN test. Bắt nó chứng minh bằng máu (màu đỏ của panic).
-2. Teeth tay: cp snapshot /tmp TRƯỚC ([[feedback-teeth-never-git-checkout]]), poison logic cốt lõi, chạy test chỉ định — PHẢI đỏ; khôi phục bằng cp, KHÔNG git checkout.
-3. Test structural-fix phải dùng đúng input tái tạo bug (vd Nullable(Vector), không Nullable(Integer)).
-4. Áp cho cả claim của author/D "đã teeth verify" — O tự dựng lại, không tin.
+1. Never trust a test's NAME. Make it prove itself with blood (the red of a panic).
+2. Manual teeth: cp a snapshot to /tmp FIRST ([[feedback-teeth-never-git-checkout]]), poison the core logic, run the named test — it MUST go red; restore with cp, NEVER with git checkout.
+3. A structural-fix test must use exactly the input that reproduces the bug (e.g. Nullable(Vector), not Nullable(Integer)).
+4. Apply it to any "I already teeth-verified this" claim from the author or D — O rebuilds it personally and trusts nothing.
 
-**LUẬT NAMED-LOCAL (G khắc đá 2026-07-01, HM-P1b vòng 2 — vacuous-tooth LẦN 2):** Test Move/Consume/drop-obligation **PHẢI bind giá trị vào biến có TÊN** (`let s = "hi"; insert(m,1,s)`), KHÔNG dùng literal/temporary inline (`insert(m,1,"hi")`). Lý do: literal-temp **không có drop obligation** trong scope (MIR KHÔNG emit `Drop` cho nó) → poison cờ-consume (`arg_consumes`/zero-on-move) **trơ ra** vì không có Drop caller-side để double-free. D nộp tooth #1 SIGABRT 134 dùng literal → O cắm poison `arg_consumes[2]=false` → test VẪN XANH (vacuous); O chứng minh bằng MIR: literal drops `Drop(_2) Drop(_5)` (thiếu value), named-local drops `Drop(_2) Drop(_3) Drop(_5)` (có `Drop(_3)`) → named-local poison→exit 134. **Compiler chỉ thòng lọng vòng đời biến có tên.**
+**THE NAMED-LOCAL LAW (carved by G on 2026-07-01, HM-P1b round 2 — the 2nd vacuous tooth):** a test about Move/Consume/drop obligations **MUST bind the value to a NAMED variable** (`let s = "hi"; insert(m,1,s)`), never an inline literal or temporary (`insert(m,1,"hi")`). Reason: a literal temporary **has no drop obligation** in scope (MIR emits NO `Drop` for it) → poisoning the consume flag (`arg_consumes`/zero-on-move) is **inert**, because there is no caller-side Drop to double-free. D submitted tooth #1 with a SIGABRT 134 using a literal → O planted the poison `arg_consumes[2]=false` → the test STAYED GREEN (vacuous); O proved it with the MIR: the literal version drops `Drop(_2) Drop(_5)` (the value is missing), the named-local version drops `Drop(_2) Drop(_3) Drop(_5)` (it has `Drop(_3)`) → poisoning the named-local version exits 134. **The compiler only puts a noose around the lifetime of a NAMED variable.**
 
-Liên quan [[mentor-o-persona]] (verify-don't-trust), [[feedback-verify-semantics-before-asserting]] (author đoán ngữ nghĩa rồi mã hoá vào test), [[feedback-failure-mode-precision]] (đo đúng signal 134/139/leak).
+Related: [[mentor-o-persona]] (verify-don't-trust), [[feedback-verify-semantics-before-asserting]] (the author guessing semantics and encoding them into a test), [[feedback-failure-mode-precision]] (measuring the right signal, 134/139/leak).

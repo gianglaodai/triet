@@ -9,7 +9,7 @@ metadata:
 
 On 2026-06-22, after an O-vs-G style two-legs analysis, Giang decided
 **explicitly and firmly**: the project's load-bearing reason to exist is the
-**craft/aesthetic of balanced ternary** ("chân A"), NOT the AI-first hypothesis.
+**craft/aesthetic of balanced ternary** (branch A), NOT the AI-first hypothesis.
 He called "AI-first" his own mistake in framing. The honest label is
 **"balanced-ternary-first"**; the property "easy for an AI to write correct code
 despite ~0 training corpus" (= the §5.2 convergence-loop) is a **bonus**, not the
@@ -18,7 +18,7 @@ thesis.
 **Why:** the two "legs" are disjoint — the convergence loop rides on explicit
 syntax + machine-fixable diagnostics + refuse-over-guess (VISION §4), none of
 which need ternary; ternary is admittedly aesthetic (VISION §6). So ternary =
-identity, convergence = a (still-unmeasured) bonus. Choosing chân A means
+identity, convergence = a (still-unmeasured) bonus. Choosing branch A means
 accepting this is a craft project (TeX-like) with no claim to external
 significance — and that the "fake ternary at runtime" critique (VISION §6) now
 hits the headline directly.
@@ -40,7 +40,7 @@ hits the headline directly.
   + MENTOR_G_STATE (cluster pending G's final sign-off + commit). VISION §5 is now
   a tombstone, not erased.
 - **Capability Ł3 (ADR-0016/0017/0018) is CARVED as a mandatory core strategic
-  task, to open right after Trục B ends.** It is the missing 1/3 of the coherence
+  task, to open right after Track B ends.** It is the missing 1/3 of the coherence
   anchor (null `T?` ✅ + Ł3/K3 logic ✅ + capability ❌ = deleted with old compiler).
   No longer "when its turn comes." Without it, coherence is paper → toy language.
 - ROADMAP's old "ƯU TIÊN: AI-First Validation" (turns-to-green instrument) section

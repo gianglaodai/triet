@@ -1,6 +1,6 @@
 ---
 name: campaign_aggregate_move_tombstone
-description: "✅ ĐÓNG 2026-07-27(f) — WO-Aggregate-Move-Tombstone: giết UB double-free TẤT ĐỊNH khi move aggregate heap-bearing (widening + gán lại). Nhãn 'policy-hole KHÔNG UB' sống 8 ngày vì SUY LOẠI chứ không ĐO. b998c76+ab99f6e, gate 0·clean·0·533·0. Lộ quả bom #2: SIGSEGV param-alias."
+description: "✅ CLOSED 2026-07-27(f) — WO-Aggregate-Move-Tombstone: kills a DETERMINISTIC double-free UB when moving a heap-bearing aggregate (widening + reassignment). The label 'policy-hole NOT UB' lived 8 days because it was INFERRED, not MEASURED. b998c76+ab99f6e, gate 0·clean·0·533·0. Uncovers bomb #2: SIGSEGV param-alias."
 metadata: 
   node_type: memory
   type: project
@@ -8,136 +8,140 @@ metadata:
   modified: 2026-07-27T17:35:01.948Z
 ---
 
-## ✅ ĐÓNG — `b998c76` (fix+teeth) + `ab99f6e` (ADR-0065 §16). O✅/G✅/Giang✅ 2026-07-27(f)
+## ✅ CLOSED — `b998c76` (fix+teeth) + `ab99f6e` (ADR-0065 §16). O✅/G✅/Giang✅ 2026-07-27(f)
 
-Gate `0·clean·0·533·0`. Fixture 528 → **533**.
+Gate `0·clean·0·533·0`. Fixtures 528 → **533**.
 
-## 🎯 SINH RA TỪ RECON 3 NHÃN BACKLOG (Giang chốt "recon-tươi trước khi đánh lớn")
+## 🎯 BORN FROM RECON ON 3 BACKLOG LABELS (Giang decided "fresh recon before the big strike")
 
-O đề xuất recon 3 nhãn chưa ai đo thay vì mở campaign nặng — lý do là **thống kê của
-chính dự án**: nhãn backlog đã sai **4 lần** (4 zombie đã chôn). Kết quả:
+O proposed reconning 3 labels nobody had measured yet instead of opening a heavy campaign — the reason was the project's **own statistics**: backlog labels have already been wrong **4 times** (4 zombies already buried). Result:
 
-| Nhãn | Phán quyết |
+| Label | Verdict |
 |---|---|
-| **N1 widening (E1120)** | 🔴 **SAI ở phần chưa đo** — phần đã đo (enum payload scalar) đúng là policy-hole; phần chưa đo (payload **heap**) = **double-free** |
-| **§15.6 `Vector<Leaf?>`** | (a) refuse container: **nhãn ĐÚNG**, fail-closed · (b) *"local `Nullable(Struct-heap)` qua widening — chưa đo riêng"* = 🔴 **CHÍNH LÀ UB** |
-| **Deep-Clone** | ✅ **nhãn ĐÚNG** — `get` heap-bearing aggregate → **E1049**, rào sống, feature campaign |
+| **N1 widening (E1120)** | 🔴 **WRONG in the part never measured** — the measured part (enum payload scalar) is correctly a policy-hole; the unmeasured part (**heap** payload) = **double-free** |
+| **§15.6 `Vector<Leaf?>`** | (a) refuse container: **label CORRECT**, fail-closed · (b) *"local `Nullable(Struct-heap)` via widening — not measured separately"* = 🔴 **IS EXACTLY THE UB** |
+| **Deep-Clone** | ✅ **label CORRECT** — `get` on a heap-bearing aggregate → **E1049**, refusal is live, a feature campaign |
 
-🔑 **Hai nhãn TỰ THÚ cùng một ô chưa đo** (TODO:544 *"chưa đo payload heap"* ·
-ADR-0065 §15.6 *"chưa đo riêng"*). **Ô đó là ô có bom.**
+🔑 **Two labels CONFESSED to the same unmeasured cell** (TODO:544 *"heap payload not measured"* ·
+ADR-0065 §15.6 *"not measured separately"*). **That cell is the one with the bomb.**
 
-## 💀 UB: double-free TẤT ĐỊNH, 4 dòng source thường, 0 `unsafe`
+## 💀 UB: DETERMINISTIC double-free, 4 lines of ordinary source, 0 `unsafe`
 
 ```tri
 struct Leaf { s: String }
 let p = Leaf { s: "hi" };
 let a: Leaf? = p;        // free(): double free detected in tcache 2  (exit 134)
 ```
-MIR: `_2 = move _0` **KHÔNG kèm `Deinit(_0)`** ⇒ cả hai local nằm trong `owned_locals`
-⇒ `Drop(_0)` + `Drop(_2)` cùng allocation.
+MIR: `_2 = move _0` **WITHOUT accompanying `Deinit(_0)`** ⇒ both locals sit inside
+`owned_locals` ⇒ `Drop(_0)` + `Drop(_2)` hit the same allocation.
 
-⚔ **BỆNH KHÔNG PHẢI "WIDENING" — G tự đặt tên sai, phép đo bác.** Cú pháp thường
-ngày nhất, **0 dấu `?`**, cũng nổ cùng cơ chế:
+⚔ **THE DISEASE IS NOT "WIDENING" — G named it wrong himself, measurement refutes it.** The most
+ordinary syntax imaginable, **0 `?` marks**, triggers the same mechanism too:
 ```tri
 let mutable a = Leaf { s: "aa" };
 let p = Leaf { s: "hi" };
 a = p;                   // → 134
 ```
-⇒ đổi tên `WO-Widening-Struct-Heap-UB` → **`WO-Aggregate-Move-Tombstone`**. Nếu giữ
-khung "widening", vá 2 trong 3, để lại quả bom to nhất.
+⇒ rename `WO-Widening-Struct-Heap-UB` → **`WO-Aggregate-Move-Tombstone`**. Keeping the
+"widening" frame would fix 2 of 3 and leave the biggest bomb behind.
 
-## 📊 BẢNG 8 VỊ TRÍ (G lệnh quét 5, O đo 8 — 2 ô mở nằm NGOÀI danh sách của G)
+## 📊 TABLE OF 8 SITES (G ordered a sweep of 5, O measured 8 — 2 open cells sit OUTSIDE G's list)
 
-| # | Vị trí | Trước | Sau |
+| # | Site | Before | After |
 |---|---|---|---|
 | 1 | `let a: Leaf? = p` | 🔴 **134** | ✅ 0 |
-| 2 | `return p` → `Leaf?` | ✅ E1121 | giữ |
-| 3 | `take(p)` param `Leaf?` | ✅ JIT refuse (Deinit ĐÃ có, do arg-move ADR-0042 Q1) | giữ |
-| 4 | `Container { f: p }` | ✅ E1100 | giữ |
-| 5 / 5b | `Vector<Leaf?>` / `HashMap<_,Leaf?>` element | ✅ MIR verifier B8 | giữ |
-| **6** | **`a = p` (`a: Leaf?`)** — G KHÔNG liệt | 🔴 **134** | ✅ 0 |
-| **7** | **`a = p` (`a: Leaf`, KHÔNG nullable)** — G KHÔNG liệt | 🔴 **134** | ✅ 0 |
+| 2 | `return p` → `Leaf?` | ✅ E1121 | kept |
+| 3 | `take(p)` param `Leaf?` | ✅ JIT refuse (Deinit ALREADY there, from arg-move ADR-0042 Q1) | kept |
+| 4 | `Container { f: p }` | ✅ E1100 | kept |
+| 5 / 5b | `Vector<Leaf?>` / `HashMap<_,Leaf?>` element | ✅ MIR verifier B8 | kept |
+| **6** | **`a = p` (`a: Leaf?`)** — G did NOT list this | 🔴 **134** | ✅ 0 |
+| **7** | **`a = p` (`a: Leaf`, NOT nullable)** — G did NOT list this | 🔴 **134** | ✅ 0 |
 
-Biến thể #1 cũng 134: nguồn **param** · field **`Vector`** · **struct lồng**.
-Sound sẵn: `let q = p` · widening **enum** (rơi xuống `is_move_binding`, có Deinit) ·
-rvalue · Copy-struct. `use p` sau widening → **E2420 bắt đúng** (borrowck KHÔNG mù;
-vỡ thuần ở đường **DROP**).
+Variant #1 also hits 134: source is a **param** · field is a **`Vector`** · **nested struct**.
+Already sound: `let q = p` · widening for an **enum** (falls into `is_move_binding`, has a Deinit) ·
+rvalue · Copy-struct. `use p` after widening → **E2420 catches it correctly** (borrowck is NOT
+blind; the break is purely on the **DROP** path).
 
-## 📍 FIX — 2 site, thuần THÊM 52 dòng, đều gated `!ctx_is_copy`
+## 📍 FIX — 2 sites, purely ADDITIVE 52 lines, both gated on `!ctx_is_copy`
 
 - **Site A `triet-lower/src/lib.rs` `Stmt::Let`/`is_struct_widening`**: `return Ok(())`
-  **nhảy qua** khối `is_move_binding` — nơi DUY NHẤT phát `Deinit(v)`.
-- **Site B `Stmt::Assignment`**: **không có nhánh tombstone nào cả**. D tự cắm guard
-  `v != orig` chống tự-gán (`a = a` sẽ Deinit mất bản duy nhất) — **WO của O không
-  yêu cầu**.
-- ⛔ **XOÁ nhánh `is_struct_widening` KHÔNG phải fix** (O đo: vẫn 134 `invalid pointer`,
-  ca param đổi thành JIT refuse). Nhánh có lý do tồn tại (đổi type local sang Nullable).
-- `ctx_is_copy` **KHÔNG phải thủ phạm** — nó descend đúng (`Nullable`→`Struct`→field
+  **jumps past** the `is_move_binding` block — the ONLY place that emits `Deinit(v)`.
+- **Site B `Stmt::Assignment`**: **had no tombstone branch at all**. D added a guard on his own
+  `v != orig` to prevent self-assignment (`a = a` would Deinit the only copy) — **not
+  requested by O's WO**.
+- ⛔ **DELETING the `is_struct_widening` branch is NOT a fix** (O measured: still 134 `invalid pointer`,
+  the param case turns into a JIT refuse instead). The branch exists for a reason (changing a
+  local's type to Nullable).
+- `ctx_is_copy` is **NOT the culprit** — it descends correctly (`Nullable`→`Struct`→field
   `String`→false).
 
-🔑 **Gốc rễ dưới lowerer (D chứng minh, O chỉ dám gọi nghi can):** aggregate
-`ty_total_size > 8` rơi vào nhánh JIT "Multi-word copy" có comment tự nhận
-*"Struct/enum types are Copy in Bậc A — no M1 zeroing needed"* — **SAI với struct
-heap-bearing** ⇒ Zeroing-on-Move tự động không bao giờ chạm, tombstone phải tường minh.
+🔑 **Root cause below the lowerer (D proves it, O only dares call it a suspect):** an aggregate
+with `ty_total_size > 8` falls into the JIT's "Multi-word copy" branch, whose comment claims
+*"Struct/enum types are Copy in Tier A — no M1 zeroing needed"* — **WRONG for heap-bearing
+structs** ⇒ Zeroing-on-Move automatically never touches it, the tombstone has to be explicit.
 
-## 🦷 VÌ SAO SỐNG 8 NGÀY
+## 🦷 WHY IT LIVED 8 DAYS
 
-Nhánh **có** fixture phụ thuộc (tắt nó → corpus SIGILL), nhưng `231`/`234`/`235`/`237`
-**đều dùng `Pt { x: Integer, y: Integer }` = Copy-struct** ⇒ biến thể heap chưa ai chạm.
-**Vùng mù luật HP.3**: guard áp cho N biến thể thì teeth phải poison TỪNG biến thể.
+The branch **does** have dependent fixtures (turning it off → corpus SIGILLs), but `231`/`234`/`235`/`237`
+**all use `Pt { x: Integer, y: Integer }` = Copy-struct** ⇒ the heap variant was never touched.
+**Blind spot from rule HP.3**: a guard covering N variants means teeth must poison EACH variant.
 
-Và nhãn được dán "policy-hole, KHÔNG UB" **hai lần**, cả hai lần **suy loại** từ N1
-(enum) chứ không **đo** trên struct — hai lowering site khác hẳn nhau.
+And the label "policy-hole, NOT UB" was pasted **twice**, both times **inferred**
+from N1 (enum) instead of **measured** on a struct — two entirely different lowering sites.
 
-## 🩸 TEETH + POISON (O tự cắm, độc lập)
+## 🩸 TEETH + POISON (O self-planted, independent)
 
-5 fixture `537/538/539/541/542` + `aggregate_move_tombstone_counting.rs` **route-lower
-pointer-dedup**: ghi giá trị con trỏ, `dup = freed.len() - distinct_freed.len()`, assert
-`dup == 0` **tách bạch** khỏi tín hiệu leak.
+5 fixtures `537/538/539/541/542` + `aggregate_move_tombstone_counting.rs` **route-lower
+pointer-dedup**: records pointer values, `dup = freed.len() - distinct_freed.len()`, asserts
+`dup == 0` **cleanly separated** from the leak signal.
 
-🔑 **Bộ đếm trần KHÔNG ĐỦ** cho bug mà bản chất LÀ double-free: free 2 lần cùng con trỏ
-cho `count==2`, trùng khít "2 allocation hợp lệ". Khuôn anh em
-(`heap_nullable_struct_local_counting.rs`) chỉ đếm trần — WO phải đòi dedup.
+🔑 **A bare counter is NOT ENOUGH** for a bug that IS inherently a double-free: freeing the same
+pointer twice gives `count==2`, indistinguishable from "2 valid allocations". The sibling
+harness (`heap_nullable_struct_local_counting.rs`) only counts bare — the WO had to demand dedup.
 
-Poison 3 site (`if false &&`) → **cả 5 fixture ĐỎ 134**, counting test abort. Restore
-md5 khớp.
+Poisoning 3 sites (`if false &&`) → **all 5 fixtures go RED 134**, the counting test aborts. Restore
+md5 matches.
 
-## 🔴 HAI VIỆC LEO THANG (D đo, KHÔNG tự sửa — đúng lệnh WO)
+## 🔴 TWO ESCALATED ITEMS (D measured, did NOT self-fix — per WO order)
 
-**1. LEAK old-dest.** `a = p` không free giá trị cũ của `a`: `allocated=2, freed=1,
-dup=0`. **Không phải regression** (patch chỉ thêm tombstone cho NGUỒN; trước patch vừa
-leak vừa double-free). → G: **ghi sổ, campaign riêng `WO-Assign-Drop-Old-Dest`**
-(leak << corruption trong thang ưu tiên).
+**1. LEAK old-dest.** `a = p` doesn't free `a`'s old value: `allocated=2, freed=1,
+dup=0`. **Not a regression** (the patch only adds a tombstone for the SOURCE; before the patch
+it was both leaking AND double-freeing). → G: **log it, separate campaign `WO-Assign-Drop-Old-Dest`**
+(leak << corruption on the priority scale).
 
-**2. 💀 QUẢ BOM #2 — SIGSEGV 139 param-alias.** O dựng **worktree sạch tại `04cb5d3`**
-build riêng để verify claim pre-existing của D:
+**2. 💀 BOMB #2 — SIGSEGV 139 param-alias.** O builds a **clean worktree at `04cb5d3`**
+separately to verify D's pre-existing claim:
 
-| Probe | Baseline (chưa vá) | Sau vá |
+| Probe | Baseline (unpatched) | After patch |
 |---|---|---|
-| `function take(p: Leaf) { let q = p; }` (`is_move_binding`, patch KHÔNG chạm) | **139** | **139** |
-| widening từ param | 134 | 139 |
+| `function take(p: Leaf) { let q = p; }` (`is_move_binding`, patch does NOT touch this) | **139** | **139** |
+| widening from a param | 134 | 139 |
 
-⇒ **Patch KHÔNG đẻ ra nó.** Bug đã sống sẵn: prologue JIT không copy-in struct-by-value
-param ⇒ `Variable` của param **là con trỏ thô alias bộ nhớ caller**; `Deinit` fallback
-scalar zero mất chính địa chỉ đó → `Drop` load từ 0 → SIGSEGV. **Fixture 540 KHÔNG
-tạo** — SIGSEGV giết cả binary integration-test (luật 15).
+⇒ **The patch did NOT create it.** The bug already lived there: the JIT prologue doesn't copy-in
+struct-by-value params ⇒ the param's `Variable` **is a raw pointer aliasing the caller's memory**;
+the `Deinit` fallback zeroing the scalar wipes out that very address → `Drop` loads from 0 →
+SIGSEGV. **Fixture 540 was NOT created** — SIGSEGV kills the whole integration-test binary
+(rule 15).
 
-## ⚖ D BÁC O — ĐÚNG (lần 2 trong phiên)
+## ⚖ D REFUTES O — CORRECT (2nd time this session)
 
-WO của O lệnh sửa `TODO.md:574-577` xoá cụm "POLICY-HOLE, KHÔNG UB". **D từ chối**:
-dòng đó là entry **N1/E1120 nói về nullable ENUM widening** — mà chính phép đo của O
-xác nhận enum widening **có Deinit, chạy sạch**. Làm theo chữ của O là **nhét tuyên bố
-SAI vào sổ**. D sửa đúng chỗ (ADR-0065 §15.6 gạch ngang + §16 mới).
+O's WO ordered editing `TODO.md:574-577` to delete the phrase "POLICY-HOLE, NOT UB". **D refused**:
+that line is the entry for **N1/E1120 about nullable ENUM widening** — and O's own measurement
+confirms enum widening **has a Deinit, runs clean**. Following O's wording verbatim would **insert a
+WRONG statement into the record**. D fixed it in the right place instead (ADR-0065 §15.6 struck
+through + new §16).
 
-D còn: tự mở rộng bán kính ra **Enum heap-payload** (ngoài bảng 8 ô của O), chứng minh
-được Site C mà O chỉ dám gọi nghi can, Rule-7 probe nhánh `_ =>` (panic → 0 test chạm →
-giữ code + ghi thẳng "UNTESTED", **không dán nhãn future-proof khống**).
+D also: independently extended the blast radius to **Enum heap-payload** (outside O's table of 8
+cells), proving Site C where O only dared call it a suspect, Rule-7 probing the `_ =>` branch
+(panic → 0 tests touch it → keep the code + write plainly "UNTESTED", **no false future-proofing
+label**).
 
-## MẶT TRẬN KẾ (Giang chốt, ghi trong TODO.md `bd0f4c7`)
+## NEXT FRONT (Giang's call, logged in TODO.md `bd0f4c7`)
 
-**`WO-Param-Aggregate-CopyIn`** theo thứ tự **recon-trước → trình bản đồ → G duyệt →
-soạn WO**. ⚠️ **Cơ chế gốc rễ là chẩn đoán của D, O CHƯA verify độc lập** — O mới xác
-nhận triệu chứng + tính pre-existing. Phiên sau **PHẢI tự đo bằng MIR/JIT dump**, không
-chép khung của G hay D. ⛔ G cấm chuyển sang chiến dịch tính năng trước khi đóng bom này.
+**`WO-Param-Aggregate-CopyIn`** in the order **recon-first → map it out → G reviews →
+write the WO**. ⚠️ **The root-cause mechanism is D's diagnosis, O has NOT independently verified
+it** — O only confirmed the symptom + that it's pre-existing. Next session **MUST measure directly
+via MIR/JIT dump**, not copy G's or D's framing. ⛔ G forbids switching to a feature campaign
+before this bomb is closed.
 
 [[campaign_drain_fifo_teeth]] [[campaign_forgot_nullable_sweep]] [[campaign_aggregate_nullable]] [[campaign_truc_b_heap_in_aggregate]] [[mentor_o_persona]] [[colleague_d_persona]] [[feedback_failure_mode_precision]] [[feedback_poison_must_be_red]]

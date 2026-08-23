@@ -1,25 +1,25 @@
 ---
 name: reference-spec
-description: Pointer tới canonical docs Triết. SPEC/VISION/ROADMAP/TODO/ADR index là source of truth — không recall snapshot từ memory.
+description: Pointers to Triết's canonical docs. SPEC/VISION/ROADMAP/TODO and the ADR index are the source of truth — never recall a snapshot from memory.
 metadata: 
   node_type: memory
   type: reference
   originSessionId: d3755127-60f6-49a7-a0b7-ef557745ea2f
 ---
 
-Source-of-truth docs trong repo (luôn ưu tiên đọc trực tiếp thay vì recall memory):
+Source-of-truth docs in the repo (always read them directly rather than recalling memory):
 
-- `/mnt/M2-STORAGE/Work/workspace/gh/rust/triet/SPEC.md` — language semantics authoritative (lexical, type system, arithmetic, logic, modules, generics, memory model, operator precedence, …)
-- `/mnt/M2-STORAGE/Work/workspace/gh/rust/triet/VISION.md` — 5 trụ cột kiến trúc + OS-capable trajectory
-- `/mnt/M2-STORAGE/Work/workspace/gh/rust/triet/ROADMAP.md` — phasing v0.2.x → v3.0 + changelog các phase đã ship
-- `/mnt/M2-STORAGE/Work/workspace/gh/rust/triet/TODO.md` — sub-task hiện tại + commit short-hashes
-- `/mnt/M2-STORAGE/Work/workspace/gh/rust/triet/docs/decisions/README.md` — ADR index theo phase + cách đọc/viết ADR
-- `/mnt/M2-STORAGE/Work/workspace/gh/rust/triet/CLAUDE.md` — collaboration model, conventions, dev cadence, error code namespace
+- `/mnt/M2-STORAGE/Work/workspace/gh/rust/triet/SPEC.md` — authoritative language semantics (lexical, type system, arithmetic, logic, modules, generics, memory model, operator precedence, …)
+- `/mnt/M2-STORAGE/Work/workspace/gh/rust/triet/VISION.md` — the 5 architectural pillars + the OS-capable trajectory
+- `/mnt/M2-STORAGE/Work/workspace/gh/rust/triet/ROADMAP.md` — the v0.2.x → v3.0 phasing + a changelog of shipped phases
+- `/mnt/M2-STORAGE/Work/workspace/gh/rust/triet/TODO.md` — the current sub-task + commit short hashes
+- `/mnt/M2-STORAGE/Work/workspace/gh/rust/triet/docs/decisions/README.md` — the ADR index by phase + how to read and write ADRs
+- `/mnt/M2-STORAGE/Work/workspace/gh/rust/triet/CLAUDE.md` — the collaboration model, conventions, dev cadence, error-code namespace
 
-**Why:** Memory drift sau mỗi phase ship; canonical docs trong git là ground truth. Section numbering trong SPEC có thể đổi giữa các version → grep trực tiếp thay vì cite section number từ memory.
+**Why:** memory drifts after every shipped phase; the canonical docs in git are ground truth. Section numbering in SPEC can change between versions → grep directly instead of citing a section number from memory.
 
 **How to apply:**
-- Trước khi trả lời câu hỏi về semantics, đọc SPEC.md trực tiếp (grep theo keyword, đừng cite số section từ memory)
-- Khi cần ADR rationale, đọc file ADR cụ thể trong `docs/decisions/`
-- Khi user reference "v0.x đã làm gì", đọc ROADMAP.md changelog
-- Khi đề xuất implementation, cite SPEC section / ADR number tương ứng thay vì invent semantics
+- Before answering a semantics question, read SPEC.md directly (grep by keyword, do not cite a section number from memory).
+- When you need an ADR's rationale, read that specific ADR file in `docs/decisions/`.
+- When the user refers to "what v0.x did", read the ROADMAP.md changelog.
+- When proposing an implementation, cite the corresponding SPEC section or ADR number instead of inventing semantics.

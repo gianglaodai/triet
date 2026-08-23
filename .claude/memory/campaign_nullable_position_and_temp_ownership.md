@@ -1,6 +1,6 @@
 ---
 name: campaign_nullable_position_and_temp_ownership
-description: "✅ ĐÓNG 2026-07-19 — 5 WO liên tiếp: họ 'match exact, quên Nullable' ở 3 VỊ TRÍ (Enum? param · Struct? param · Struct? return) + INV-HeapNullable probe (SOUND, đập doc-comment nói dối) + ShimTempOwnership (rỉ câm CẢ MẢNG shim-mượn). origin/main aa9e584, gate 0·0·439·0. Phát hiện lớn nhất: SPOF arg_consumes."
+description: "✅ CLOSED 2026-07-19 — 5 consecutive WOs: the family 'match exact, forgot Nullable' at 3 POSITIONS (Enum? param · Struct? param · Struct? return) + INV-HeapNullable probe (SOUND, busts a lying doc-comment) + ShimTempOwnership (silent leak across THE WHOLE ARRAY of borrowed shims). origin/main aa9e584, gate 0·0·439·0. Biggest finding: SPOF arg_consumes."
 metadata:
   node_type: memory
   type: project
@@ -8,84 +8,84 @@ metadata:
   modified: 2026-07-19T16:22:40.715Z
 ---
 
-## ✅ ĐÓNG — 5 WO, tất cả O ✅ + G ✅, đã PUSH
+## ✅ CLOSED — 5 WOs, all O ✅ + G ✅, PUSHED
 
 ```
 aa9e584  docs(todo): refresh handoff header + SPOF debt
-72a0bd6  WO-ShimTempOwnership ĐÓNG (8 commit 04b6174…72a0bd6)
-c88832a  WO-INV-HeapNullable-Probe (a) — đập doc comment nói dối
+72a0bd6  WO-ShimTempOwnership CLOSED (8 commits 04b6174…72a0bd6)
+c88832a  WO-INV-HeapNullable-Probe (a) — busts a lying doc comment
 645ae61  WO-StructReturnRefuse (e7aab8c fix + fixtures 437-445)
 ec7ecd8  WO-StructParamABI  (7d59b7c fix + fixtures 428-436)
 ccb8db3  WO-NullableEnumParamABI (fixtures 419-427)
 ```
-Gate cuối `0·0·439·0 CLEAN`. Fixture 419→445 + 4 file counting mới.
+Final gate `0·0·439·0 CLEAN`. Fixtures 419→445 + 4 new counting files.
 
-## 🧬 SỢI CHỈ: họ **"match exact, QUÊN `Nullable`"** — 4 thành viên
+## 🧬 THE THREAD: the family **"match exact, FORGOT `Nullable`"** — 4 members
 
-| # | Site | Triệu chứng | Trạng thái |
+| # | Site | Symptom | Status |
 |---|---|---|---|
-| ① | `Enum?` param copy-in (`mir_lower.rs` match `MirType::Enum` exact) | **rác câm**, nhánh `~0` chết trên mọi biên gọi | vá `ccb8db3` |
-| ② | `Struct?` param bare-read (`load_place:1248-58` không slot → `use_var` = con trỏ) | **rác câm** | vá `7d59b7c` |
-| ③ | `Enum?` return-shape | — | đã có refuse từ trước |
-| ④ | **`Struct?` return-shape** (`is_struct_return = matches!(ret, MirType::Struct(_))`) | 4 hố: câm · rác địa chỉ · SIGILL 132 · **SIGABRT 134** | POLICY GATE refuse `e7aab8c` |
+| ① | `Enum?` param copy-in (`mir_lower.rs` matching `MirType::Enum` exact) | **silent garbage**, the `~0` branch dead across every call boundary | fixed `ccb8db3` |
+| ② | `Struct?` param bare-read (`load_place:1248-58` no slot → `use_var` = pointer) | **silent garbage** | fixed `7d59b7c` |
+| ③ | `Enum?` return-shape | — | already refused before |
+| ④ | **`Struct?` return-shape** (`is_struct_return = matches!(ret, MirType::Struct(_))`) | 4 holes: silence · garbage address · SIGILL 132 · **SIGABRT 134** | POLICY GATE refused `e7aab8c` |
 
-⚠️ **④ nằm cách một comment do CHÍNH O viết phiên trước đúng 10 dòng** — comment ấy gọi tên hiện tượng là *"P0-sibling gap"*, vá ① anh em rồi bỏ sót anh em còn lại.
+⚠️ **④ sits exactly 10 lines from a comment written by O HIMSELF in a previous session** — that comment names the phenomenon *"P0-sibling gap"*, patches ① sibling then leaves the remaining sibling behind.
 
-## 🔑 CƠ CHẾ CHUNG
-- **param**: Variable giữ **con trỏ** tới slot caller → sentinel-compare so địa chỉ với `i64::MIN` → **luôn "present"** ⇒ nhánh null chết. Field-read vẫn ĐÚNG (đọc xuyên con trỏ) → chỉ tag-read hỏng.
-- **return**: hai nhánh sinh repr **KHÔNG tương thích** cho cùng kiểu — null → `const NULL_SENTINEL` (scalar), present → `struct P{..}` **TRẦN, không tag**. Cả tag-read LẪN field-read hỏng.
-- **Tiền lệ chạy đúng:** `Integer?`→`Scalar` (đúng, sentinel vừa i64) · `String?`→`Struct` fat/sret qua `is_string_repr()` — predicate này **cố ý bao cả wrapper `Nullable`**. Đó là mẫu đúng mà `is_struct_return` thiếu.
+## 🔑 SHARED MECHANISM
+- **param**: the Variable holds a **pointer** into the caller's slot → sentinel-compare against `i64::MIN` compares addresses → **always "present"** ⇒ the null branch is dead. Field-read is still CORRECT (reads through the pointer) → only the tag-read is broken.
+- **return**: the two branches produce **incompatible** representations for the same type — null → `const NULL_SENTINEL` (scalar), present → `struct P{..}` **BARE, no tag**. Both tag-read AND field-read are broken.
+- **Working precedent:** `Integer?`→`Scalar` (correct, sentinel fits in i64) · `String?`→`Struct` fat/sret via `is_string_repr()` — this predicate **deliberately covers** the `Nullable` wrapper too. That's the correct pattern that `is_struct_return` is missing.
 
-## 🩸 RỈ CÂM CẢ MẢNG SHIM-MƯỢN (WO-ShimTempOwnership)
+## 🩸 SILENT LEAK ACROSS THE WHOLE ARRAY OF BORROWED SHIMS (WO-ShimTempOwnership)
 
-Lộ ra **nhờ** hạ tầng counting của WO trước, không nhờ đọc code.
+Surfaced **thanks to** the counting infrastructure from the previous WO, not from reading code.
 
 ```
-length(h.name)            FREE=0 RI     userfn f(h.name)     FREE=1 OK  <- bac gia thuyet "temp-lifetime chung vo"
-length(o.inner.name)      FREE=0 RI     length(s) local      FREE=1 OK
-length("hello")           FREE=0 RI  <- KHONG co field-access -> giet ten "InlineFieldTempLeak"
-concat 3->1 · contains 2->0 · eq 2->0   (moi ca that thoat dung 2 temp)
-push/insert (TIEU THU)    FREE=1 ca inline lan let-bound -> LANH, la CONTROL
+length(h.name)            FREE=0 RED     userfn f(h.name)     FREE=1 OK  <- refutes the "shared temp-lifetime" hypothesis
+length(o.inner.name)      FREE=0 RED     length(s) local      FREE=1 OK
+length("hello")           FREE=0 RED  <- NO field-access -> kills the name "InlineFieldTempLeak"
+concat 3->1 · contains 2->0 · eq 2->0   (every case actually leaks exactly 2 temps)
+push/insert (CONSUME)     FREE=1 both inline AND let-bound -> HEALTHY, is CONTROL
 ```
-**Đặc tả đúng:** temp **vô danh** (field-access HOẶC literal) làm arg cho builtin **mượn** không bao giờ `push_owned` → không ai drop. `let` thì lành (đăng ký qua let), user-fn thì lành (chuyển sở hữu qua `Deinit`, ADR-0042 Q1).
+**Correct spec:** an **anonymous** temp (field-access OR literal) used as an arg to a builtin that **borrows** never gets `push_owned` → nobody drops it. `let` is fine (registered via `let`), user-fn is fine (ownership transferred via `Deinit`, ADR-0042 Q1).
 
-**Fix:** chokepoint `emit_shim_call` tra `arg_consumes` (mượn/thiếu-entry → `push_owned`; tiêu thụ → cấm) + fast-path `length()` vá riêng. **Bán kính rộng hơn phạm vi ký** (quét cả `remove`/`get` key) — G duyệt giữ rộng: *"thu hẹp = viết `if name=="remove" { tiếp_tục_rỉ_nhé() }`, đó là NGU XUẨN, cố tình sinh sibling gap"*.
+**Fix:** chokepoint `emit_shim_call` looks up `arg_consumes` (borrow/missing-entry → `push_owned`; consume → forbidden) + a separate fast-path fix for `length()`. **Blast radius wider than the signed scope** (also sweeps `remove`/`get` key) — G's review keeps it wide: *"narrowing = writing `if name=="remove" { keep_leaking_on_purpose() }`, that's STUPID, deliberately creating a sibling gap"*.
 
-**⚠️ Oracle `hashmap_string_key_struct_value_remove_frees_key_and_value` 2→3:** giá trị cũ **ghim trên baseline ĐANG RỈ**. O verify **pointer-identity `frees=3 distinct=3 dup=0`** ⇒ KHÔNG double-free. Ai lùi về 2 là tái mở leak.
+**⚠️ Oracle `hashmap_string_key_struct_value_remove_frees_key_and_value` 2→3:** the old value was **pinned to a LEAKING baseline**. O verifies via **pointer-identity `frees=3 distinct=3 dup=0`** ⇒ NOT a double-free. Whoever reverts to 2 reopens the leak.
 
-## 🔴 NỢ LỚN NHẤT ĐỂ LẠI — **SPOF `arg_consumes`**
+## 🔴 BIGGEST DEBT LEFT BEHIND — **SPOF `arg_consumes`**
 
-`builtin_shim_meta().arg_consumes` được đọc bởi **CẢ HAI** tầng: `push_owned` (lowerer `emit_shim_call`) + **M3 zero-on-consume** (JIT `mir_lower.rs:4717`).
-⇒ **KHÔNG phải defense-in-depth — là MỘT quyết định áp hai tầng.** Một entry khai láo thủng cả hai:
-- khai **mượn** mà thực **tiêu thụ** → leak
-- khai **tiêu thụ** mà thực **mượn** → double-free
-- **cả hai CÂM** ở tầng giá trị. `contains` không có entry → rơi mặc định ngầm.
+`builtin_shim_meta().arg_consumes` is read by **BOTH** layers: `push_owned` (lowerer `emit_shim_call`) + **M3 zero-on-consume** (JIT `mir_lower.rs:4717`).
+⇒ **NOT defense-in-depth — it's ONE decision applied to two layers.** One entry lying about itself breaks both:
+- declared **borrow** but actually **consumes** → leak
+- declared **consume** but actually **borrows** → double-free
+- **both are SILENT** at the value layer. `contains` has no entry → falls to an implicit default.
 
-**Chưa có răng nào canh bảng này.** Hướng: unit test quét toàn bảng đối chiếu chữ ký shim thật.
+**No teeth guard this table yet.** Direction: a unit test that sweeps the whole table against the real shim signatures.
 
-## ⚖ O SAI 11 LẦN — CÙNG MỘT GỐC: **hành động trước khi đo**
+## ⚖ O WRONG 11 TIMES — SAME ROOT: **acting before measuring**
 
-1-9. Khái quát từ MỘT biến quan sát được: exit-code làm oracle (6 control gắn ✅ nhờ may) · `Struct?` param "lành" từ một ô · `T7 refuse ✅` từ một dạng khởi tạo (`~+`, sót `~0`) · đặt tên bug theo field-access (P6 `length("hello")` giết tên đó) · "hố nhỏ ở `length`" (số đo D bác: cả mảng).
+1-9. Generalizing from ONE observed variable: exit-code used as oracle (6 controls tagged ✅ by luck) · `Struct?` param "healthy" from a single cell · `T7 refuse ✅` from one constructor shape (`~+`, missing `~0`) · naming the bug after field-access (P6 `length("hello")` kills that name) · "small hole in `length`" (measurement by D refutes it: the whole array).
 
-**10. Dán nhãn failure-mode SAI:** ghi "SIGILL 132" cho `Struct?` param; đo lại 5/5 → đọc **HAI** field = SIGILL (rác+rác vượt ngưỡng → trap **ADR-0044**, **THỨ CẤP**), đọc **MỘT** field = rác câm. **Rác câm là gốc; SIGILL là tiếng sấm.**
+**10. WRONG failure-mode label:** wrote "SIGILL 132" for `Struct?` param; re-measured 5/5 → reading **TWO** fields = SIGILL (garbage+garbage exceeds the threshold → trap **ADR-0044**, **SECONDARY**), reading **ONE** field = silent garbage. **Silent garbage is the root; SIGILL is the thunder.**
 
-**11. NẶNG NHẤT — thiết kế TIÊU CHÍ NGHIỆM THU theo cơ chế GIẢ ĐỊNH.** O tuyên *"poison ngược không nổ ⇒ reject"*. Ép đo hai chiều:
-- M3 **bật** + bỏ phân biệt → FREE=1 **không nổ** (D đúng)
-- M3 **tắt** + phân biệt đúng → **SIGABRT double-free**
-⇒ **M3 mới là lớp chịu lực**; nhánh `!consumed` bị che. **O rút tiêu chí.** Nếu giữ nguyên, O đã **bác một fix ĐÚNG** và ép D sửa cái không hỏng.
-🔑 **Chính mũi poison ĐẶT SAI CHỖ đó lôi ra SPOF** — thất bại có kỷ luật sinh ra phát hiện.
+**11. HEAVIEST — designed the ACCEPTANCE CRITERION around an ASSUMED mechanism.** O declared *"if poison-reverse doesn't blow up ⇒ reject"*. Forced a two-way measurement:
+- M3 **on** + no distinction → FREE=1 **doesn't blow up** (D is right)
+- M3 **off** + correct distinction → **SIGABRT double-free**
+⇒ **M3 is actually the load-bearing layer**; the `!consumed` branch was hidden. **O withdraws the criterion.** Had it been kept, O would have **rejected a CORRECT fix** and forced D to fix something that wasn't broken.
+🔑 **The very poison placed in the WRONG spot is what dragged the SPOF out — disciplined failure produced the finding.**
 
-## 🦷 LUẬT RĂNG MỚI (khắc vào persona)
-- **Oracle cũng là giả định — phải verify.** exit-code không đo giá trị; **giá trị không đo leak**; **FREE-count không phân biệt 3-object với double-free** (phải dedup con trỏ).
-- **Răng phải chứng minh ở TẦNG HARNESS.** `integration_test_corpus()` là MỘT test chạy vòng lặp ⇒ một fixture crash giết cả tiến trình, mọi fixture sau **không bao giờ chạy**. "Suite đỏ" KHÔNG chứng minh răng của mình. Cách chứng minh: đổi `EXPECT`/`ERROR` sang giá trị bịa → phải ra `FAIL <tên>: expected …, got …`.
-- **Test xanh có thể đang canh giữ hiện trạng SAI** (oracle ghim trên baseline rỉ). Fix đúng làm nó đỏ — **cấm sửa oracle cho xanh mà không có bằng chứng độc lập**.
-- **"Poison không đỏ" phải ép tới cùng**: gỡ lớp che (tắt M3) rồi đo lại, đừng kết luận từ happy-path.
+## 🦷 NEW TEETH RULES (etched into the persona)
+- **The oracle is also an assumption — it must be verified.** exit-code doesn't measure value; **value doesn't measure leak**; **FREE-count doesn't distinguish 3 objects from a double-free** (must dedup pointers).
+- **Teeth must be proven at the HARNESS LAYER.** `integration_test_corpus()` is ONE test running a loop ⇒ one fixture crash kills the whole process, every fixture after it **never runs**. "Suite is red" does NOT prove your own tooth. How to prove it: change `EXPECT`/`ERROR` to a fabricated value → must produce `FAIL <name>: expected …, got …`.
+- **A green test can be guarding a WRONG status quo** (oracle pinned to a leaking baseline). The correct fix turns it red — **forbidden to fix the oracle back to green without independent evidence**.
+- **"Poison doesn't go red" must be pushed to the end**: remove the covering layer (turn off M3) then re-measure, don't conclude from the happy path alone.
 
-## Ghi chú vai — D (Sonnet 5)
-**Bác O 8/8 lần, đúng cả 8.** Vết kỹ thuật: **0 vết bịa**. Điểm sáng lớn nhất: **dừng khi test đỏ, KHÔNG tự sửa oracle 2→3 cho xanh** — hành vi ngược lại sẽ ship double-free dưới vỏ "đã cập nhật kỳ vọng".
-Vết còn lại = **kỷ luật vòng lặp**: 4 lần vi phạm luật foreground (một lần **bị O trả WO**), 3 lần để việc treo không commit. 🔑 **Luật phải cấm HÀNH VI, không cấm CÔNG CỤ** — cấm `run_in_background` thì D lách bằng `Monitor`; cấm *"kết thúc lượt khi chưa cầm output"* thì không lách được.
+## Role notes — D (Sonnet 5)
+**Refuted O 8/8 times, correct all 8.** Technical track record: **0 fabrications**. Biggest bright spot: **stopped when the test went red, did NOT fix the oracle 2→3 to make it green on its own** — the opposite behavior would have shipped a double-free wearing the mask of "updated expectation".
+Remaining blemish = **loop discipline**: 4 violations of the foreground rule (once **the WO was returned by O**), 3 times left work hanging uncommitted. 🔑 **Rules must ban BEHAVIOR, not ban a TOOL** — ban `run_in_background` and D dodges via `Monitor`; ban *"end the turn before you're holding the output"* and there's no dodge.
 
-## Nợ còn treo
-🚩 **SPOF `arg_consumes`** (trên) · 🚩 **ADR "Full SRET cho Nullable Aggregate"** (gỡ CẢ hai policy gate `Struct?`+`Enum?` return; phải vá widen-path — present arm không ghi tag — LẪN sret sizing `{tag@0,fields@8+}`) · `key_marshal` >8B param (**over-refuse to tiếng, KHÔNG phải UB** — O đo hạ ưu tiên) · lỗ N1 `~0` bypass (policy-hole) · `is_empty` · `HashMap<String,V>` key-position.
+## Debt still outstanding
+🚩 **SPOF `arg_consumes`** (above) · 🚩 **ADR "Full SRET for Nullable Aggregate"** (removes BOTH policy gates `Struct?`+`Enum?` return; requires fixing the widen-path — the present arm doesn't write the tag — AND sret sizing `{tag@0,fields@8+}`) · `key_marshal` >8B param (**over-refuse noise, NOT UB** — O measured, deprioritized) · N1 `~0` bypass hole (policy-hole) · `is_empty` · `HashMap<String,V>` key-position.
 
 [[campaign_nullable_enum_aggregate_pa_a]] [[campaign_borrowck_nll_foundation]] [[feedback_failure_mode_precision]] [[feedback_poison_must_be_red]] [[mentor_o_persona]] [[colleague_d_persona]]

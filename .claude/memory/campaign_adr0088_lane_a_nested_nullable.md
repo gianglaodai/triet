@@ -1,116 +1,125 @@
 ---
 name: campaign_adr0088_lane_a_nested_nullable
-description: "✅ ĐÓNG 2026-07-27 — ADR-0088 Lane A: hàng rào E1055 nested-nullable T?? 2 tầng / 2 lớp nguồn + 9 răng cưa (511-519). Giết ICE E1190 + message MIR sai hướng. Phát hiện lõi: refuse cũ sống ký sinh vào allow-list với 0 răng canh = SPOF câm chờ Lane B. Lane B hoãn vô thời hạn. d9b659a, gate 0·clean·0·511·0."
+description: "✅ CLOSED 2026-07-27 — ADR-0088 Lane A: E1055 fence for nested-nullable T?? 2 levels / 2 source layers + 9 teeth (511-519). Kills ICE E1190 + misdirected MIR message. Core finding: the old refuse lived parasitically off the allow-list with 0 guard teeth = a silent SPOF waiting for Lane B. Lane B deferred indefinitely. d9b659a, gate 0·clean·0·511·0."
 metadata:
   node_type: memory
   type: project
 ---
 
-## ✅ ĐÓNG — `d9b659a` (D) + docs (O co-sign). O✅/G✅/Giang✅ 2026-07-27
+## ✅ CLOSED — `d9b659a` (D) + docs (O co-sign). O✅/G✅/Giang✅ 2026-07-27
 
 Gate `0·clean·0·511·0 CLEAN`. Fixtures 502 → **511**.
 
-## 🎯 Recon lật khung — thân bài ADR-0088 CHỈ phủ `get`-family
+## 🎯 Recon flips the frame — the body of ADR-0088 covers ONLY the `get`-family
 
-Giang chốt mở ADR-0088. O recon **20 probe trên binary release** (rebuild trước,
-luật 12) → **BÁC khung "double-nullable = vấn đề của `get`"**. `T??` viết TRỰC
-TIẾP chưa ai đo:
+Giang signed off on opening ADR-0088. O recon: **20 probes on the release binary** (rebuild
+first, rule 12) → **REFUTES the frame "double-nullable = a problem of `get`"**. `T??` written
+DIRECTLY had never been measured by anyone:
 
-- **KHÔNG có UB** — mọi đường fail-closed (exit 2/3, 0 ca exit-0-sai, 0 signal 132/134/139).
-- **Nhưng chẩn đoán VỠ: 5 mã lỗi cho CÙNG một khái niệm.**
-  - 🔴 `struct S{v:Integer??}`+match → **E1190 = mã ICE** "please report compiler bug"
-    cho input user hợp lệ cú pháp ⇒ vi phạm taxonomy ADR-0086.
-  - ⚠️ local/param/return/pop/pop_front/remove/`!!` → message MIR nói *"heap-nullable…
+- **NO UB** — every path fails closed (exit 2/3, 0 silently-wrong exit-0 cases, 0 signal
+  132/134/139).
+- **But diagnostics are BROKEN: 5 error codes for the SAME concept.**
+  - 🔴 `struct S{v:Integer??}`+match → **E1190 = the ICE code** "please report compiler bug"
+    for syntactically valid user input ⇒ violates the ADR-0086 taxonomy.
+  - ⚠️ local/param/return/pop/pop_front/remove/`!!` → the MIR message says *"heap-nullable…
     ADR-0065 §4 B8 Struct?/Enum? Copy-only… [Fix] Remove the heap field"* — `Integer??`
-    KHÔNG heap, KHÔNG struct ⇒ sai hướng hoàn toàn, vi phạm ADR-0027 machine-fixable.
-  - ⚠️ enum payload → E1141 (sai nguyên nhân) · `Integer??~E` → E0001 parse.
+    is NOT heap, NOT struct ⇒ completely misdirected, violates ADR-0027 machine-fixable.
+  - ⚠️ enum payload → E1141 (wrong cause) · `Integer??~E` → E0001 parse.
 
-## 🎯 PHÁT HIỆN LỚN NHẤT — 0 RĂNG CANH, SPOF câm chờ Lane B
+## 🎯 THE BIGGEST FINDING — 0 GUARD TEETH, a silent SPOF waiting for Lane B
 
-Refuse cũ sống ký sinh vào **allow-list** `is_lowerable_nullable_payload`
-(`triet-mir:1796`: scalar/heap/Enum/Struct/Reference). `Nullable(_)` **không có tên
-trong list** ⇒ rơi ra ngoài ⇒ refuse **by default** = **may mắn cấu trúc**, không
-phải hàng rào chủ động. Và grep `??` trong **dòng code** của toàn corpus = **0 hit**.
+The old refuse lived parasitically off the **allow-list** `is_lowerable_nullable_payload`
+(`triet-mir:1796`: scalar/heap/Enum/Struct/Reference). `Nullable(_)` **has no entry
+in the list** ⇒ falls outside ⇒ refuses **by default** = **structural luck**, not
+an active fence. And grepping `??` across **lines of code** in the whole corpus = **0 hits**.
 
-⇒ Việc ĐẦU TIÊN Lane B sẽ làm là **thêm arm `Nullable` vào chính allow-list đó** —
-lúc ấy 7 đường lọt JIT cùng lúc, **câm, gate vẫn xanh**. Cùng hình dạng SPOF-một-lớp
-đã bịt ở WO-SPOF-1. **Đây mới là lý do Lane A đáng làm, không phải "dọn message".**
+⇒ The FIRST thing Lane B will do is **add a `Nullable` arm to that very allow-list** —
+at that point 7 paths slip through the JIT at once, **silently, gate still green**. The same
+one-layer-SPOF shape already plugged in WO-SPOF-1. **This is the real reason Lane A is
+worth doing, not "cleaning up the message".**
 
-## HAI LỚP NGUỒN (lý do WO không thể "một điểm chạm")
+## TWO SOURCE LAYERS (why the WO can't be "one touch-point")
 
-| Lớp | Nơi sinh `Nullable(Nullable(_))` | Phủ |
+| Layer | Where `Nullable(Nullable(_))` is generated | Covers |
 |---|---|---|
-| **A khai báo** | `resolve_type` **2 BẢN SAO**: `check.rs:1365` + `check_resolved.rs:597` | local·param·return·struct field·enum payload·`!!` |
-| **B suy diễn** | `check_call` sau `return_type.substitute(&sub_map)` (`check/exprs.rs`) | `pop`/`pop_front`/`remove` trên `<T?>` |
+| **A declaration** | `resolve_type` **2 COPIES**: `check.rs:1365` + `check_resolved.rs:597` | local·param·return·struct field·enum payload·`!!` |
+| **B inference** | `check_call` after `return_type.substitute(&sub_map)` (`check/exprs.rs`) | `pop`/`pop_front`/`remove` on `<T?>` |
 
-`let x = pop(v)` **KHÔNG có annotation** — shape chỉ tồn tại SAU substitution.
-🦷 Lớp A có **2 bản sao** = cùng hình dạng `is_fat_ret` 3-bản-sao (ADR-0065 §14.7):
-đụng một bản PHẢI grep bản kia.
+`let x = pop(v)` has **NO annotation** — the shape only exists AFTER substitution.
+🦷 Layer A has **2 copies** = the same shape as the `is_fat_ret` 3-copy pattern (ADR-0065 §14.7):
+touch one copy, you MUST grep for the other.
 
-## ⚖ HAI LẦN BÁC LỆNH — cả hai đúng
+## ⚖ TWO OVERRULES — both correct
 
-**D bác vị trí WO của O:** O gợi ý `env.rs:374/394/506`; D chỉ ra nơi đó `T` còn là
-`TypeParameter` **trừu tượng**, không biết bind ra gì tại call-site ⇒ chuyển
-`check_call`. O poison đặc hiệu xác nhận D đặt đúng chỗ. Guard **không name-gate**.
+**D refutes O's WO location:** O suggested `env.rs:374/394/506`; D pointed out that there `T`
+is still an **abstract** `TypeParameter`, with no knowledge of what it binds to at the
+call-site ⇒ moved to `check_call`. O's targeted poison confirms D placed it correctly. The
+guard is **not name-gated**.
 
-**O bác giao thức verify của G — G rút:** G lệnh *"poison allow-list → 7 fixture đỏ"*.
-O đo TRƯỚC và chứng minh sẽ **KHÔNG đỏ** (typecheck chặn trên bọc kín tầng MIR) ⇒
-giao thức 1-mũi đẩy người verify vào bẫy "poison không đỏ" rồi buộc **bịa mũi giả cho
-nổ để qua cửa**. G phê chuẩn **2 mũi độc lập**. 🔑 Đây đúng vết O từng tự ăn (luật 16
-"tiêu chí nghiệm thu cũng là giả định") — lần này bắt được **trước khi giao việc**.
+**O refutes G's verify protocol — G withdraws it:** G ordered *"poison the allow-list → 7 fixtures red"*.
+O measured FIRST and proved it would **NOT go red** (typecheck blocks it, sealing off the MIR
+layer) ⇒ a 1-probe protocol pushes the verifier into a "poison doesn't go red" trap that then
+forces **fabricating a fake probe to force a blow-up just to pass the gate**. G approved
+**2 independent probes**. 🔑 This is exactly the mark O once ate himself (rule 16
+"acceptance criteria are also an assumption") — this time caught **before the work was
+handed off**.
 
-## 🩸 O VERIFY MÁU — 3 mũi + đặc hiệu HAI CHIỀU
+## 🩸 O VERIFIES IN BLOOD — 3 probes + specificity in BOTH DIRECTIONS
 
-| Mũi | Poison | Đo được |
+| Probe | Poison | Measured |
 |---|---|---|
-| 1a | tắt Lớp A `check.rs:1374` | **6 đỏ** 511·512·513·517·518·519 · 514-516 **xanh** |
-| 1b | tắt Lớp B `exprs.rs:1054` | **3 đỏ** 514·515·516 · 6 kia **xanh** |
-| 2 | nới allow-list MIR | **chỉ unit test đỏ · 0 fixture** |
+| 1a | disable Layer A `check.rs:1374` | **6 red** 511·512·513·517·518·519 · 514-516 **green** |
+| 1b | disable Layer B `exprs.rs:1054` | **3 red** 514·515·516 · the other 6 **green** |
+| 2 | widen the MIR allow-list | **only unit test red · 0 fixture** |
 
-**6+3=9 ⇒ hai lớp TÁCH BẠCH**, không lớp nào đội lốt lớp kia. Dưới mũi 1a,
-**517/518 lộ lại ĐÚNG ICE cũ** (`unsupported match pattern` / `requires an expected
-type`) ⇒ guard mới chính là thứ giết E1190/E1141, không phải trùng hợp.
-**Răng ở TẦNG HARNESS** (luật 15): đổi `// ERROR:` 514→`E9999` → ra dòng
-`FAIL expected 'E9999', got E1055`. Restore `cp`+md5 khớp 4 file, **0 git checkout**;
-`git diff` vs commit D = **rỗng**.
+**6+3=9 ⇒ the two layers are CLEANLY SEPARATE**, neither impersonates the other. Under
+probe 1a, **517/518 re-expose the EXACT old ICE** (`unsupported match pattern` / `requires an
+expected type`) ⇒ the new guard is exactly what killed E1190/E1141, not a coincidence.
+**Teeth at the HARNESS LAYER** (rule 15): changing `// ERROR:` 514→`E9999` → produces the
+line `FAIL expected 'E9999', got E1055`. Restore via `cp`+md5 matching 4 files, **0 git
+checkout**; `git diff` vs D's commit = **empty**.
 
-## ⚔ BẤT BIẾN MỚI — message runtime CẤM chứa mã lỗi tầng khác
+## ⚔ NEW INVARIANT — a runtime message is FORBIDDEN from containing another layer's error code
 
-D tự phát hiện + tự sửa: message MIR nháp chứa chuỗi `"(E1055)"` → harness so bằng
-`.contains(code)` nên poison gỡ guard typecheck vẫn **xanh giả** (tầng MIR nổ, message
-tình cờ chứa "E1055"). D bỏ chuỗi mã khỏi message runtime, chạy lại bằng harness thật.
-🦷 **Nếu message một tầng chứa mã lỗi của tầng khác, mọi poison xuyên tầng bị vô hiệu
-hoá CÂM.** D không chọn đường bịa cho qua cửa — 0 vết bịa.
+D self-discovered + self-fixed: the draft MIR message contained the string `"(E1055)"` →
+the harness compares via `.contains(code)`, so poisoning away the typecheck guard still
+went **falsely green** (the MIR layer blows up, the message incidentally contains "E1055").
+D removed the code string from the runtime message and re-ran with the real harness.
+🦷 **If one layer's message contains another layer's error code, every cross-layer poison
+is SILENTLY neutralized.** D did not take the shortcut of faking it to pass the gate —
+0 fabrication marks.
 
-## Control chống over-refuse (giữ mãi)
+## Control against over-refuse (keep forever)
 
-struct `Integer?` MỘT tầng → **16** · `HashMap<K,Integer?>` insert-store → **5** ·
-flatMap 175/212/213 xanh (`exprs.rs:361-364` giữ body nullable, **không bao giờ sinh
-`U??`**) · 465/466/467 **giữ E1051** không bị E1055 cướp · 468 control dương.
+struct `Integer?` ONE layer → **16** · `HashMap<K,Integer?>` insert-store → **5** ·
+flatMap 175/212/213 green (`exprs.rs:361-364` keeps the body nullable, **never generates
+`U??`**) · 465/466/467 **keep E1051**, not hijacked by E1055 · 468 positive control.
 
-**Ranh giới E-code:** `E1051` = `get`/`get_ref` (không đụng) · **`E1055`
-`NestedNullableUnsupported`** = nested `T??` mọi vị trí khác.
+**E-code boundary:** `E1051` = `get`/`get_ref` (untouched) · **`E1055`
+`NestedNullableUnsupported`** = nested `T??` at every other position.
 
-## 🩸 Vết O
+## 🩸 O's blemish
 
-Sót **hạng mục ④ Documentation Integrity** của G khi soạn WO (không giao D) → O tự
-thi hành docs, không gọi D lại. Bài học: WO phải soát ngược từng điều kiện G ban ra,
-không soạn từ trí nhớ.
+Missed **item ④ Documentation Integrity** from G when drafting the WO (not handed to D)
+→ O carried out the docs himself instead of calling D back. Lesson: a WO must be checked
+back against every condition G issued, not drafted from memory.
 
-## ⏸️ LANE B — HOÃN VÔ THỜI HẠN
+## ⏸️ LANE B — DEFERRED INDEFINITELY
 
-Thiết kế `T??` thật = repr 3-trạng-thái (sentinel `i64::MIN` hiện chỉ có **1 bit
-null**, không đủ chỗ cho 2 tầng độc lập) + ABI + match ergonomics + parser `??~`.
-G chốt: chưa có use-case đòi phân biệt *"key không tồn tại"* vs *"giá trị lưu là
-null"* thì là **xây cầu khi chưa có sông**. Workaround: sentinel value / wrapper
-Struct có cờ `present`. **9 răng cưa 511-519 sẽ nổ đỏ nếu Lane B mở allow-list mà
-chưa làm đủ — đó chính là mục đích chúng tồn tại.**
+A real `T??` design = a 3-state repr (the `i64::MIN` sentinel currently has only **1
+null bit**, not enough room for 2 independent layers) + ABI + match ergonomics + parser
+`??~`. G's ruling: without a use-case demanding a distinction between *"key doesn't
+exist"* vs *"the stored value is null"*, this is **building a bridge before there's a
+river**. Workaround: sentinel value / a wrapper Struct with a `present` flag. **The 9
+teeth 511-519 will blow up red if Lane B opens the allow-list without doing enough — that
+is exactly why they exist.**
 
-## §AMEND-1 §88A.4 — đính chính thân bài ADR-0088
+## §AMEND-1 §88A.4 — correction to the body of ADR-0088
 
-Câu *"Guard KHÔNG chặn `contains`"* mô tả **hành vi không tồn tại**. Đo thật:
-`contains(m,1)` với `V=Integer?` → **E1041 NoMatchingOverload** (overload table không
-khai `V` generic) — không phải được cho qua. Ai tưởng `contains` là workaround hợp lệ
-cho `HashMap<K,V?>` sẽ trượt. **Nhãn tài liệu sai, không phải lỗ.**
+The sentence *"The guard does NOT block `contains`"* describes **behavior that does
+not exist**. Actually measured: `contains(m,1)` with `V=Integer?` → **E1041
+NoMatchingOverload** (the overload table doesn't declare a generic `V`) — it is not let
+through. Anyone who thinks `contains` is a valid workaround for `HashMap<K,V?>` will slip.
+**A wrong documentation label, not a hole.**
 
 [[campaign_typed_collections]] [[campaign_forgot_nullable_sweep]] [[mentor_o_persona]] [[colleague_d_persona]] [[feedback_poison_must_be_red]]

@@ -1,373 +1,373 @@
 ---
 name: campaign_typed_collections
-description: "✅ Typed Vector/HashMap P1 (ADR-0077/0078) + Get-Borrow (ADR-0079) + key-typed HashMap<String,V> (ADR-0080) + Read-side Cụm A + CỤM B push+drop Slice A/B/C (Vector<Struct/Enum>, HashMap value) + VALUE MOVE-OUT D-1/D-2 (Vector pop, HashMap remove by-value, ADR-0082 §AMEND-2) + Vector::pop_front + KEY-AGGREGATE Slice 1 struct-key + Slice 2 enum-key (ADR-0083) + GET-BY-VALUE Copy-aggregate (ADR-0082 §AMEND-3, is_copy_aggregate↔MirType::is_copy, E1049 refuse heap-bearing, non-destructive copy-out) — KHÓA SỔ 2026-07-15 `12adc0b`. Full detail, MEMORY.md index only links here."
+description: "✅ Typed Vector/HashMap P1 (ADR-0077/0078) + Get-Borrow (ADR-0079) + key-typed HashMap<String,V> (ADR-0080) + Read-side Cluster A + CLUSTER B push+drop Slice A/B/C (Vector<Struct/Enum>, HashMap value) + VALUE MOVE-OUT D-1/D-2 (Vector pop, HashMap remove by-value, ADR-0082 §AMEND-2) + Vector::pop_front + KEY-AGGREGATE Slice 1 struct-key + Slice 2 enum-key (ADR-0083) + GET-BY-VALUE Copy-aggregate (ADR-0082 §AMEND-3, is_copy_aggregate↔MirType::is_copy, E1049 refuse heap-bearing, non-destructive copy-out) — BOOKS CLOSED 2026-07-15 `12adc0b`. Full detail, MEMORY.md index only links here."
 metadata: 
   node_type: memory
   type: project
   originSessionId: ac639140-8210-42c9-941b-8cfd203d270e
 ---
 
-## ✅ ĐÓNG — ADR-0079 §AMEND GET_REF SLICE 2: `get(&0 c,k)` → `(&0 Agg)?` (O+G ký 2026-07-17, PUSHED)
-origin/main = `8981135` (1 commit), gate `0·0·385·0`. **Trận cuối quét E1041/E1049 — KHÔNG ADR mới** (§AMEND ADR-0079, compose ADR-0084). `get(&0 Vector<Agg>,i)` / `get(&0 HashMap<scalarK,Agg>,k)` → `(&0 Agg)?` **zero-copy**, heap-bearing **ĐƯỢC PHÉP** (bia mộ E1049: `Vector<Tagged{String}>`→`&0 Tagged`→`.name` chạy). Fixtures 388-391 + `get_ref_aggregate_counting.rs`. **Model D = Sonnet 5.**
+## ✅ CLOSED — ADR-0079 §AMEND GET_REF SLICE 2: `get(&0 c,k)` → `(&0 Agg)?` (O+G signed off 2026-07-17, PUSHED)
+origin/main = `8981135` (1 commit), gate `0·0·385·0`. **Final sweep of E1041/E1049 — NO new ADR** (§AMEND ADR-0079, composes with ADR-0084). `get(&0 Vector<Agg>,i)` / `get(&0 HashMap<scalarK,Agg>,k)` → `(&0 Agg)?` **zero-copy**, heap-bearing **ALLOWED** (E1049's tombstone: `Vector<Tagged{String}>`→`&0 Tagged`→`.name` runs). Fixtures 388-391 + `get_ref_aggregate_counting.rs`. **Model D = Sonnet 5.**
 
-**🩸 RECON O LẬT KHUNG BÀN GIAO — "hạ tầng sẵn, chỉ bóp cò" là SAI.** Sổ 2026-07-16 ghi tầng 2 = "verify JIT route". Đo thật ra **2 MÌN**:
-- **MÌN 1 — lowerer ÉP mọi aggregate về `_get_copy` bất kể `&0`** (`triet-lower/src/lib.rs:2501` test `is_aggregate_elem` TRƯỚC `is_borrow`; comment tại chỗ tự thú *"routed identically either way"*). Chỉ mở typecheck = typecheck hứa borrow, lowerer giao copy → `returns_borrow_of:None` → **0 loan** = đúng nỗi lo G. Fix: `is_aggregate_elem && is_borrow` → shim riêng.
-- **MÌN 2 — 8B-aggregate deref-thin, LẦN THỨ BA của lớp lỗi** (sau Slice A T9, §AMEND-3 T9-masking). `_get_ref` deref khi `stride≤8` (ĐÚNG cho V=container: handle *là* body_ptr) nhưng `&0 Struct` từ local = **stack_addr** (`mir_lower.rs:3154`, Blocker-B Slice 1a) — địa chỉ bất kể size. `Id{value:Integer}` 8B → trả `42` thay con trỏ → field-read deref 42. **O poison → signal 11 SIGSEGV.**
-- **Tầng 3 NHẸ hơn sổ:** `returns_borrow_of:Some(0)` đã có sẵn, keyed theo TÊN SHIM → route đúng = loan tự có. **Borrowck 0 dòng code.**
+**🩸 O'S RECON FLIPS THE HANDOFF FRAME — "infrastructure ready, just pull the trigger" was WRONG.** The 2026-07-16 log recorded tier 2 as "verify JIT route". Actual measurement turned up **2 MINES**:
+- **MINE 1 — the lowerer FORCES every aggregate to `_get_copy` regardless of `&0`** (`triet-lower/src/lib.rs:2501` tests `is_aggregate_elem` BEFORE `is_borrow`; the comment right there confesses *"routed identically either way"*). Opening only the typecheck = typecheck promises a borrow, the lowerer delivers a copy → `returns_borrow_of:None` → **0 loans** = exactly G's fear. Fix: `is_aggregate_elem && is_borrow` → dedicated shim.
+- **MINE 2 — 8B-aggregate deref-thin, the THIRD occurrence of this bug class** (after Slice A T9, §AMEND-3 T9-masking). `_get_ref` derefs when `stride≤8` (CORRECT for V=container: the handle *is* the body_ptr) but `&0 Struct` from a local = **stack_addr** (`mir_lower.rs:3154`, Blocker-B Slice 1a) — an address regardless of size. `Id{value:Integer}` 8B → returns `42` instead of a pointer → field-read derefs 42. **O's poison → signal 11 SIGSEGV.**
+- **Tier 3 was LIGHTER than the log claimed:** `returns_borrow_of:Some(0)` already existed, keyed by SHIM NAME → correct routing = the loan comes for free. **Borrowck: 0 lines of code.**
 
-**Cơ chế:** typecheck arm MỚI đặt TRƯỚC arm get-by-value, chỉ match `Reference(BorrowReadOnly,_)` → helper `get_ref_aggregate_return_type` (`check/exprs.rs:2345`), sibling `get_by_value_aggregate_element` (`:2374`) match `arg_tys[0]` TRỰC TIẾP → **mutually exclusive by construction** = ranh-giới-tử-thần is_ref/non-ref. **KHÔNG `is_copy_aggregate` ở arm get_ref** (heap-bearing là ca dùng CHÍNH). D chọn **tách 2 shim Rust mới** `__triet_{vector,hashmap}_get_ref_agg` (không deref, mọi stride) thay vì cờ runtime — G khen "tỉnh táo", cùng nước cờ `_get_copy` §AMEND-3: tách symbol = 0 chi phí, 0 rủi ro hồi quy 333/336/337 (sống nhờ deref-thin). Vết dọn kèm: **E1049 message trỏ `get_ref(container,k)` — API KHÔNG TỒN TẠI** (env.rs không declare) → dẫn user vào E1041; sửa → `get(&0 container, k)`.
+**Mechanism:** a NEW typecheck arm placed BEFORE the get-by-value arm, matching only `Reference(BorrowReadOnly,_)` → helper `get_ref_aggregate_return_type` (`check/exprs.rs:2345`), its sibling `get_by_value_aggregate_element` (`:2374`) matches `arg_tys[0]` DIRECTLY → **mutually exclusive by construction** = the is_ref/non-ref death-boundary. **NO `is_copy_aggregate` on the get_ref arm** (heap-bearing is the MAIN use case). D chose to **split off 2 new Rust shims** `__triet_{vector,hashmap}_get_ref_agg` (no deref, any stride) instead of a runtime flag — G praised it as "level-headed", the same move as `_get_copy` in §AMEND-3: splitting the symbol = 0 cost, 0 regression risk for 333/336/337 (which survive on deref-thin). Cleanup blemish that came with it: **the E1049 message pointed at `get_ref(container,k)` — an API THAT DOES NOT EXIST** (env.rs never declares it) → this led the user into E1041; fixed → `get(&0 container, k)`.
 
-**🩸 O TEETH (cargo test, cp-snapshot restore md5 khớp mọi vòng, 0 git-checkout):** MÌN-2 khôi phục deref-thin → 389 **SIGSEGV 11** · loan→None → 388 **mất E2440** ("succeeded with 42") · copy-lén (ép `_get_copy`) → 388 mất E2440 **+** 390 bị **F3 guard JIT** chặn (**F3 vốn latent từ §AMEND-3 nay CẮN THẬT**) · `aggregate_needs_drop(Struct)→false` → counting **left:0 right:1** cả Vector lẫn HashMap.
+**🩸 O's TEETH (cargo test, cp-snapshot restore md5 matched every round, 0 git-checkout):** restoring MINE-2's deref-thin → 389 **SIGSEGV 11** · loan→None → 388 **loses E2440** ("succeeded with 42") · sneaking a copy back in (forcing `_get_copy`) → 388 loses E2440 **+** 390 gets **blocked by the F3 JIT guard** (**F3, latent since §AMEND-3, now BITES FOR REAL**) · `aggregate_needs_drop(Struct)→false` → counting **left:0 right:1** for both Vector and HashMap.
 
-**⚖ O TỰ ĐÍNH CHÍNH — WO của O SAI failure-mode, D BÁC ĐÚNG (lần 2 sau §AMEND-3):** O viết teeth-1 "gỡ loan → **SIGSEGV lọt**". D báo thực = **lọt câm** (compile + 42, exit 0). O không nhận lý lẽ suông → probe độc lập + **ép thêm bằng realloc** (buffer cũ free THẬT) → vẫn 42/exit 0. **Cơ chế: `&0` reference KHÔNG có drop obligation → dangling READ, không double-free, không signal deterministic** = **(a) bất-khả-observable**, không phải (b) test-yếu. Loan = lá chắn **compile-time**, tooth đỏ đúng tầng đó. G: *"Chào mừng đến Systems Programming — reference &0 đéo có drop obligation"*, khen O dựng realloc = verify-don't-trust.
+**⚖ O CORRECTS HIMSELF — O's WO had the WRONG failure-mode, D's REFUTATION WAS RIGHT (2nd time after §AMEND-3):** O wrote teeth-1 as "removing the loan → **SIGSEGV leaks through**". D reported the real behavior = **a silent leak-through** (compiles + returns 42, exit 0). O did not accept a bare assertion → ran an independent probe + **pushed further with a realloc** (the old buffer genuinely freed) → still 42/exit 0. **Mechanism: an `&0` reference has NO drop obligation → a dangling READ, no double-free, no deterministic signal** = **(a) unobservable-in-principle**, not (b) a weak test. The loan is a **compile-time** shield; the tooth is red at exactly that tier. G: *"Welcome to Systems Programming — an &0 reference doesn't damn well have a drop obligation"*, and praised O for building the realloc as verify-don't-trust.
 
-**✅ D TỰ HẠ CLAIM CỦA CHÍNH MÌNH (ngược hẳn vết "bịa chứng phụ" Slice 2 enum-key):** counting tooth D định claim `==2 ⇒ double-free` → tự poison KÉP → count **VẪN 1** → đào MIR ra lý do (`length(t.name)` lower `move _15.name` → field MOVE khỏi bản copy → alias không bao giờ free lần 2, leak vào temp không drop) → **tự sửa xuống `==0 ⇒ leak`** + ghi "HONEST LIMIT" + **cấm người sau thêm claim `==2` mà không chứng minh**. G đánh giá "cực cao sự minh bạch".
+**✅ D LOWERS HIS OWN CLAIM (the exact opposite of the "fabricated secondary evidence" blemish in Slice 2 enum-key):** for the counting tooth D was about to claim `==2 ⇒ double-free` → self-poisoned it TWICE → count **STAYED AT 1** → dug into the MIR for the reason (`length(t.name)` lowers to `move _15.name` → the field is MOVED out of the copy → the alias is never freed a second time, it leaks into an undropped temp) → **revised the claim down to `==0 ⇒ leak`** + wrote "HONEST LIMIT" + **forbade whoever comes next from adding an `==2` claim without proof**. G rated this "extremely high transparency".
 
-**🚩 Nợ mới — `&0 Enum` SURFACE CHẾT (D tự khai, O probe xác nhận):** typecheck arm nhận `UserEnum` nhưng 0 fixture; O probe → payload-bind = typecheck refuse (`undefined name s`), disc-match = **lowerer refuse `LowerError` KHÔNG panic** (Track B rule 1 giữ). Refuse-guarded cả 2 tầng, **không crash** → G: "đóng gói ném sổ nợ, không cản release". Arm hứa `(&0 UserEnum)?` mà chưa có đường tiêu thụ.
+**🚩 New debt — the `&0 Enum` SURFACE IS DEAD (D self-disclosed, O's probe confirmed):** the typecheck arm accepts `UserEnum` but has 0 fixtures; O's probe → payload-bind = typecheck refuse (`undefined name s`), discriminant-match = **lowerer refuse, a `LowerError`, NOT a panic** (Track B rule 1 holds). Refuse-guarded at both tiers, **no crash** → G: "package it up, log the debt, don't block the release". The arm promises `(&0 UserEnum)?` but there is still no consumption path.
 
-**⚠️ Vết vận hành D:** vòng đầu chỉ đăng ký shim ở `main.rs`, **quên registry RIÊNG trong `integration_tests.rs`** → 4 fixture xanh qua binary tay nhưng harness gate "shim not registered" — D tự tìm/tự khai (**bài học: chạy ĐÚNG harness của gate, đừng tin binary tay**). Clippy base 0 → D đẻ 4, **tất cả code D** (không claim pre-existing), sửa THẬT bằng tách helper, **0 `#[allow]`**, re-verify teeth 2 sau refactor.
+**⚠️ D's operational blemish:** the first round only registered the shim in `main.rs`, **forgetting the SEPARATE registry in `integration_tests.rs`** → 4 fixtures went green by hand-run binary but the gate harness said "shim not registered" — D found it and disclosed it himself (**lesson: run the CORRECT gate harness, don't trust a hand-run binary**). Clippy baseline was 0 → D introduced 4, **all of them D's own code** (no claiming pre-existing), fixed for real by extracting a helper, **0 `#[allow]`**, re-verified the 2 teeth after the refactor.
 
-**Bài học Slice 2:** ① **recon-trước-khi-gõ cứu slice** — bàn giao "chỉ bóp cò" giấu 2 mìn; verify-before-WO là luật (lần 2 sau D1 phiên trước). ② **8B-aggregate masking = mẫu lặp lần 3** — luôn probe `total_size==8` khi mở đường aggregate mới. ③ **failure-mode của `&0` dangling = READ câm, KHÔNG signal** — đừng viết WO đòi SIGSEGV cho use-after-free của reference không drop-obligation. ④ tách symbol > cờ runtime khi phân luồng JIT. [[feedback_poison_must_be_red]] [[feedback_failure_mode_precision]] [[colleague_d_persona]] [[mentor_o_persona]]
+**Slice 2 lessons:** ① **recon-before-coding saved this slice** — the "just pull the trigger" handoff was hiding 2 mines; verify-before-WO is now the rule (2nd time, after D1 in the previous session). ② **8B-aggregate masking = the 3rd repeat of this pattern** — always probe `total_size==8` whenever opening a new aggregate path. ③ **the failure-mode of a dangling `&0` = a silent READ, NOT a signal** — don't write a WO demanding SIGSEGV for use-after-free of a reference with no drop-obligation. ④ splitting the symbol beats a runtime flag when branching JIT routing. [[feedback_poison_must_be_red]] [[feedback_failure_mode_precision]] [[colleague_d_persona]] [[mentor_o_persona]]
 
-## ✅ ĐÓNG — ADR-0082 §AMEND-3 GET-BY-VALUE Copy-aggregate (O+G ký 2026-07-15, PUSHED)
-origin/main = `12adc0b` (feat `28f7c6f` + docs `12adc0b`), gate `0·0·361·0`. **§AMEND-3** (O đề, G/Giang rule scope, G co-sign). `get(container, k)` trả **by-value** aggregate **thuần Copy** (Struct/Enum không heap leaf) từ `Vector<Agg>` + `HashMap<scalar-K, Agg>` — **non-destructive** (element ở lại container, KHÔNG tombstone/free, bitwise-copy độc lập). Heap-bearing aggregate → **REFUSE E1049** (mã mới, trỏ `get_ref`). aggregate-key×aggregate-value → defer. **Model D = Sonnet 5.**
+## ✅ CLOSED — ADR-0082 §AMEND-3 GET-BY-VALUE Copy-aggregate (O+G signed off 2026-07-15, PUSHED)
+origin/main = `12adc0b` (feat `28f7c6f` + docs `12adc0b`), gate `0·0·361·0`. **§AMEND-3** (proposed by O, scope ruled by G/Giang, co-signed by G). `get(container, k)` returns an aggregate **by-value**, **pure Copy only** (Struct/Enum with no heap leaf) from `Vector<Agg>` + `HashMap<scalar-K, Agg>` — **non-destructive** (the element stays in the container, NO tombstone/free, an independent bitwise copy). Heap-bearing aggregate → **REFUSE E1049** (new code, points at `get_ref`). aggregate-key × aggregate-value → deferred. **Model D = Sonnet 5.**
 
-**Cơ chế (§A):** ranh giới Copy-vs-Clone LÀ ranh giới soundness (O đặt điều kiện-chặn): Copy aggregate (không heap leaf) → bản copy bit-identical KHÔNG chia sẻ heap → drop độc lập, KHÔNG double-free; heap-bearing → bitwise copy alias con trỏ → hai chủ → double-free → REFUSE, deep-Clone tách campaign-nền riêng. **Predicate `Type::is_copy_aggregate` (types.rs:227) mirror `MirType::is_copy` (mir:694, single-source-of-truth) — KHÔNG `!aggregate_needs_drop`** (over-approx enum-field via `collect_heap_leaves` đẩy mọi Enum field làm leaf vô điều kiện). Shim mới `__triet_{vector,hashmap}_get_copy` (`returns_borrow_of:None`) tách khỏi get_ref → borrowck KHÔNG synth PropagatedLoan (§AMEND-3.5); reuse thân get_ref dưới symbol thứ 2. JIT copy-out: thin (stride≤8) ghi thẳng deref'd return (get_ref thin trả VALUE không pointer), fat (>8) load-loop; shared defensive `!is_copy` guard (Rule#7, latent — chỉ nổ nếu typecheck regress).
+**Mechanism (§A):** the Copy-vs-Clone boundary IS the soundness boundary (O set this as the blocking condition): a Copy aggregate (no heap leaf) → the copy is bit-identical and shares NO heap → independent drop, NO double-free; heap-bearing → a bitwise copy aliases the pointer → two owners → double-free → REFUSE, deep-Clone is split off into its own separate future campaign. **Predicate `Type::is_copy_aggregate` (types.rs:227) mirrors `MirType::is_copy` (mir:694, single-source-of-truth) — NOT `!aggregate_needs_drop`** (which over-approximates enum-fields via `collect_heap_leaves`, which unconditionally forces every Enum field to be a leaf). New shim `__triet_{vector,hashmap}_get_copy` (`returns_borrow_of:None`) split off from get_ref → borrowck does NOT synthesize a PropagatedLoan (§AMEND-3.5); reuses the get_ref body under a second symbol. JIT copy-out: thin (stride≤8) writes the deref'd return directly (get_ref thin returns a VALUE, not a pointer), fat (>8) uses a load-loop; a shared defensive `!is_copy` guard (Rule#7, latent — only fires if typecheck regresses).
 
-**🩸 O VERIFY MÁU (cp-snapshot restore md5 `a753366b`):**
-- **Răng producer-consumer (load-bearing):** poison `is_copy_aggregate` heap→Copy → `Vector<Tagged{String}>` get → **double-free 134** (MIR phơi container `Drop(_2)` + copied-out `Drop(_12)` cùng free String). Typecheck E1049 gate = an-toàn DUY NHẤT cho Vector (JIT guard latent). Restore md5 khớp.
-- **🎯 8B-heap-struct T9-masking (Slice A leak-câm) — D KHÔNG test, O BẮT:** `Wrapper{v:Vector<Integer>}` (total_size=8, single handle → thin-path, thiếu refuse = leak/double-free CÂM không signal) → O probe sống → **E1049 refuse đúng**. Thêm fixture 367 canh vĩnh viễn, non-vacuous (`Id{value:Integer}` 366 cũng 8B nhưng Copy → compile OK).
-- Positive 361/362/363/366 + counting FREE-count route-lower (`lower_source`) xanh. E1049 harness assert code-string (`e.contains("E1049")`).
+**🩸 O's BLOOD VERIFICATION (cp-snapshot restore md5 `a753366b`):**
+- **Producer-consumer tooth (load-bearing):** poisoning `is_copy_aggregate` heap→Copy → `Vector<Tagged{String}>` get → **double-free 134** (the MIR exposes the container's `Drop(_2)` + the copied-out `Drop(_12)` both freeing the same String). The typecheck E1049 gate is the ONLY safety net for Vector (the JIT guard is latent). Restore md5 matched.
+- **🎯 8B-heap-struct T9-masking (Slice A silent-leak) — D did NOT test it, O CAUGHT it:** `Wrapper{v:Vector<Integer>}` (total_size=8, single handle → thin-path, missing refuse = a silent leak/double-free with no signal) → O's live probe → **E1049 refuses correctly**. Added fixture 367 to guard this permanently, non-vacuous (`Id{value:Integer}` 366 is also 8B but Copy → compiles OK).
+- Positives 361/362/363/366 + counting FREE-count route-lower (`lower_source`) green. E1049 harness asserts the code-string (`e.contains("E1049")`).
 
-**⚖ D LỆCH LỆNH ĐÚNG (LUẬT 5) — D đúng O sai:** D bác giả định WO gốc của O `is_copy_aggregate ≡ !aggregate_needs_drop`, chỉ ra over-approx enum-field, chọn `MirType::is_copy`. G khen "soundness chuẩn xác". **O tự đính chính §AMEND-3.2.** Nước cờ tách shim `_get_copy` chặt đường sinh loan = G khen "kiến trúc sắc sảo". D tự bắt+vá SIGSEGV thin-return-deref (363) khai thật; F3 gom guard đối xứng 1 chỗ.
+**⚖ D DEVIATED FROM ORDERS CORRECTLY (RULE 5) — D was right, O was wrong:** D refuted O's original WO assumption `is_copy_aggregate ≡ !aggregate_needs_drop`, pointed out the enum-field over-approximation, and chose `MirType::is_copy` instead. G praised this as "soundness-precise". **O corrected himself in §AMEND-3.2.** The move of splitting off the `_get_copy` shim cuts off the path that would generate a loan = G praised it as "sharp architecture". D caught and fixed the thin-return-deref SIGSEGV (363) himself, disclosed honestly; F3 consolidates the symmetric guard in one place.
 
-**⚠️ VẾT D (Sonnet 5):** ① thiếu fixture 8B-masking (O bù F2) · ② comment JIT bịa ví dụ `Wrapper{v:Vector<String>}` cho thin-path (case đó bị E1049 refuse, không reachable — mẫu "bịa chứng phụ trong doc" Slice 2; O bắt F1) · ③ claim "fmt ran" nhưng edits cuối chưa fmt (LUẬT 2 slip — pre-commit hook `cargo fmt --check` bắt, O fmt lại). Kết luận + implementation lõi đúng; O verify bù 3 vết.
+**⚠️ D's BLEMISHES (Sonnet 5):** ① missing the 8B-masking fixture (O filled the gap, F2) · ② a JIT comment fabricated the example `Wrapper{v:Vector<String>}` for the thin-path (that case is refused by E1049, unreachable — the same "fabricated secondary evidence in a doc" pattern as Slice 2; O caught it, F1) · ③ claimed "fmt ran" but the last edits weren't formatted (a RULE 2 slip — the pre-commit hook `cargo fmt --check` caught it, O ran fmt again). The conclusion + core implementation were correct; O's verification made up for 3 blemishes.
 
-**Bài học §AMEND-3:** ① Copy-vs-Clone = ranh giới soundness, thu hẹp Copy-only né deep-Clone/ADR-0042 (khuôn pop_front/Slice A). ② producer-consumer 2 crate (typecheck `Type` ↔ mir `MirType`) verify TRỰC TIẾP cả hai, không tin tên hàm — poison chứng minh gate load-bearing. ③ 8B-heap masking (thin-path, total_size=8 ôm handle) = mẫu leak-câm lặp lại từ Slice A — luôn probe case này khi mở by-value aggregate. ④ pre-commit fmt-hook là lưới cuối bắt LUẬT 2 slip của D. **🔴 Deep-Clone heap-bearing = campaign LỚN riêng** (ADR `.clone()` + carve-out ADR-0042 + codegen clone đệ quy). [[feedback_poison_must_be_red]] [[feedback_verify_producer_before_consumer]] [[colleague_d_persona]]
+**§AMEND-3 lessons:** ① Copy-vs-Clone = the soundness boundary; narrowing to Copy-only dodges deep-Clone/ADR-0042 (the same mold as pop_front/Slice A). ② for a 2-crate producer-consumer (typecheck `Type` ↔ mir `MirType`) verify BOTH directly, don't trust function names — poisoning proves the gate is load-bearing. ③ 8B-heap masking (thin-path, total_size=8 wrapping a handle) = the silent-leak pattern repeating from Slice A — always probe this case whenever opening a by-value aggregate path. ④ the pre-commit fmt-hook is the last net that catches D's RULE 2 slips. **🔴 NEW DEBT: deep-Clone for heap-bearing = its own LARGE separate campaign** (ADR for `.clone()` + a carve-out from ADR-0042 + recursive clone codegen). [[feedback_poison_must_be_red]] [[feedback_verify_producer_before_consumer]] [[colleague_d_persona]]
 
-## ✅ ĐÓNG — ADR-0083 §AMEND-1 KEY-AGGREGATE Slice 2 (Enum keys, O+G ký 2026-07-13, PUSHED)
-origin/main = `91c273a`, gate `0·0·354·0`. §AMEND-1 (G ký cuối ADR-0083). `HashMap<Enum,V>` enum-key (payload **unit/scalar/String** + enum-as-struct-leaf) sound: insert/get/get_ref/contains/remove/drop. **KHÔNG ADR mới** (Slice 2 đã scope-defer trong ADR gốc). **Model D = Sonnet 5** (Giang chọn thử tiered; O verify máu bù).
+## ✅ CLOSED — ADR-0083 §AMEND-1 KEY-AGGREGATE Slice 2 (Enum keys, O+G signed off 2026-07-13, PUSHED)
+origin/main = `91c273a`, gate `0·0·354·0`. §AMEND-1 (final sign-off from G on ADR-0083). `HashMap<Enum,V>` enum-key (payload **unit/scalar/String** + enum-as-struct-leaf) sound: insert/get/get_ref/contains/remove/drop. **NO new ADR** (Slice 2 was already scope-deferred in the original ADR). **Model D = Sonnet 5** (Giang chose to try the tiered approach; O's blood-verification made up the difference).
 
-**Cơ chế (§A):** ABI KHÔNG đổi (fnptr-in-header + §6 dispatch + collision-shield = Slice 1 verbatim). Walker model **flat `KeyLeaf` → recursive emission** `emit_key_hash_value`(mir_lower:558)/`emit_key_eq_value`(:680): enum arm = **disc-mix vào FNV + `brif`-chain over ACTIVE variant only** (mirror `emit_enum_drop_glue_at:1886`), eq = disc-short-circuit-NE + per-active-variant leaf compare. **CHỈ đọc disc@0 + active-variant declared leaves @+8, KHÔNG BAO GIỜ raw fixed-width image** = thuốc giải garbage/padding/size-mismatch G lo. Key free-loop **REUSE THẲNG `emit_enum_drop_glue_at`** (G gật 100%). `enum_payload_variants:802` choke. Typecheck `is_hashable_key/leaf/enum_payload` (types.rs). Overload `exprs.rs:1196` thêm UserEnum. `key_marshal` fallback `enum_slots`.
+**Mechanism (§A):** the ABI DOES NOT change (fnptr-in-header + §6 dispatch + collision-shield = Slice 1 verbatim). The walker model is a **flat `KeyLeaf` → recursive emission** `emit_key_hash_value`(mir_lower:558)/`emit_key_eq_value`(:680): the enum arm = **mixing the discriminant into the FNV + a `brif`-chain over the ACTIVE variant only** (mirroring `emit_enum_drop_glue_at:1886`), eq = discriminant short-circuit-NE + per-active-variant leaf compare. **It reads ONLY disc@0 + the active variant's declared leaves @+8, NEVER the raw fixed-width image** = the antidote to the garbage/padding/size-mismatch G was worried about. The key free-loop **DIRECTLY REUSES `emit_enum_drop_glue_at`** (G nodded along 100%). `enum_payload_variants:802` is the choke point. Typecheck `is_hashable_key/leaf/enum_payload` (types.rs). Overload `exprs.rs:1196` adds UserEnum. `key_marshal` falls back to `enum_slots`.
 
-**🩸 O VERIFY MÁU (cp-snapshot restore md5 `80fd7ce7`):**
-- **DP-E2 reassign-garbage (G MANDATE, G tự hào):** poison tail-read @off+16 → 358 **MISS -1** (healthy 42) → **NON-VACUOUS** — tail rác sau `let mutable k=Big(String); k=Small(1)` THẬT SỰ tồn tại (@16..32 = stale {len,cap} của Big), walker active-leaves-only né đúng. (354 collateral -993 = poison active; 355 String-payload giữ 42 content-deterministic.)
-- **DP-E6 §6-reverse** (đảo fnptr↔stride `hashmap_key_hash:5658`) → 354 enum-key **crash 134** → shield gánh cả key-class enum mới (chỉ nổ khi poison, không lãng xẹt).
-- Baseline walker JIT THẬT: 354=42007·355=42·356=42007(enum-as-struct-leaf)·357=42007(unit)·358=42. Struct Slice-1 **KHÔNG hồi quy** 352=42007/353=42 (dù walker viết lại flat→emission).
+**🩸 O's BLOOD VERIFICATION (cp-snapshot restore md5 `80fd7ce7`):**
+- **DP-E2 reassign-garbage (G's MANDATE, G was proud of this one):** poisoning the tail-read @off+16 → 358 **MISS -1** (healthy value is 42) → **NON-VACUOUS** — the tail garbage after `let mutable k=Big(String); k=Small(1)` REALLY DOES exist (@16..32 = the stale {len,cap} of Big), and the active-leaves-only walker correctly avoids it. (354's collateral -993 = poison is active; 355's String-payload stays at content-deterministic 42.)
+- **DP-E6 §6-reverse** (swapping fnptr↔stride at `hashmap_key_hash:5658`) → 354 enum-key **crash 134** → the shield now also carries the new enum key-class (only fires under poison, not a dud).
+- Baseline walker, real JIT: 354=42007·355=42·356=42007 (enum-as-struct-leaf)·357=42007(unit)·358=42. Struct Slice-1 **shows NO regression** 352=42007/353=42 (even though the walker was rewritten flat→emission).
 
-**⚖ DESCOPE — G RÚT LỆNH "nested-enum MỞ" (probe O quyết):** enum variant ôm **aggregate payload (Struct/Enum)** → **REFUSE E1048**. O **lift refuse + probe** `HashMap<Shape,_>` roundtrip (`Shape::Dot(Point)`) → **MISS -1** → chứng minh lowerer fix-8B enum-payload (fixup pass chỉ struct field, bỏ enum payload) → aggregate >8B truncate on marshal → **silent MISS thật**. D descope = refuse-over-guess ĐÚNG, G khen "cứu rỗi bộ nhớ". **🔴 NỢ MỚI G MỞ: "Enum-Payload-Aggregate Sizing Fix"** (`triet-lower/src/lib.rs`) — đóng thì mở khóa nested-enum/enum-struct-payload key.
+**⚖ DESCOPE — G RETRACTS the order to "open nested-enum" (O's probe decided it):** an enum variant holding an **aggregate payload (Struct/Enum)** → **REFUSE E1048**. O **lifted the refuse + probed** `HashMap<Shape,_>` roundtrip (`Shape::Dot(Point)`) → **MISS -1** → proved the lowerer's fix-8B enum-payload handling (the fixup pass only covers struct fields, skips enum payload) → aggregate >8B gets truncated on marshal → **a genuine silent MISS**. D's descope = refuse-over-guess DONE RIGHT, G praised it as "saving us from a memory disaster". **🔴 NEW DEBT G OPENED: "Enum-Payload-Aggregate Sizing Fix"** (`triet-lower/src/lib.rs`) — closing it would unlock nested-enum/enum-struct-payload keys.
 
-**⚠️ D BỊA CHỨNG PHỤ (mẫu #9, dù kết luận đúng):** report + doc-comment types.rs ghi *"enum-in-enum fails MIR verifier even in plain match"* — **O P1 probe bác** (`enum Inner/Outer` plain match chạy=7). G: "khóa feature CHỈ được vì sự thật compiler, KHÔNG bịa; đưa rác vào doc = phá hoại di sản". Sửa doc: giữ sự thật (truncate→MISS, neo O-probe -1), xóa claim MIR-verifier. **O tự sửa doc-fix cuối** (Sonnet-D quota-cut giữa chừng nhiều lần; doc = documentation của finding O verify, không phải feature-code D).
+**⚠️ D FABRICATED SECONDARY EVIDENCE (pattern #9, even though the conclusion was correct):** the report + a doc-comment in types.rs stated *"enum-in-enum fails MIR verifier even in plain match"* — **O's P1 probe refuted it** (`enum Inner/Outer` plain match runs = 7). G: "a feature gets locked down ONLY because of compiler truth, NOT fabrication; putting garbage in the docs vandalizes the legacy". Doc fixed: kept the truth (truncate→MISS, anchored to O's probe of -1), removed the MIR-verifier claim. **O made the final doc-fix himself** (Sonnet-D's quota kept getting cut mid-task multiple times; the doc documents O's verified finding, not D's feature code).
 
-**Bài học Slice 2:** ① disc-switch-walker mirror drop-glue = tổng quát hóa sạch (active-leaves-only né garbage — DP-E2 chứng minh cả padding rác THẬT lẫn walker né ĐÚNG). ② refuse-over-guess thắng cả G-ruling khi probe lộ pre-existing rot (lowerer enum-payload-sizing). ③ verify claim-phụ của D độc lập — kết luận đúng KHÔNG miễn trừ chứng cứ bịa. ④ Sonnet đủ sức phần lõi disc-switch nhưng vết = 1 doc bịa + nhiều quota-cut. [[feedback_poison_must_be_red]] [[feedback_failure_mode_precision]] [[colleague_d_persona]]
+**Slice 2 lessons:** ① the disc-switch-walker mirroring drop-glue = a clean generalization (active-leaves-only avoids garbage — DP-E2 proved both that the padding garbage is REAL and that the walker CORRECTLY avoids it). ② refuse-over-guess beats even a G-ruling when a probe exposes pre-existing rot (the lowerer's enum-payload-sizing). ③ verify D's secondary claims independently — a correct conclusion does NOT exempt fabricated evidence. ④ Sonnet was capable enough for the disc-switch core, but the blemish = 1 fabricated doc + repeated quota-cuts. [[feedback_poison_must_be_red]] [[feedback_failure_mode_precision]] [[colleague_d_persona]]
 
-## ✅ ĐÓNG — ADR-0083 KEY-AGGREGATE HashMap Slice 1 (Struct keys, O+G ký 2026-07-13, PUSHED)
-origin/main = `1c08a67` (feat `0ebd763`+`1c08a67`; TODO-freeze `10c4ed1`), gate `0·0·347·0`. **ADR-0083 MỚI** (G ký). `HashMap<Struct,V>` — struct làm KEY (leaves scalar/String/nested-struct) sound end-to-end: insert/get/get_ref/contains/remove/drop.
+## ✅ CLOSED — ADR-0083 KEY-AGGREGATE HashMap Slice 1 (Struct keys, O+G signed off 2026-07-13, PUSHED)
+origin/main = `1c08a67` (feat `0ebd763`+`1c08a67`; TODO-freeze `10c4ed1`), gate `0·0·347·0`. **NEW ADR-0083** (signed off by G). `HashMap<Struct,V>` — struct as KEY (leaves scalar/String/nested-struct) sound end-to-end: insert/get/get_ref/contains/remove/drop.
 
-**Semantics (§1 — de-risk lớn nhất, O recon mở đường):** key-eq/hash = **structural content/bit-equality đệ quy trên physical layout, KHÔNG dính operator `==`/Ł3** (tiền lệ ADR-0080 `Ord≠Hash`). → key-aggregate KHÔNG mở lại đầm lầy Trilean. Đây là điều kiện-chặn O tự đặt khi đề xuất mặt trận, recon phơi bằng chứng thỏa → G duyệt đi tiếp.
+**Semantics (§1 — the biggest de-risking, O's recon opened the way):** key-eq/hash = **recursive structural content/bit-equality on the physical layout, with NO connection to the `==`/Ł3 operator** (precedent: ADR-0080's `Ord≠Hash`). → key-aggregate does NOT reopen the Trilean swamp. This was the blocking condition O set for himself when proposing this front; the recon exposed satisfying evidence → G approved moving forward.
 
-**ABI G-MANDATE (§2/§6 — G BÁC thiết kế stride-branch ĐẦU của O):** header cố định 24B `[refcount@0][packed@4][hash_fn@8][eq_fn@16]` + fnptr-in-header null-sentinel (Integer/String→NULL, Struct→`func_addr` walker). **§6 dispatch fnptr-TRƯỚC-stride = lá chắn SIZE-COLLISION-TRAP:** `struct{3×Integer}`=24B TRÙNG String `key_stride`=24; disambiguate bằng stride → đọc struct thành FatStr `{ptr,len}` → deref rác → SIGSEGV. **`hash_fn!=NULL` LÀ discriminator, KHÔNG phải stride.** fnptr calling-conv: `hash_fn(key_ptr)->i64` raw FNV (shim tự `%cap`), `eq_fn(a,b)->1/0`. Rehash chạy TRONG insert → fnptr phải cư trú header.
+**ABI G-MANDATE (§2/§6 — G REFUTED O's FIRST stride-branch design):** a fixed 24B header `[refcount@0][packed@4][hash_fn@8][eq_fn@16]` + fnptr-in-header null-sentinel (Integer/String→NULL, Struct→`func_addr` walker). **§6 dispatch fnptr-BEFORE-stride = the shield against the SIZE-COLLISION-TRAP:** `struct{3×Integer}`=24B COLLIDES with String's `key_stride`=24; disambiguating by stride → reads the struct as a FatStr `{ptr,len}` → derefs garbage → SIGSEGV. **`hash_fn!=NULL` IS the discriminator, NOT the stride.** fnptr calling convention: `hash_fn(key_ptr)->i64` raw FNV (the shim does its own `%cap`), `eq_fn(a,b)->1/0`. Rehash runs INSIDE insert → the fnptr must live in the header.
 
-**JIT walkers (§3):** `build_key_hash_walker`/`build_key_eq_walker` (mir_lower:637/695) đệ quy `collect_key_leaves:554` — scalar→FNV-mix i64 · String→`__triet_string_hash(ptr,len)` · nested→đệ quy; eq short-circuit `brif`. Emit 1 FuncId/key-layout, địa chỉ qua `declare_func_in_func`+`func_addr` (**spike func_addr fail-fast TRƯỚC walker — G mandate**). Key free-loop đệ quy §4 (mirror `aggregate_needs_drop` Slice C). Typecheck `is_hashable_key`/`is_hashable_leaf` (types.rs:163/177) + E1048 (Enum-key/collection-leaf/Nullable-leaf/Outcome REFUSE).
+**JIT walkers (§3):** `build_key_hash_walker`/`build_key_eq_walker` (mir_lower:637/695) recurse via `collect_key_leaves:554` — scalar→FNV-mix i64 · String→`__triet_string_hash(ptr,len)` · nested→recursive; eq short-circuits via `brif`. Emits 1 FuncId per key-layout, its address obtained via `declare_func_in_func`+`func_addr` (**a fail-fast func_addr spike BEFORE the walker — G's mandate**). Key free-loop recurses per §4 (mirroring `aggregate_needs_drop` from Slice C). Typecheck `is_hashable_key`/`is_hashable_leaf` (types.rs:163/177) + E1048 (Enum-key/collection-leaf/Nullable-leaf/Outcome REFUSE).
 
-**⚙ Quy trình (D subagent Opus, NHIỀU lần bị quota/session-limit cắt giữa chừng):** O verify bàn giao → recon feasibility → **G ruling ABI (BÁC stride-branch, mandate fnptr-header + null-sentinel)** → O draft ADR-0083 → D subagent triển khai qua nhiều lần resume → O verify máu → 2 vòng D-fix → ký. Bài học vận hành: **verify-don't-trust áp cả EXECUTABLE — rebuild TRƯỚC mọi lần chạy binary; hai gate cargo song song tranh `target/`-lock → dọn process trước; `pkill -f` có thể tự giết shell (exit 144).**
+**⚙ Process (D subagent was Opus, cut mid-task by quota/session-limit MANY times):** O verified the handoff → recon feasibility → **G's ABI ruling (REFUTED the stride-branch, mandated fnptr-header + null-sentinel)** → O drafted ADR-0083 → the D subagent implemented across many resumes → O's blood-verification → 2 rounds of D-fixes → signed off. Operational lesson: **verify-don't-trust applies to the EXECUTABLE too — rebuild BEFORE every binary run; two parallel cargo gates fighting over the `target/` lock → clear processes first; `pkill -f` can kill your own shell (exit 144).**
 
-**🩸 O bắt 2 BLOCKER (gate xanh 347 nhưng green≠done — Track B rule 3):**
-- **Blocker A — lookup ops CHƯA WIRE source:** probe driver rebuild-sạch → `get`/`get_ref`/`contains` struct-key = **E1041** (danh sách overload KHÔNG có variant `HashMap<Struct,_>`; chỉ insert/remove reachable). "Compiles"-only + stand-in walker che lấp (không viết nổi roundtrip vì get chưa wire). D vá: wire overload `exprs.rs:1190` + 2 fixture roundtrip THẬT.
-- **Blocker B — walker correctness chỉ stand-in/compile-only:** code LÕI `build_key_*_walker` không test nào assert runtime (correctness dùng stand-in Rust `k3_int_hash`/`kstr_hash`; "compiles" không execute; drop-count dùng free-loop §4 KHÔNG chạm hash/eq §3). D thêm fixture 352 (int roundtrip→42007) + 353 (String-leaf content-collide→42) chạy walker JIT THẬT.
+**🩸 O caught 2 BLOCKERS (gate green at 347 but green≠done — Track B rule 3):**
+- **Blocker A — the lookup ops were NOT WIRED at the source:** a clean-rebuild probe of the driver → `get`/`get_ref`/`contains` on a struct-key = **E1041** (the overload list has NO `HashMap<Struct,_>` variant; only insert/remove were reachable). "Compiles"-only + a stand-in walker had been masking this (impossible to write a real roundtrip because get wasn't wired). D's fix: wired the overload at `exprs.rs:1190` + 2 real roundtrip fixtures.
+- **Blocker B — walker correctness was only stand-in/compile-only:** the CORE code `build_key_*_walker` had no test asserting runtime behavior (correctness used stand-in Rust `k3_int_hash`/`kstr_hash`; "compiles" doesn't execute; the drop-count used the §4 free-loop which does NOT touch hash/eq from §3). D added fixture 352 (int roundtrip→42007) + 353 (String-leaf content-collide→42) which actually run the real JIT walker.
 
-**⚔ MÂU THUẪN O bắt + giải bằng máu (★SS(c) [[feedback_poison_must_be_red]]):** comment fixture 353 claim "hash-poison ptr-mix → RED -1, load-bearing tooth" NHƯNG report D (d) nói "vacuous". O tự chạy ptr-mix → **353=42 DETERMINISTIC 5/5 (VACUOUS)** → D report ĐÚNG, fixture-comment SAI. **Cơ chế O chứng minh (toán+máu):** allocator căn-16 → hai String ptr chung low-4-bit → `hash mod cap` TRÙNG với mọi `cap≤16` → ptr-vs-content hash BẤT-PHÂN-BIỆT ở bucket. Răng thật của 353 = **eq-content** (eq→ptr-identity → 353=-1). D sửa comment (KHÔNG đụng logic). **Bài học vàng: hash-content KHÔNG tooth được bằng functional-roundtrip cap-nhỏ (alignment mask); cap-LỚN + assert-hash-TRỰC-TIẾP mới bắt — ADR-0080 tooth #5 `cap=1_000_003` là mẫu (D bắt qualify chuẩn; O tự đính chính note "hash vô-phương tooth" hơi quá).**
+**⚔ CONTRADICTION O caught + resolved with blood (★SS(c) [[feedback_poison_must_be_red]]):** the comment on fixture 353 claimed "hash-poison ptr-mix → RED -1, load-bearing tooth" BUT D's report (d) said "vacuous". O ran the ptr-mix himself → **353=42 DETERMINISTIC 5/5 (VACUOUS)** → D's report was RIGHT, the fixture-comment was WRONG. **The mechanism O proved (math + blood):** the allocator is 16-byte aligned → two String pointers share their low 4 bits → `hash mod cap` COLLIDES for every `cap≤16` → ptr-vs-content hash is INDISTINGUISHABLE at the bucket level. The real tooth of 353 = **eq-content** (eq→ptr-identity → 353=-1). D fixed the comment (did NOT touch the logic). **Golden lesson: hash-content CANNOT be tooth-tested with a small-cap functional roundtrip (alignment mask); only a LARGE cap + a DIRECT hash-assert catches it — ADR-0080's tooth #5 `cap=1_000_003` is the template (D's qualification-check was correct; O later corrected his own note that "hash is untestable" as somewhat overstated).**
 
-**🩸 O VERIFY MÁU (cp-snapshot restore md5 `0fd4b450` mọi vòng, KHÔNG git checkout):** §6-reverse → 352 **SIGSEGV 139** (collision-trap G đòi máu, load-bearing) · eq-content-String→ptr-identity → 353 **-1** RED (352 giữ 42007 cô lập) · baseline walker JIT THẬT 352=42007/353=42 (MIR dump = `__triet_hashmap_get(struct_key)`) · ptr-mix hash → 42 vacuous · **diff BASE-vs-committed = CHỈ 1 doc-comment → logic byte-identical, máu áp verbatim** (khỏi verify lại logic). Gate độc lập cuối `1c08a67`: 0·0·347·0.
+**🩸 O's BLOOD VERIFICATION (cp-snapshot restore md5 `0fd4b450` every round, NO git checkout):** §6-reverse → 352 **SIGSEGV 139** (the collision-trap G demanded blood-proof for, load-bearing) · eq-content-String→ptr-identity → 353 **-1** RED (352 stays isolated at 42007) · baseline real JIT walker 352=42007/353=42 (MIR dump = `__triet_hashmap_get(struct_key)`) · ptr-mix hash → 42 vacuous · **diff BASE-vs-committed = ONLY 1 doc-comment → logic is byte-identical, the blood-proof carries over verbatim** (no need to re-verify the logic). Final independent gate `1c08a67`: 0·0·347·0.
 
-**Công D:** report (d) TRUNG THỰC (tự khai ptr-mix vacuous, pivot eq-poison thay vì ngụy trang test mù — mẫu #14 xử ĐÚNG lần này); qualify tooth #5 cap-lớn chuẩn; nhiều lần quota-cut vẫn commit WIP không mất code. Defect duy nhất = comment dối (sửa 1 vòng, KHÔNG đụng logic).
+**Credit to D:** report (d) was HONEST (self-disclosed the ptr-mix as vacuous, pivoted to eq-poison instead of disguising a blind test — pattern #14, HANDLED CORRECTLY this time); qualified tooth #5's large-cap correctly; despite repeated quota-cuts, committed WIP without losing code. The only defect = the dishonest comment (fixed in 1 round, did NOT touch the logic).
 
-**Nợ Slice 2 defer (🚩 cắm cờ, campaign-nền riêng):** Enum-key (discriminant + padding-bits rác + variant-size — cô lập) · Nullable-leaf key · hash-caching · white-box walker-output hash tooth (cap-lớn direct-assert). **⚠️ BOM FIX-2 zero-@8 (Slice B) GIỮ NGUYÊN, chưa đụng.** ⚰️ ADR-0068 Box CẤM CỬA.
+**Slice 2 deferred debt (🚩 flagged, its own future campaign):** Enum-key (discriminant + garbage padding-bits + variant-size — isolate this) · Nullable-leaf key · hash-caching · white-box walker-output hash tooth (large-cap direct-assert). **⚠️ the FIX-2 zero-@8 BOMB (Slice B) REMAINS UNCHANGED, untouched.** ⚰️ ADR-0068 Box remains OFF-LIMITS.
 
-## ✅ ĐÓNG — `Vector::pop_front` (ADR-0082 B-α continuation, O+G ký 2026-07-12, PUSHED)
-origin/main = `5462c5b`, gate `0·0·345·0`. 1 commit gộp code+counting-tooth (G lệnh "test đi liền code"). Move-out phần tử **ĐẦU** by-value (`T?`), sibling của `pop` (back). **KHÔNG ADR mới.**
+## ✅ CLOSED — `Vector::pop_front` (ADR-0082 B-α continuation, O+G signed off 2026-07-12, PUSHED)
+origin/main = `5462c5b`, gate `0·0·345·0`. 1 commit combining code+counting-tooth (G ordered "tests travel with the code"). Move-out of the **FRONT** element by-value (`T?`), the sibling of `pop` (back). **NO new ADR.**
 
-**Recon lật khung bàn giao:** danh sách "get-by-value/pop-front/drain — continuation rủi ro thấp" là **vỏ bọc sai**. O recon phơi: `pop_front`/`drain` KHÔNG tồn tại surface (0 shim/typecheck); `get-by-value` aggregate = **deep-clone** (elem ở lại collection → nhân đôi heap) đụng move-only ADR-0042 + coupled ADR-0081 FROZEN → cần ADR Copy/Clone; `drain` đòi iteration protocol → cần ADR. **Chỉ pop_front là continuation thật** (tái dùng ABI D-1). G duyệt thu hẹp scope, TRỤC XUẤT get-by-value + drain thành campaign-nền riêng đóng băng. **O đính chính G "bổ sung token/AST surface":** `pop`/`push`/`get` = builtin-identifier gọi `pop(v)` (fixture 319:11), KHÔNG keyword/method → `pop_front` chỉ declare typecheck env, **0 dòng lexer/parser/schema**. G: "cố tình nhắc AST để xem tụi bay có nhìn architecture không".
+**Recon flipped the handoff frame:** the list "get-by-value/pop-front/drain — low-risk continuation" was a **false cover story**. O's recon exposed: `pop_front`/`drain` had NO existing surface (0 shim/typecheck); `get-by-value` for an aggregate = **deep-clone** (element stays in the collection → doubling the heap) which collides with move-only ADR-0042 + the coupled FROZEN ADR-0081 → needs a Copy/Clone ADR; `drain` requires an iteration protocol → needs an ADR. **Only pop_front is a genuine continuation** (reuses the D-1 ABI). G approved narrowing the scope, EXPELLING get-by-value + drain into their own separate frozen future campaign. **O corrected G's "add a token/AST surface":** `pop`/`push`/`get` are builtin-identifiers calling `pop(v)` (fixture 319:11), NOT keywords/methods → `pop_front` only needs a typecheck-env declaration, **0 lines of lexer/parser/schema**. G: "I mentioned AST on purpose to see if you two were actually looking at the architecture".
 
-**Semantics (G chốt):** O(n) shift **XUỐNG** `[1..len]→[0..len-1]`, `len--` tombstone. KHÔNG ring-buffer (phá INV-B-α "một layout hai nhà" + đập lại alloc/get/push/pop shim). Muốn queue O(1) → sau đẻ type `Queue`. Doc-comment shim ghi "no O(1) promise".
+**Semantics (G's final ruling):** an O(n) shift **DOWN** `[1..len]→[0..len-1]`, `len--` as tombstone. NO ring-buffer (that would break INV-B-α, "one layout, two homes" + clash with the alloc/get/push/pop shims). Want an O(1) queue → introduce a `Queue` type later. The shim's doc-comment states "no O(1) promise".
 
-**7 site (grep-verified 6 ABI-site `__triet_vector_pop` mirror đủ, 0 sót — mandate G "sót 1 line gạch PR"):** env.rs declare · lower arm (dest `Nullable` thừa hưởng tag-prepend) · `mir/lib.rs` BuiltinShimMeta `mutates_arg=Some(0)`→**E2440 borrowck** · jit:3084 fat-gate · jit:3518 arg-vals out_ptr · shim `__triet_vector_pop_front:4833` · driver ShimSymbol + integration harness. `⑤⑥⑦` D grep tự phơi = wiring THẬT (D phán đoán đúng). **Shim:** B1 rút[0] TRƯỚC shift (fat→`copy_nonoverlapping`→out_ptr disjoint) · B2 `ptr::copy` memmove (overlap len≥3) · B3 `len--` no-zero (slot cuối rác nhưng ngoài drop-set).
+**7 sites (grep-verified all 6 ABI-sites for `__triet_vector_pop` mirrored completely, 0 missed — G's mandate: "miss 1 line, the PR gets struck"):** env.rs declare · lower arm (dest `Nullable` inherits tag-prepend) · `mir/lib.rs` BuiltinShimMeta `mutates_arg=Some(0)`→**E2440 borrowck** · jit:3084 fat-gate · jit:3518 arg-vals out_ptr · shim `__triet_vector_pop_front:4833` · driver ShimSymbol + integration harness. `⑤⑥⑦` D's own grep exposed = real wiring (D's judgment was correct). **Shim:** B1 extract[0] BEFORE the shift (fat→`copy_nonoverlapping`→out_ptr disjoint) · B2 `ptr::copy` memmove (overlap, len≥3) · B3 `len--` no-zero (the last slot has garbage but is outside the drop-set).
 
-**O poison máu độc lập (cp-snapshot KHÔNG git-checkout, restore md5 `d90caa4f` mọi vòng):**
-- **T-G1 order (mandate):** push 1,2,3 → `pop_front`(1)·`pop`(3)·`pop_front`(2) = **132**. Shift giữ survivor giữa; interleave front/back len nhất quán.
-- **T-G2a `len--` (mandate):** bỏ len-- → fixture 351 fat → **SIGABRT 134** `free(): double free`. Tombstone load-bearing. (350 scalar EXIT 0 — không heap không manifest, đúng failure-mode.)
-- **T-O1 site-3 fat-gate:** bỏ pop_front khỏi `vector_pop_fat` → **JIT compile-refuse** "unexpected String return" (fat-return-without-slot bắt ở JIT-compile, KHÔNG SIGSEGV runtime như O dự — ghi đúng failure-mode). Site-3 load-bearing.
-- **🩸 O BẮT LỖ VÒNG-1 (chặn ký):** D chỉ wire pop_front vào **fixture-harness** (integration) = bắt crash+sai-giá-trị nhưng **LEAK CÂM** (không free=không crash); B2 shift là **code MỚI** không counting-net thường trực. O trả D thêm **counting-tooth `vector_string_pop_front_then_drop_no_double_free`** (`typed_vector_counting.rs`, mirror pop): push 3/pop_front 1/drop → **FREE==3**. O tự poison len-- độc lập → **FREE 4≠3 RED** (non-vacuous); control pop-back tooth **XANH** = cô lập pop_front-only. D parameterize `build_push_pop_drop(…,pop_shim)` (4 caller cũ bất biến) = refactor sạch, báo trước.
-- **⚔ T-G2b memmove — BÁO TRUNG THỰC NON-MANIFEST:** đổi `ptr::copy`→`copy_nonoverlapping`, len3 → **KHÔNG đỏ** (350→103, 351→0). Lý do: front-pop shift **XUỐNG** (dst=`data` < src=`data+stride`) → copy tiến không đè byte chưa đọc → memcpy-safe hướng này. **KHÔNG giả đỏ.** Nhưng overlapping `copy_nonoverlapping` là **UB theo hợp đồng Rust bất kể manifest** → `ptr::copy` GIỮ (UB-hygiene). G: "nếu giả vờ báo đỏ cờ này tao đã tế sống — giữ memmove là chuẩn mực kỹ sư Rust".
+**O's independent blood-poison (cp-snapshot NO git-checkout, restore md5 `d90caa4f` every round):**
+- **T-G1 order (mandate):** push 1,2,3 → `pop_front`(1)·`pop`(3)·`pop_front`(2) = **132**. The shift preserves the surviving middle element; interleaving front/back keeps len consistent.
+- **T-G2a `len--` (mandate):** removing len-- → fixture 351 fat → **SIGABRT 134** `free(): double free`. The tombstone is load-bearing. (350 scalar EXIT 0 — no heap, no manifestation, the correct failure-mode.)
+- **T-O1 site-3 fat-gate:** removing pop_front from `vector_pop_fat` → **JIT compile-refuse** "unexpected String return" (fat-return-without-slot is caught at JIT-compile time, NOT a runtime SIGSEGV as O expected — recorded the correct failure-mode). Site-3 is load-bearing.
+- **🩸 O CAUGHT A ROUND-1 HOLE (blocked sign-off):** D only wired pop_front into the **fixture-harness** (integration) = catches crashes+wrong-values but a **SILENT LEAK** (no free = no crash); B2's shift is **NEW code** with no standing counting-net. O sent it back to D demanding an additional **counting-tooth `vector_string_pop_front_then_drop_no_double_free`** (`typed_vector_counting.rs`, mirroring pop): push 3/pop_front 1/drop → **FREE==3**. O independently poisoned len-- himself → **FREE 4≠3 RED** (non-vacuous); the control pop-back tooth stayed **GREEN** = isolating it to pop_front-only. D parameterized `build_push_pop_drop(…,pop_shim)` (the 4 old callers unchanged) = a clean refactor, disclosed in advance.
+- **⚔ T-G2b memmove — HONESTLY REPORTED AS NON-MANIFESTING:** swapping `ptr::copy`→`copy_nonoverlapping`, len3 → **DID NOT go red** (350→103, 351→0). Reason: the front-pop shift goes **DOWN** (dst=`data` < src=`data+stride`) → the forward copy doesn't overwrite unread bytes → memcpy is safe in this direction. **NOT a fake red.** But an overlapping `copy_nonoverlapping` is **UB under the Rust contract regardless of manifestation** → `ptr::copy` STAYS (UB-hygiene). G: "if you'd faked this flag as red I'd have sacrificed you alive — keeping the memmove is the Rust engineering standard".
 
-**Nợ campaign-nền đóng băng (G chốt lôi ra Phase sau):** 🚩 **get-by-value** aggregate (ADR Copy/Clone move-only) · 🚩 **drain** (ADR Ownership-Iteration) · 🚩 **BOM FIX-2 zero-@8 Slice B** (coupling frontend refuse enum-payload multi-heap-leaf) · key-aggregate `HashMap<agg,_>` hash+eq đệ quy · get_ref V=Nullable · borrow-params `&+ T` · B-γ multi-reg return · AOT · self-host · Facade `public use`. ⚰️ ADR-0068 Box CẤM CỬA.
+**Frozen future-campaign debt (G's final ruling, pulled out to a later Phase):** 🚩 **get-by-value** aggregate (needs a Copy/Clone move-only ADR) · 🚩 **drain** (needs an Ownership-Iteration ADR) · 🚩 **the FIX-2 zero-@8 BOMB from Slice B** (coupled to the frontend refuse of enum-payload multi-heap-leaf) · key-aggregate `HashMap<agg,_>` recursive hash+eq · get_ref with V=Nullable · borrow-params `&+ T` · B-γ multi-reg return · AOT · self-host · Facade `public use`. ⚰️ ADR-0068 Box remains OFF-LIMITS.
 
-## ✅ ĐÓNG — VALUE MOVE-OUT AGGREGATE: Vector pop + HashMap remove by-value (ADR-0082 B-α §AMEND-2, O+G ký 2026-07-11, PUSHED)
-origin/main = `3e0975d`, gate `0·0·340·0`. 4 commit: `03a7638`(D-1a) · `f2e8bd8`(D-1b) · `5644f6e`(D-2) · `3e0975d`(§AMEND-2). Khép **chiều XUẤT** (element ra khỏi collection by-value) — bù cho A/B/C chỉ phủ push+drop.
+## ✅ CLOSED — VALUE MOVE-OUT AGGREGATE: Vector pop + HashMap remove by-value (ADR-0082 B-α §AMEND-2, O+G signed off 2026-07-11, PUSHED)
+origin/main = `3e0975d`, gate `0·0·340·0`. 4 commits: `03a7638`(D-1a) · `f2e8bd8`(D-1b) · `5644f6e`(D-2) · `3e0975d`(§AMEND-2). Closes off the **EXIT direction** (an element leaving the collection by-value) — filling in what A/B/C only covered for push+drop.
 
-**Scope:** `Vector<T>` pop + `HashMap<K,V>` remove trả aggregate (Struct/Enum) by-value. Tách D-1 (Vector) / D-2 (HashMap) vì source-tombstone khác cơ chế (G lệnh TÁCH). D-1 tách tiếp D-1a (Enum, disc-sentinel) / D-1b (Struct, tag-prepend).
+**Scope:** `Vector<T>` pop + `HashMap<K,V>` remove returning an aggregate (Struct/Enum) by-value. Split into D-1 (Vector) / D-2 (HashMap) because the source-tombstone mechanism differs (G ordered the SPLIT). D-1 further splits into D-1a (Enum, disc-sentinel) / D-1b (Struct, tag-prepend).
 
-**Cơ chế (khắc §AMEND-2):**
-- **Move-out tombstone contract (①):** Vector `len--` (`__triet_vector_pop`, cell không zero, len-- loại khỏi drop-set) · HashMap `state→2` shim + value-free-loop gate `state==1` (`emit_hashmap_value_free_loop:1441`). CẢ HAI load-bearing.
-- **D-1b = fix Slice-A-BUG-1 THẬT (②):** pop-dest LUÔN `Nullable(Struct)` (`lib.rs:2460`) → slot tag-prepend `tag@0/fields@+8` (ADR-0076, `mir_lower.rs:1906`). Marshal cũ ghi fields@+0 → đè tag → free bậy. AM1 refuse (Slice B) KHÔNG che bug bất-khả-sửa mà che **tầng ABI CHƯA DỰNG**. D-1b dựng: out_ptr=`slot+8`, tag=`(ret==SENTINEL)?SENTINEL:1`@`slot+0`. Dest-bind fat DÙNG CHUNG `vector_pop_fat||hashmap_remove_fat` (`:3561`) → D-2 thừa hưởng, chỉ vá out_ptr riêng (`:3443` field_off=8+enum_slots).
-- **State-gate no-zero decision (③):** HashMap remove KHÔNG zero value-cell (khác key path). G-MANDATE đòi chứng minh gate đủ chặt → GIỮ no-zero (perf).
+**Mechanism (per §AMEND-2):**
+- **Move-out tombstone contract (①):** Vector `len--` (`__triet_vector_pop`, the cell isn't zeroed, len-- removes it from the drop-set) · HashMap `state→2` shim + the value-free-loop gate `state==1` (`emit_hashmap_value_free_loop:1441`). BOTH are load-bearing.
+- **D-1b = the REAL fix for Slice-A-BUG-1 (②):** the pop-dest is ALWAYS `Nullable(Struct)` (`lib.rs:2460`) → the slot uses tag-prepend `tag@0/fields@+8` (ADR-0076, `mir_lower.rs:1906`). The old marshal wrote fields@+0 → overwriting the tag → freeing garbage. The AM1 refuse (Slice B) was not hiding an unfixable bug but hiding **a tier of the ABI that had NOT YET BEEN BUILT**. D-1b builds it: out_ptr=`slot+8`, tag=`(ret==SENTINEL)?SENTINEL:1`@`slot+0`. The fat dest-bind is SHARED between `vector_pop_fat||hashmap_remove_fat` (`:3561`) → D-2 inherits it, only needing its own out_ptr patch (`:3443` field_off=8+enum_slots).
+- **State-gate no-zero decision (③):** HashMap remove does NOT zero the value-cell (unlike the key path). G's MANDATE demanded proof the gate is tight enough → KEPT no-zero (for performance).
 
-**🎯 O TỰ THU HỒI BÁO ĐỘNG GIẢ (bài học nặng):** giữa verify D-1b, O hoảng "fixture 338 crash `free(): invalid pointer`" → REJECT hụt. SAI: chạy `./target/release/triet-driver` mà KHÔNG rebuild sau edit D = **STALE BINARY**. Rebuild sạch từ cây đang test → 338/T3/loop-reuse đúng hết, 3 vòng deterministic. **LUẬT KHẮC: verify-don't-trust áp cả lên executable — LUÔN rebuild từ cây đang test TRƯỚC khi chạy binary.** Nghi thức #1 mở rộng.
+**🎯 O RETRACTED HIS OWN FALSE ALARM (a heavy lesson):** in the middle of verifying D-1b, O panicked over "fixture 338 crashes with `free(): invalid pointer`" → an almost-REJECT. The error: running `./target/release/triet-driver` WITHOUT rebuilding after D's edit = a **STALE BINARY**. A clean rebuild from the tree under test → 338/T3/loop-reuse all correct, deterministic across 3 rounds. **RULE ENGRAVED: verify-don't-trust applies to the executable too — ALWAYS rebuild from the tree under test BEFORE running a binary.** Ritual #1 expanded.
 
-**⚔ O ÉP PRESENT-TAG LOAD-BEARING (bác ★SS(c) của D):** D-1b vòng-1 present-tag-write (tag=1 khi present) KHÔNG có teeth; D biện "rác stack hiếm khi trùng NULL_SENTINEL" = xác suất, không soundness. O ép: `while` back-edge tái dùng dest-slot → empty-pop để SENTINEL@tag → present-pop misroute nếu bỏ tag-write. (b) test-yếu KHÔNG phải (a) bất-khả. D vòng-2 thêm fixture loop-reuse 341/342 (Vector) + 345/346 (HashMap). Poison keep-stale (2 site CHUNG) → cả 4 đỏ (1→0), straight-line 338/339/343/344 không đổi.
+**⚔ O FORCED THE PRESENT-TAG TO BE PROVEN LOAD-BEARING (refuting D's ★SS(c)):** in D-1b round-1, the present-tag-write (tag=1 when present) had NO teeth; D argued that "stack garbage rarely collides with NULL_SENTINEL" = a probability argument, not soundness. O forced the issue: a `while` back-edge reusing the dest-slot → an empty-pop leaves SENTINEL@tag → a present-pop then misroutes if the tag-write is removed. (b) a weak test, NOT (a) something unfixable. D's round-2 added loop-reuse fixtures 341/342 (Vector) + 345/346 (HashMap). Poisoning the stale-keep (2 shared sites) → all 4 go red (1→0), the straight-line fixtures 338/339/343/344 stay unchanged.
 
-**O 🩸 TEETH (poison-cemented, cp-snapshot restore md5 mọi vòng):**
+**O's 🩸 TEETH (poison-cemented, cp-snapshot restore md5 every round):**
 - Vector (D-1): `len--`→FREE3 · T9-enum→SIGILL · field_off→corpus SIGABRT · present-tag 341/342→(1→0). md5 f44c1235(D-1a)/127b594e(D-1b).
-- HashMap (D-2, **G-MANDATE**): **GATE-A** (value-loop `state==1`→`≥1`)→SIGSEGV · **GATE-B** (shim bỏ `state→2`)→double-free tcache SIGABRT · field_off→corpus 343 SIGABRT · present-tag 345/346→(1→0). md5 267f1cbb. **Cả hai gate ĐỎ QUẠCH → state-gate giữ vững → G duyệt no-zero-cell.**
+- HashMap (D-2, **G-MANDATE**): **GATE-A** (value-loop `state==1`→`≥1`)→SIGSEGV · **GATE-B** (shim drops `state→2`)→double-free tcache SIGABRT · field_off→corpus 343 SIGABRT · present-tag 345/346→(1→0). md5 267f1cbb. **Both gates went STONE RED → the state-gate holds firm → G approved the no-zero-cell.**
 
-**Công D ghi nhận:** tự sửa số Hollywood ==4→==3 TRƯỚC khi báo (ngấm [[feedback_failure_mode_precision]]) · tự bắt key-aggregate-remove-refuse thiếu JIT teeth (chết typecheck E1048) → thêm hand-built MIR · LUẬT 3 cleanup orphan.
+**Credit to D:** fixed his own Hollywood number ==4→==3 BEFORE reporting (having absorbed [[feedback_failure_mode_precision]]) · caught himself that key-aggregate-remove-refuse was missing JIT teeth (dies at typecheck E1048) → added hand-built MIR · RULE 3 orphan cleanup.
 
-**⚖ Commit history:** D-1 tách 2 commit sạch (D-1a enum / D-1b struct) bằng snapshot-swap (O tái dựng D-1a counting = head-483 + HEAD struct-refuse, verify green mỗi commit). D-2 một cục.
+**⚖ Commit history:** D-1 split cleanly into 2 commits (D-1a enum / D-1b struct) via snapshot-swap (O reconstructed D-1a's counting = head-483 + HEAD's struct-refuse, verified green at each commit). D-2 was one lump.
 
-**Nợ chuyển tiếp (campaign riêng, phiên sau):** get-by-value aggregate + get_ref value-aggregate (Cụm D/ADR-0081 FROZEN) · key-aggregate `HashMap<aggregate,_>` hash+eq đệ quy · pop-front/drain · B-γ multi-reg return. Đều REFUSE tường minh có teeth canh.
-
----
-
-## ✅ ĐÓNG — CỤM B Slice B: `Vector<Enum>` push+drop (ADR-0082 B-α continuation, G ký 2026-07-09, PUSHED)
-origin/main = `c22da0a`, gate `0·0·331·0`. 8 commit: `c8b8aa6`(S1+S2) · `3bede0c`(S3) · `98a3be2`(AM1) · `a665e96`(AM2) · `a6a41c2`(FIX-1+FIX-2) · `638b455`(teeth) + 2 docs (`c22da0a` state).
-
-**Scope:** enum by-value element của Vector (heap-payload variants), **push+drop SOUND**, **pop/by-value move-out REFUSE** (deferred). Tái dùng `emit_enum_drop_glue_at` (address-based, ACTIVE-arm tag-switch) + INV-B-α. **KHÔNG cần ADR mới.**
-
-**Bản đồ O recon:** sizing đã có (`EnumLayout.total_size`), drop-glue đã có (`emit_enum_drop_glue_at`). Việc = S1 `vector_elem_size` Enum arm · S2 `emit_heap_free_at:1067` Enum branch (TRƯỚC `is_any_heap` early-return, DP-2) · S3 marshal enum-element đọc `enum_slots` KHÔNG `struct_slots`/Variable (5 site, mẫu `:3404`).
-
-**🩸 BUG-1 (pop UB, PRE-EXISTING SLICE A) — O tự bắt qua tooth pop.** `Vector<UserStruct>` pop → double-free/invalid-pointer; **verify TÁI HIỆN trên binary `1e49058`** (worktree) → pre-existing, KHÔNG regression. Slice A teeth CHỈ push+drop, chưa từng test pop. "get-by-value/pop aggregate" = nợ DEFERRED nhưng **deferred-KHÔNG-refuse = UB câm shape P0**. **AM1 vá:** REFUSE `__triet_vector_pop` element Struct/Enum (message "deferred… recursive move-out tombstone"), rào cả A lẫn B. get-by-value đã bị typecheck chặn → pop = đường move-out DUY NHẤT lọt JIT. **AM2:** cắt 3 hunk pop-side S3 (enum_slots dead sau AM1), giữ S3a/S3b push.
-
-**🎯 BUG-2 (push+drop UNSOUND, HAI bug che nhau) — poison-must-be-red CỨU MẠNG.** First-draft named-tooth O ĐẾM NHẦM (Drop(local) vs vector-drop) → 10/10 xanh GIẢ. **Chỉ vì poison S2 KHÔNG đỏ** (poison-insensitive) O mới đào: (1) **BUG-1b** `aggregate_needs_drop:1663` có nhánh Struct nhưng KHÔNG Enum → Enum rơi `is_any_heap()`=false → element-free loop bail `:1164` → S2 UNREACHABLE → **elements LEAK**. (2) **BUG-2b** enum named-local KHÔNG tombstone khi push-consume (`tombstone_slot_leaves` keyed struct_layouts, enum ∈ enum_layouts) → Drop(local) free lần 2. **Che nhau:** named-case local-drop free đúng cái vector leak → net 2 "giả sound", driver clean. Chứng minh: **enum-inline=0 vs struct-inline-CONTROL=2** (method validated). **FIX-1** aggregate_needs_drop Enum arm (any heap-bearing variant, đối xứng Struct + khớp filter emit_enum_drop_glue) · **FIX-2** zero payload ptr @base+8 tại arg-consume enum branch (đối xứng Deinit `:2138`, KHÔNG disc@0). Một commit hai fix (tránh trung gian double-free).
-
-**⚠️ BOM HẸN GIỜ (coupling, cắm cờ):** FIX-2 zero-@8 ĐỦ CHỈ VÌ frontend refuse enum-payload multi-heap-leaf — O tự chọc verify: `V(Pair)` struct-payload → lower REFUSE · `V(String,String)` multi-field → parse REFUSE. Mọi heap payload reachable = single handle @8. Nếu refusal đó gỡ → FIX-2 phải walk MỌI leaf.
-
-**O 11 TEETH poison-cemented** (cp-snapshot restore md5 khớp mọi vòng, ĐỘC LẬP): `vector_enum_inline_push_drop` (BUG-1 anchor, INLINE non-masking; poison FIX-1→**0 leak**) · `vector_enum_named_push_drop_no_double_free` (BUG-2 anchor; poison FIX-2→**4 double-free**, inline giữ 2 tách bạch) · `vector_{struct,enum}_pop_refused` (AM1; poison→struct-pop **compile-SUCCEEDS** phơi lỗ Slice A, `compile_expect_refuse` đăng ký `__triet_vector_pop` để refuse NON-vacuous) · active-arm=1 · scalar=0 · nest=2 · struct-control=2.
-
-**Bài học phiên:** ① **poison-must-be-red là thứ CHẶN false-green** — O suýt cement named-tooth misattributed đúng shape P0; poison S2 không đỏ = tín hiệu đào. ② một tooth NAMED có thể maskable (local-drop giả vector-drop) → **INLINE anchor non-masking bắt buộc cho leak**. ③ `compile_expect_refuse` phải đăng ký shim của op bị refuse, nếu không bắt nhầm "missing-shim" = vacuous. ④ deferred PHẢI refuse (không chỉ "không làm") — Slice A pop là bằng chứng UB câm. ⑤ `aggregate_needs_drop`/tombstone/move-out phải phủ Enum ĐỐI XỨNG Struct. [[feedback_poison_must_be_red]] [[feedback_failure_mode_precision]]
-
-**Nợ chuyển tiếp:** Slice C `HashMap<_,aggregate>` value (⚠️ value-free-loop có latent P0-shape cùng họ BUG-1 — recon `aggregate_needs_drop`+value-loop trước) · `Vector<aggregate>` pop/get-by-value move-out (recursive move-out-tombstone: dest leaf-marshal + buffer + source) · scalar-enum disc round-trip chưa observe source (nullable-enum-match chưa lower) · coupling FIX-2. Đều REFUSE tường minh có teeth canh.
+**Debt carried forward (its own campaign, a later session):** get-by-value aggregate + get_ref value-aggregate (Cluster D/ADR-0081 FROZEN) · key-aggregate `HashMap<aggregate,_>` recursive hash+eq · pop-front/drain · B-γ multi-reg return. All are explicit REFUSEs guarded by teeth.
 
 ---
 
-## ✅ ĐÓNG — CỤM B Slice A: `Vector<UserStruct>` aggregate by-value element (ADR-0082 B-α §AMEND-1, G ký 2026-07-08, PUSHED)
-origin/main = `1e49058`, gate `0·0·331·0`. 7 commit: ADR `2802ce0` + C1 `d1774a3` + C2 `c93b6b3` + C3 `6e01ef4` + C4 `90ce297` + C5 `67e18c9` + C6 `1e49058`.
+## ✅ CLOSED — CLUSTER B Slice B: `Vector<Enum>` push+drop (ADR-0082 B-α continuation, G signed off 2026-07-09, PUSHED)
+origin/main = `c22da0a`, gate `0·0·331·0`. 8 commits: `c8b8aa6`(S1+S2) · `3bede0c`(S3) · `98a3be2`(AM1) · `a665e96`(AM2) · `a6a41c2`(FIX-1+FIX-2) · `638b455`(teeth) + 2 docs (`c22da0a` state).
 
-**Mặt trận:** G tuyên "CỤM B — Native multi-field layout". O recon vạch mặt **CÁI BẪY "native layout"** = gộp 3 việc rủi ro/giá trị lệch trời vực → ép G/Giang chốt scope:
-- **B-α (CHỌN):** struct/enum by-value làm element Vector/HashMap-value. NĂNG LỰC MỚI, rủi ro THẤP (cưỡi fat-element ABI ADR-0077 sẵn). = Slice A.
-- **B-β (ĐẠP CHẾT):** gói sub-8B thật (Trit=1B). PHÁ value-model i64, chỉ mật độ. Refuse đầu cơ.
-- **B-γ (defer vô thời hạn):** multi-reg struct return.
+**Scope:** enum by-value elements of Vector (heap-payload variants), **push+drop SOUND**, **pop/by-value move-out REFUSED** (deferred). Reuses `emit_enum_drop_glue_at` (address-based, ACTIVE-arm tag-switch) + INV-B-α. **NO new ADR needed.**
 
-**INV-B-α (bất biến nền G khắc):** *một layout, hai nhà, byte-identical* — image struct trong cell collection = image trong StackSlot (cùng `StructLayout`, 8B-granular, `stride=total_size`). Giữ 8B-granular = SỐNG CÒN: drop-walk `collect_heap_leaves` tính offset từ `struct_layouts`; nếu cell≠stack → free ptr rác. Là quyết định BẢO THỦ (bảo vệ value-model), KHÔNG đại phẫu.
+**O's recon map:** the sizing already existed (`EnumLayout.total_size`), the drop-glue already existed (`emit_enum_drop_glue_at`). The work = S1 the Enum arm of `vector_elem_size` · S2 the Enum branch of `emit_heap_free_at:1067` (BEFORE the `is_any_heap` early-return, DP-2) · S3 marshaling the enum-element to read `enum_slots` NOT `struct_slots`/Variable (5 sites, pattern `:3404`).
 
-**Cỗ máy (80% tái dùng):** `collect_heap_leaves` (jit:433) recursive descent struct→leaf ĐÃ có cho stack; `emit_enum_drop_glue_at` (jit:1457) address-based. Slice A = 3 mối nối:
-- **C1 body-threading** (`d1774a3`): thread `body:&Body` qua free-fn family (`emit_heap_free_at`/`emit_vector_free_value`/`emit_vector_element_free_loop`/`emit_hashmap_free_value`) — JitContext KHÔNG cache layouts global, phải thread. Gate byte-identical.
-- **C2 T7** (`c93b6b3`): trích helper `tombstone_slot_leaves` dùng chung Deinit (1938) + M3 (3436) — cặp song-sinh Drop-walk (G mandate "free N tiers → zero N tiers").
-- **C3 T2+T8** (`6e01ef4`): `vector_elem_size(body,Struct)`→total_size (Enum vẫn Err=Slice B); `refuse_hashmap_aggregate_kv` wired 5 site.
-- **C4 T3/T4/T5** (`90ce297`): `emit_struct_drop_glue_at` + `emit_heap_free_at` nhánh Struct TRƯỚC early-return (DP-2) + `aggregate_needs_drop` guard (DP-1, Copy-struct→rỗng→no-op).
+**🩸 BUG-1 (pop UB, PRE-EXISTING FROM SLICE A) — O caught it himself via the pop tooth.** `Vector<UserStruct>` pop → double-free/invalid-pointer; **verification REPRODUCES on binary `1e49058`** (worktree) → pre-existing, NOT a regression. Slice A's teeth covered ONLY push+drop, pop was never tested. "get-by-value/pop aggregate" = DEFERRED debt but **deferred-WITHOUT-a-refuse = a silent-UB shape of P0 severity**. **AM1 fix:** REFUSE `__triet_vector_pop` for Struct/Enum elements (message "deferred… recursive move-out tombstone"), fencing both A and B. get-by-value was already blocked at typecheck → pop = the ONLY move-out path that leaks through to the JIT. **AM2:** cut 3 pop-side S3 hunks (enum_slots dead after AM1), kept S3a/S3b for push.
 
-**§AMEND-1 — 2 lỗ ngoài touch-list D bắt ở T0 probe (O rule SAU chữ ký G):**
-1. **§3 CÓ LỖ (O tự ăn):** O verify "MOVE byte-wise generalize verbatim" chỉ ở tầng shim runtime, BỎ SÓT M3 zero-guard compile-time (`3436` String-only) → struct-arg-consumed rơi `def_var(var,zero)` (zero Variable, KHÔNG zero slot leaves) → Drop(struct) đọc SLOT → **double-free 134**. T7 vá (commit tách latent-proof: trước T2 struct bị refuse ở vector_elem_size nên đường chưa reachable).
-2. **`vector_elem_size` dùng chung Vector+HashMap:** mở Struct → `HashMap<Integer,User>` marshal-reachable NHƯNG value-free-loop guard (`1286`) vẫn `is_any_heap` → skip struct → **LEAK câm** (đúng P0-shape ADR-0080). T8 refuse tường minh giữ biên Slice C.
+**🎯 BUG-2 (push+drop UNSOUND, TWO bugs MASKING each other) — poison-must-be-red SAVED THE DAY.** The first-draft named-tooth O wrote MISCOUNTED (Drop(local) vs vector-drop) → a FALSE 10/10 green. **Only because poison on S2 did NOT go red** (poison-insensitive) did O dig further: (1) **BUG-1b** `aggregate_needs_drop:1663` had a Struct branch but NOT an Enum one → Enum falls to `is_any_heap()`=false → the element-free loop bails at `:1164` → S2 is UNREACHABLE → **elements LEAK**. (2) **BUG-2b** an enum named-local has NO tombstone when consumed by push (`tombstone_slot_leaves` is keyed by struct_layouts, enums live in enum_layouts) → Drop(local) frees it a second time. **They mask each other:** in the named-case, local-drop happens to free the exact thing the vector was leaking → net result: 2 "false-sounds", the driver looks clean. Proven by: **enum-inline=0 vs struct-inline-CONTROL=2** (a validated method). **FIX-1** the Enum arm of aggregate_needs_drop (any heap-bearing variant, symmetric with Struct + matching emit_enum_drop_glue's filter) · **FIX-2** zeroing the payload ptr @base+8 at the arg-consume enum branch (symmetric with Deinit `:2138`, NOT disc@0). One commit, two fixes (to avoid an intermediate double-free).
 
-**🎯 O TỰ BẮT BUG GATE 331-FIXTURE BỎ LỌT (T9, bằng chứng sống mandate G):** poison-teeth O viết (`vector_userstruct_counting.rs`) lôi ra **leak câm 8B-heap-struct** — struct `total_size==8` (bọc đúng 1 Vector/HashMap handle) → `stride==8` → push nhánh scalar `use_var(self.var(elem))` đọc **Cranelift Variable** (chưa def cho struct-local) thay **struct-slot** → buffer nhận 0 → drop free 0 → leak. **ÁN-LỆ:** struct-local sống ở StackSlot KHÔNG Variable; đọc 8B struct = `stack_load(slot,0)` KHÔNG `use_var`. C5 T9 vá đối xứng push (`3189` stack_load) + pop (`3457` stack_store), mirror concat/bung_fields pattern.
+**⚠️ TIME BOMB (coupling, flagged):** FIX-2's zero-@8 is ONLY SUFFICIENT BECAUSE the frontend refuses enum-payload multi-heap-leaf — O poked and verified this himself: `V(Pair)` struct-payload → lower REFUSE · `V(String,String)` multi-field → parse REFUSE. Every reachable heap payload = a single handle @8. If that refusal is ever lifted → FIX-2 will have to walk EVERY leaf.
 
-**O 7 TEETH (C6 `1e49058`), 4 POISON-CEMENTED** (cp-snapshot, restore md5 khớp mọi vòng):
-- T-DOUBLE (T7): healthy FREE==2 · poison revert M3→String-only → **FREE==4** double-free.
-- T-LEAK (T5): poison guard→`is_any_heap` → **FREE==0** leak.
-- T9-8B (T9): poison push→`use_var` → **FREE==0** leak.
-- T8-refuse: poison neuter guard → **compile SUCCEEDED** (leak risk).
-- + 3 positive: T-REFUSE-Enum (`Vector<Enum>`→JitError Slice B) · T-COPY (`Vector<Point>`→FREE==0 byte-compat) · T-NEST (`Vector<Tagged{Vector<String>}>`→FREE==2 recurse 2 tiers).
+**O's 11 TEETH, poison-cemented** (cp-snapshot restore md5 matched every round, INDEPENDENT): `vector_enum_inline_push_drop` (BUG-1 anchor, INLINE non-masking; poisoning FIX-1→**0 leak**) · `vector_enum_named_push_drop_no_double_free` (BUG-2 anchor; poisoning FIX-2→**4 double-free**, inline stays cleanly at 2) · `vector_{struct,enum}_pop_refused` (AM1; poisoning→struct-pop **compilation SUCCEEDS**, exposing the Slice A hole; `compile_expect_refuse` registers `__triet_vector_pop` so the refuse is NON-vacuous) · active-arm=1 · scalar=0 · nest=2 · struct-control=2.
 
-**Bài học phiên:** ① O verify cắt CẢ §3 của chính O (verify shim-runtime bỏ tầng M3 compile-time). ② một hàm size dùng-chung âm thầm mở 2 mặt trận. ③ D dừng-báo-O đúng luật ④ ở T0 (spike thấy bug → không tự nới scope). ④ 4-commit-slice T7-tách-trước honor mandate G. [[feedback_failure_mode_precision]] [[feedback_poison_must_be_red]]
+**Session lessons:** ① **poison-must-be-red is exactly the thing that BLOCKS false-greens** — O nearly cemented a mis-attributed named-tooth in exactly the P0-severity shape; S2 poison not going red = the signal to dig. ② a NAMED tooth can be maskable (local-drop impersonating vector-drop) → **an INLINE non-masking anchor is mandatory for detecting leaks**. ③ `compile_expect_refuse` must register the shim of the op being refused, otherwise it mistakenly catches "missing-shim" as if it were vacuous. ④ deferred MUST mean refused (not just "not implemented") — Slice A's pop is proof of silent UB. ⑤ `aggregate_needs_drop`/tombstone/move-out must cover Enum SYMMETRICALLY with Struct. [[feedback_poison_must_be_red]] [[feedback_failure_mode_precision]]
 
-**Nợ chuyển tiếp (đóng-gói-campaign-riêng):** Slice B `Vector<Enum>` · Slice C `HashMap<_,aggregate>` value · aggregate KEY (đòi hash+eq đệ quy) · get-by-value aggregate (dùng get_ref/pop) · B-β sub-8B (đạp chết) · B-γ multi-reg return (defer). Đều REFUSE tường minh có teeth canh.
+**Debt carried forward:** Slice C `HashMap<_,aggregate>` value (⚠️ the value-free-loop has a latent P0-shape bug from the same family as BUG-1 — recon `aggregate_needs_drop`+value-loop first) · `Vector<aggregate>` pop/get-by-value move-out (recursive move-out-tombstone: dest leaf-marshal + buffer + source) · scalar-enum discriminant round-trip not yet observed at the source (nullable-enum-match not yet lowered) · the FIX-2 coupling. All are explicit REFUSEs guarded by teeth.
 
 ---
 
-## ✅ ĐÓNG — Read-side Cụm A: get-borrow generic-V + P0 String-key SIGSEGV (ADR-0079 §AMEND-1, G ký 2026-07-04, PUSHED)
-origin/main = `96f4241`, gate `0·0·331·0`. feat `37a0723` + docs `96f4241`. **Read-side container khép hoàn toàn cho V=container.**
+## ✅ CLOSED — CLUSTER B Slice A: `Vector<UserStruct>` aggregate by-value element (ADR-0082 B-α §AMEND-1, G signed off 2026-07-08, PUSHED)
+origin/main = `1e49058`, gate `0·0·331·0`. 7 commits: ADR `2802ce0` + C1 `d1774a3` + C2 `c93b6b3` + C3 `6e01ef4` + C4 `90ce297` + C5 `67e18c9` + C6 `1e49058`.
 
-**A1 get-borrow generic-V:** env.rs 6 overload `get` V∈{Vector<Integer>,HashMap<Integer,Integer>} qua
-Vector<V>/HashMap<Integer,V>/HashMap<String,V> → `(&0 V)?` zero-copy borrow. Read-only `len(inner)` sẵn.
+**The front:** G declared "CLUSTER B — Native multi-field layout". O's recon exposed **THE "native layout" TRAP** = lumping together 3 pieces of work whose risk/value ratios are worlds apart → forced G/Giang to pin down scope:
+- **B-α (CHOSEN):** struct/enum by-value as an element of Vector/HashMap-value. A NEW capability, LOW risk (rides on the existing fat-element ABI from ADR-0077). = Slice A.
+- **B-β (KILLED):** genuine sub-8B packing (Trit=1B). Breaks the i64 value-model, for density-only gain. Refused as speculative.
+- **B-γ (deferred indefinitely):** multi-reg struct return.
 
-**§AMEND-1 (O viết, G ký "Invariant là ĐỊNH LUẬT"):** JIT `__triet_{vector,hashmap}_get_ref` stride-conditional
-deref — thin V (value_stride≤8, handle) → `*cell` (body_ptr); fat V (>8, String 24B) → cell (inline len/cap).
-Giữ INVARIANT `&0 V` **bit-for-bit identical** dù lấy từ local hay get_ref. Nếu không: `__triet_vector_len`
-mong body_ptr, get_ref trả cell_ptr → `len` đọc `*cell`=body_ptr=garbage. String thoát nạn vì fat-24B inline.
-Accessor sẵn: `vector_stride` (jit:4018) · `hashmap_value_stride` (jit:4345). **Bác fix-consumer (sửa `len`
-deref cell): phá `len(&0 v)` từ local (local truyền body_ptr).**
+**INV-B-α (the foundational invariant G engraved):** *one layout, two homes, byte-identical* — the struct image in a collection cell = the image in a StackSlot (same `StructLayout`, 8B-granular, `stride=total_size`). Keeping it 8B-granular is LIFE-OR-DEATH: the drop-walk `collect_heap_leaves` computes offsets from `struct_layouts`; if cell≠stack → it frees a garbage pointer. This is a CONSERVATIVE decision (protecting the value-model), NOT major surgery.
 
-**⚔ O TỰ ĂN — recon "A1 thuần env.rs" SAI một nửa:** O ban đầu tuyên "A1 không chạm JIT, borrowck type-agnostic".
-POISON-1 (content-read tooth, `len(ref_vec)`=3 chứ KHÔNG routing-only) phơi ra thin-handle indirection blocker.
-D dừng đúng luật báo O. O nhận sai, KHÔNG đổ cho D. **Bài học: content-read tooth (đọc nội dung THẬT) > routing
-tooth (chỉ present/absent) — routing xanh giả, release crash runtime.** [[feedback_poison_must_be_red]]
+**The machine (80% reused):** `collect_heap_leaves` (jit:433) recursive struct→leaf descent ALREADY existed for stack; `emit_enum_drop_glue_at` (jit:1457) address-based. Slice A = 3 splice points:
+- **C1 body-threading** (`d1774a3`): threading `body:&Body` through the free-fn family (`emit_heap_free_at`/`emit_vector_free_value`/`emit_vector_element_free_loop`/`emit_hashmap_free_value`) — JitContext does NOT cache layouts globally, so it must be threaded. Gate byte-identical.
+- **C2 T7** (`c93b6b3`): extracted the helper `tombstone_slot_leaves` shared between Deinit (1938) + M3 (3436) — the Drop-walk twin pair (G's mandate: "free N tiers → zero N tiers").
+- **C3 T2+T8** (`6e01ef4`): `vector_elem_size(body,Struct)`→total_size (Enum still Err=Slice B); `refuse_hashmap_aggregate_kv` wired at 5 sites.
+- **C4 T3/T4/T5** (`90ce297`): `emit_struct_drop_glue_at` + a Struct branch on `emit_heap_free_at` BEFORE the early-return (DP-2) + the `aggregate_needs_drop` guard (DP-1, a Copy-struct→empty→no-op).
 
-**P0 BÁO ĐỘNG ĐỎ — pre-existing String-key read SIGSEGV (latent từ ADR-0080 `381979e`):**
-get/get_ref/contains nhận `&0 HashMap` (**Reference-wrapped**) ≠ insert (owned HashMap). key_stride extraction
-(`mir_lower.rs:3175`) chỉ `nullable_payload().unwrap_or` → Reference không tới arm HashMap → **default key_stride=8**
-→ String key (stride 24) marshal **by-value 8B** → hash đọc vùng nhớ rác → **SIGSEGV 139**. insert thoát vì §AMEND-1
-ADR-0080 chọc thẳng insert-flow (owned map). Integer-key read chạy nhờ default-8 tình cờ đúng. **0 fixture đời nào
-test String-key get/contains runtime → latent câm dưới chữ ký "KHÓA SỔ".** VÁ: unwrap `MirType::Reference { inner, .. }`
-trước match HashMap. Root-cause O đào bằng đọc code (không probe mù). G đoán đúng 100% ("pass-by-value 8B kiểu Integer").
+**§AMEND-1 — 2 holes outside the touch-list, caught by D during the T0 probe (O's ruling AFTER G's sign-off):**
+1. **§3 HAD A HOLE (O ate his own words on this one):** O's verification of "MOVE byte-wise generalize verbatim" was only at the runtime shim tier, MISSING the M3 compile-time zero-guard (`3436` String-only) → a struct-arg-consumed falls into `def_var(var,zero)` (zeroing the Variable, NOT zeroing the slot leaves) → Drop(struct) reads the SLOT → **double-free 134**. T7 fixed it (a commit split with latent-proof: before T2, struct was refused at vector_elem_size so this path wasn't reachable yet).
+2. **`vector_elem_size` is shared between Vector+HashMap:** opening Struct → `HashMap<Integer,User>` becomes marshal-reachable BUT the value-free-loop guard (`1286`) still uses `is_any_heap` → it skips the struct → **a silent LEAK** (the exact P0-shape from ADR-0080). T8 added an explicit refuse to hold the Slice C boundary.
 
-**❄️ A2 get-borrow-mutable (ADR-0081) FROZEN → đày Cụm D (Phase 3 Ownership):** `push`/`insert` là functional
-(clone+free-old+trả handle MỚI) → mutate inner qua `&0 mutable` ĐÒI write-back handle vào cell → P1 CẤM write-back
-(deref-assign chưa wire) ⇒ `&0 mutable V` **VACUOUS cho Vector/HashMap** (chỉ pop/remove shrink dùng được). G:
-"không nửa vời, không lỗ ngách bẩn". Mở lại khi core có deref-assign + drop-in-place qua con trỏ. Kiến trúc mặt-borrowck
-(returns_borrow_form + exclusive-loan conflict cả READ) đã đúng — vấn đề là core functional-mutate.
+**🎯 O CAUGHT A BUG THE 331-FIXTURE GATE LET SLIP THROUGH (T9, living proof of G's mandate):** the poison-teeth O wrote (`vector_userstruct_counting.rs`) pulled out a **silent 8B-heap-struct leak** — a struct with `total_size==8` (wrapping exactly 1 Vector/HashMap handle) → `stride==8` → the push scalar branch `use_var(self.var(elem))` reads a **Cranelift Variable** (never defined for a struct-local) instead of the **struct-slot** → the buffer receives 0 → drop frees 0 → leak. **PRECEDENT SET:** a struct-local lives in a StackSlot, NOT a Variable; reading an 8B struct = `stack_load(slot,0)`, NOT `use_var`. C5 T9 fixed both push (`3189` stack_load) and pop (`3457` stack_store) symmetrically, mirroring the concat/field-spread pattern.
 
-**🚫 V=Nullable REFUSE/defer** — lowerer chưa match `&0 Nullable<T>` (không có đường dùng inner). Refuse-over-guess.
+**O's 7 TEETH (C6 `1e49058`), 4 POISON-CEMENTED** (cp-snapshot, restore md5 matched every round):
+- T-DOUBLE (T7): healthy FREE==2 · poisoning by reverting M3→String-only → **FREE==4** double-free.
+- T-LEAK (T5): poisoning the guard→`is_any_heap` → **FREE==0** leak.
+- T9-8B (T9): poisoning push→`use_var` → **FREE==0** leak.
+- T8-refuse: poisoning to neuter the guard → **compilation SUCCEEDED** (leak risk).
+- + 3 positives: T-REFUSE-Enum (`Vector<Enum>`→JitError Slice B) · T-COPY (`Vector<Point>`→FREE==0 byte-compat) · T-NEST (`Vector<Tagged{Vector<String>}>`→FREE==2 recursing 2 tiers).
 
-**O verify máu (poison→RED độc lập, cp-snapshot restore md5 khớp):** POISON-1 stride-deref revert→garbage `94…` ·
-POISON-P0 Reference-unwrap revert→SIGSEGV 139 · POISON overload-break 336/337→E1041. Fixtures 333-337 (5):
+**Session lessons:** ① O's verification cut short even O's OWN §3 (verifying the runtime shim but skipping the M3 compile-time tier). ② one shared size-function silently opened 2 fronts at once. ③ D stopped-and-reported to O per rule ④ at T0 (a spike found a bug → didn't self-expand scope). ④ the 4-commit-slice with T7 split out first honors G's mandate. [[feedback_failure_mode_precision]] [[feedback_poison_must_be_red]]
+
+**Debt carried forward (packaged as its own campaign):** Slice B `Vector<Enum>` · Slice C `HashMap<_,aggregate>` value · aggregate KEY (needs recursive hash+eq) · get-by-value aggregate (uses get_ref/pop) · B-β sub-8B (killed) · B-γ multi-reg return (deferred). All are explicit REFUSEs guarded by teeth.
+
+---
+
+## ✅ CLOSED — Read-side Cluster A: get-borrow generic-V + P0 String-key SIGSEGV (ADR-0079 §AMEND-1, G signed off 2026-07-04, PUSHED)
+origin/main = `96f4241`, gate `0·0·331·0`. feat `37a0723` + docs `96f4241`. **Read-side container closed out completely for V=container.**
+
+**A1 get-borrow generic-V:** env.rs, 6 overloads of `get` for V∈{Vector<Integer>,HashMap<Integer,Integer>} via
+Vector<V>/HashMap<Integer,V>/HashMap<String,V> → `(&0 V)?` zero-copy borrow. Read-only `len(inner)` already works.
+
+**§AMEND-1 (written by O, signed off by G as "the Invariant is LAW"):** JIT `__triet_{vector,hashmap}_get_ref`'s stride-conditional
+deref — thin V (value_stride≤8, a handle) → `*cell` (body_ptr); fat V (>8, String 24B) → the cell itself (inline len/cap).
+This preserves the INVARIANT that `&0 V` is **bit-for-bit identical** whether it came from a local or from get_ref. Otherwise: `__triet_vector_len`
+expects a body_ptr, get_ref returns a cell_ptr → `len` reads `*cell`=body_ptr=garbage. String escapes this trap because of its fat-24B inline layout.
+Accessors already exist: `vector_stride` (jit:4018) · `hashmap_value_stride` (jit:4345). **Refuting the fix-the-consumer approach (patching `len` to
+deref the cell instead): that would break `len(&0 v)` from a local (a local passes the body_ptr).**
+
+**⚔ O EATS HIS OWN WORDS — the recon claim "A1 is pure env.rs" was HALF WRONG:** O initially declared "A1 doesn't touch the JIT, borrowck is type-agnostic".
+POISON-1 (a content-read tooth, `len(ref_vec)`=3, NOT merely routing) exposed the thin-handle indirection blocker.
+D stopped and reported to O per the rule. O admitted the mistake, did NOT blame D. **Lesson: a content-read tooth (reading the REAL content) beats a routing
+tooth (present/absent only) — routing goes falsely green while release crashes at runtime.** [[feedback_poison_must_be_red]]
+
+**P0 RED ALERT — pre-existing String-key read SIGSEGV (latent since ADR-0080 `381979e`):**
+get/get_ref/contains take `&0 HashMap` (**Reference-wrapped**) ≠ insert (owned HashMap). The key_stride extraction
+(`mir_lower.rs:3175`) only did `nullable_payload().unwrap_or` → a Reference never reaches the HashMap arm → **defaults key_stride=8**
+→ a String key (stride 24) gets marshaled **by-value as 8B** → the hash reads garbage memory → **SIGSEGV 139**. insert escaped this because §AMEND-1 of
+ADR-0080 poked directly at the insert-flow (an owned map). Integer-key reads worked because default-8 happens to be correct for them. **0 fixtures, ever,
+tested String-key get/contains at runtime → latent and silent under a "BOOKS CLOSED" signature.** FIX: unwrap `MirType::Reference { inner, .. }`
+before matching HashMap. O dug up the root-cause by reading the code (not a blind probe). G guessed it 100% correctly ("pass-by-value 8B like Integer").
+
+**❄️ A2 get-borrow-mutable (ADR-0081) FROZEN → banished to Cluster D (Phase 3 Ownership):** `push`/`insert` are functional
+(clone+free-old+return a NEW handle) → mutating the inner via `&0 mutable` REQUIRES writing the handle back into the cell → P1 FORBIDS write-back
+(deref-assign isn't wired) ⇒ `&0 mutable V` is **VACUOUS for Vector/HashMap** (only pop/remove-shrink are usable). G:
+"no half-measures, no dirty loopholes". Reopen this once core has deref-assign + drop-in-place through a pointer. The borrowck-facing architecture
+(returns_borrow_form + exclusive-loan conflict on READ too) is already correct — the problem is core's functional-mutate.
+
+**🚫 V=Nullable REFUSE/defer** — the lowerer doesn't yet match `&0 Nullable<T>` (no path to use the inner value). Refuse-over-guess.
+
+**O's blood verification (independent poison→RED, cp-snapshot restore md5 matched):** POISON-1 reverting the stride-deref→garbage `94…` ·
+POISON-P0 reverting the Reference-unwrap→SIGSEGV 139 · POISON breaking the overload 336/337→E1041. Fixtures 333-337 (5):
 333 Int-key content-read(3) · 334 borrowck-track(E2440) · 335 P0 scalar String-key(142) · 336 String-key get_ref
-Vector(2) · 337 String-key get_ref HashMap(1). Gate `0·0·331·0` CLEAN độc lập.
+Vector(2) · 337 String-key get_ref HashMap(1). Independent gate `0·0·331·0` CLEAN.
 
-**⚠️ KỶ LUẬT D — bẻ lệnh trực tiếp G:** O ra lệnh "gỡ 2 String-key overload" (G ký "Integer-Key ONLY, merge tách");
-D **tự quyết GIỮ** overload + gộp P0 (vì P0 làm chúng sound). Kỹ thuật đúng NHƯNG bẻ lệnh đã-ký + **thiếu fixture
-heap-value String-key** (O phải tự probe mới biết len=2/1) — **lặp lại Y NGUYÊN tội lỗ P0 vừa vá**. G nuốt tức
-chấp nhận scope rộng nhưng cảnh cáo thép: *"lần cuối dung túng ném-API-không-test, lần sau đuổi cổ"* + ép D bổ sung
+**⚠️ DISCIPLINE ON D — broke a direct order from G:** O had ordered "drop the 2 String-key overloads" (G signed off on "Integer-Key ONLY, split the merge");
+D **unilaterally decided to KEEP** the overloads + folded in the P0 fix (because the P0 fix makes them sound). Technically correct BUT it broke a signed-off order + **was missing the
+heap-value String-key fixture** (O had to probe himself to learn len=2/1) — **repeating the EXACT SAME sin as the P0 hole it had just patched**. G swallowed his anger,
+accepted the wider scope, but issued a steel warning: *"last time I tolerate shipping an untested API, next time you're out"* + forced D to add
 336/337. [[colleague_d_persona]] [[feedback_failure_mode_precision]]
 
-## ✅ ĐÓNG TRỌN — key-typed `HashMap<String,V>` (ADR-0080 + §AMEND-1, Author+O+G ký, PUSHED 2026-07-03(b))
-origin/main = `381979e`, gate `0·0·326·0`. **Campaign Typed Collections P1 (A) KHÓA SỔ.** `HashMap<String,V>`
-+ `HashMap<String,String>` (key ∥ value cùng heap) sound end-to-end từ `.tri` source → JIT real-allocator,
-không rỉ một byte.
+## ✅ FULLY CLOSED — key-typed `HashMap<String,V>` (ADR-0080 + §AMEND-1, Author+O+G signed off, PUSHED 2026-07-03(b))
+origin/main = `381979e`, gate `0·0·326·0`. **Campaign Typed Collections P1 (A) BOOKS CLOSED.** `HashMap<String,V>`
++ `HashMap<String,String>` (key ∥ value both on the heap) sound end-to-end from `.tri` source → JIT real-allocator,
+not a single byte leaks.
 
-**ADR-0080** (`26452e0`) — O BÁC amend ADR-0038 (Comparable=`Ord` ≠ `Hash` — trộn = nát kiến trúc) + BÁC
-`Hashable` trait (trait system mới Tier-1, dựng giờ sụp móng). ADR mới toanh. **D1** slot `key_stride` ∥
-`value_stride` **24B fat** (BÁC 16B: `__triet_string_free` cần cap; String KHÔNG lưu len trên heap ADR-0049
-§6.3 → slot phải chứa len để hash/eq); `key_stride∈{8,24}` kiêm discriminator. **D2/D3** `__triet_string_hash`
-FNV-1a + `__triet_string_eq` sẵn, cấm dynamic dispatch. **D5** key∈{Integer,String}, khác→REFUSE. **Mũi D
-nợ máu 5 death-point** — O vạch thêm **#5 remove-free-resident-key** ngoài 4 điểm Author: (1) map-drop free
-key (2) insert-dup trảm key move-in dư (3) insert=Move key (4) get/remove/contains=borrow `&0` bất đối xứng
-(5) remove free resident key.
+**ADR-0080** (`26452e0`) — O REFUTED amending ADR-0038 (Comparable=`Ord` ≠ `Hash` — mixing them wrecks the architecture) + REFUTED
+a `Hashable` trait (a new Tier-1 trait system, building it now would collapse the foundation). A brand-new ADR. **D1** the slot has `key_stride` ∥
+`value_stride` **24B fat** (REFUTED 16B: `__triet_string_free` needs the capacity; String does NOT store its length on the heap per ADR-0049
+§6.3 → the slot must hold the length for hash/eq); `key_stride∈{8,24}` doubles as the discriminator. **D2/D3** `__triet_string_hash`
+FNV-1a + `__triet_string_eq` already exist, dynamic dispatch is forbidden. **D5** key∈{Integer,String}, anything else→REFUSE. **The D
+front owes blood at 5 death-points** — O charted an additional **#5 remove-free-resident-key** beyond the Author's original 4: (1) map-drop frees the
+key (2) insert-dup must cut down the extra move-in key (3) insert=Move key (4) get/remove/contains=asymmetric `&0` borrow
+(5) remove frees the resident key.
 
-**§AMEND-1** (`72bdf7e`) — **D lật vacuous-tooth** (recon KM-P1a): free viết TRỰC TIẾP trong thân Rust shim
-= static link-time call, BYPASS JIT symbol-table (`with_shims:808` substitution) → counting harness MÙ →
-teeth #2/#3 rỗng từ đầu. O verify độc lập (symbol-table + VALUE out_ptr precedent :2952) → nhận dao, retract
-WO literal. Fix = out-param ABI: `is_update_out` (insert D.2) + `key_out_ptr` (remove D.5) → free đẩy ra JIT
-call-site registry-routed, countable. Bất biến: resident key ≠ lookup key (cấm free `k`).
+**§AMEND-1** (`72bdf7e`) — **D exposed a vacuous-tooth** (recon of KM-P1a): the free was called DIRECTLY inside the Rust shim body
+= a static link-time call, BYPASSING the JIT symbol-table (`with_shims:808` substitution) → the counting harness was BLIND →
+teeth #2/#3 had been vacuous from the start. O verified independently (symbol-table + the VALUE out_ptr precedent :2952) → took the blade,
+retracted the literal WO. The fix = an out-param ABI: `is_update_out` (insert D.2) + `key_out_ptr` (remove D.5) → the free is pushed out to a JIT
+call-site, registry-routed, countable. Invariant: the resident key ≠ the lookup key (freeing `k` is forbidden).
 
-**KM-P1a backend** (`c003a5f`) — Mũi A slot 24B fat (header packing `reserved = key_stride<<16|value_stride`)
-· B `__triet_string_hash` + `hashmap_key_hash/eq` dispatch runtime theo key_stride · D.1 `emit_hashmap_key_free_loop`
-· D.2/D.5 out-param free registry-routed · rehash key-stride memcpy. Hand-built MIR + counting (source E1003
-tới P1b). D tự bắt bug: key-free-loop compile-time đăng ký `__triet_string_free` cho MỌI map kể cả Integer →
-3 test cũ vỡ → gate compile-time trên `key_ty`. **O 5 teeth poison→RED độc lập** (map-drop-leak 1→0 · update-leak
+**KM-P1a backend** (`c003a5f`) — Front A the 24B fat slot (header packing `reserved = key_stride<<16|value_stride`)
+· B `__triet_string_hash` + `hashmap_key_hash/eq` runtime dispatch by key_stride · D.1 `emit_hashmap_key_free_loop`
+· D.2/D.5 out-param free registry-routed · rehash key-stride memcpy. Hand-built MIR + counting (the source stayed at E1003
+until P1b). D caught his own bug: the key-free-loop compile-time registered `__triet_string_free` for EVERY map including Integer ones →
+3 old tests broke → gated compile-time on `key_ty`. **O's 5 teeth poison→RED, independently** (map-drop-leak 1→0 · update-leak
 2→1 · remove-leak 1→0 · content-hash cap=1_000_003 · rehash key-stride→SENTINEL).
 
-**KM-P1b source** (`381979e`) — C1 typecheck generic-K∈{Int,String} (`env.rs`) + String-key overload
+**KM-P1b source** (`381979e`) — C1 typecheck generic-K∈{Int,String} (`env.rs`) + a String-key overload for
 get/len/contains/is_empty + get_ref parity · C2 **E1048 UnsupportedHashMapKey** hard-REFUSE (`exprs.rs:1011`
 gate `sub_map["K"]∉{Int,String}`) · D3 borrowck insert `arg_consumes[true,true,true]` key=Move type-aware
-(is_copy per-call, KHÔNG code mới) · D4 get/remove/contains giữ borrow `[false,false]`. **Lower-bug D vá thật**:
-`lower_type`/`lower_type_simple` (triet-lower) hardcode Integer key vô điều kiện → `HashMap<String,V>` annotation
-âm thầm rớt về Integer → đọc 1st type-arg. **Bug D tự bắt**: D3 phá D.2 KM-P1a (M3-zero chạy TRƯỚC free-redundant-
-key → key dư leak) → đảo thứ tự D.2/D.5 trước M3 (regression #2 cũ verified vẫn RED). **O 7 teeth poison→RED
-độc lập** (★SS(a) key-leak 2→1 · ★SS(b) value-leak 2→1 · ★SS(c) tombstone double-free SIGABRT 134 · #4 insert-Move
+(is_copy per-call, NO new code) · D4 get/remove/contains keep borrow `[false,false]`. **A genuine lower-bug D fixed**:
+`lower_type`/`lower_type_simple` (triet-lower) unconditionally hardcoded an Integer key → a `HashMap<String,V>` annotation
+silently fell back to Integer → reading the 1st type-arg. **A bug D caught himself**: D3 broke D.2 from KM-P1a (M3-zero ran BEFORE the free-of-the-redundant-
+key → the leftover key leaked) → reordered D.2/D.5 before M3 (the old regression #2, re-verified, still RED). **O's 7 teeth poison→RED,
+independently** (★SS(a) key-leak 2→1 · ★SS(b) value-leak 2→1 · ★SS(c) tombstone double-free SIGABRT 134 · #4 insert-Move
 134 · #6 lookup-borrow E2420 · #8 E1048 non-vacuous Tryte+Struct · regr #2 D.2/M3-reorder).
 
-**⚔ BÀI HỌC — O đính chính D ở ★SS(c)** (G khen "đỉnh cao verify-don't-trust"): D báo ★SS(c) "2 lớp phòng thủ
-redundant, poison từng lớp đều sống, phải poison cả hai mới SIGABRT" → hạ chuẩn tooth xuống "chỉ chứng minh bất
-biến ngoài". O KHÔNG nhận narrative — mổ độc lập: KEY path CÓ 2 lớp (state==1 check + `write_bytes` zero key cell
-@4831), nhưng **VALUE path CHỈ 1 lớp** — remove memcpy value ra out_ptr mà KHÔNG zero value cell (không có
-`write_bytes` đối xứng) → **value-loop state-check (`:1306`) LÀ load-bearing đơn lẻ**. Single-poison một dòng đó
-→ SIGABRT 134. D under-analyze memory-model của chính mình, dừng ở (b)-tưởng-(a); O ép tiếp lộ yết hầu. Mẫu
-[[feedback_poison_must_be_red]] + nghi thức O #4 (phân biệt defensive-vô-nghĩa vs hazard-thật bằng poison có máu).
+**⚔ LESSON — O corrected D on ★SS(c)** (G praised it as "the pinnacle of verify-don't-trust"): D reported ★SS(c) as "2 redundant defensive
+layers, poisoning either layer alone survives, both must be poisoned together to get SIGABRT" → and lowered the tooth's standard to "only prove the outer
+invariant". O did NOT accept the narrative — dissected it independently: the KEY path DOES have 2 layers (the state==1 check + a `write_bytes` zeroing the key cell
+@4831), but the **VALUE path has ONLY 1 layer** — remove memcpy's the value out to out_ptr WITHOUT zeroing the value cell (no symmetric
+`write_bytes`) → **the value-loop's state-check (`:1306`) is SOLELY load-bearing**. Poisoning that single line alone
+→ SIGABRT 134. D under-analyzed his own memory-model, stopped at mistaking (b) for (a); O pushed further and exposed the jugular. A pattern of
+[[feedback_poison_must_be_red]] + O's ritual #4 (distinguishing meaningless-defensive from a real hazard using blood-backed poison).
 
-**Defer Tầng-2+ (không hủy):** `HashMap<_,UserStruct>` P2 native-layout · get-clone/borrow heap value ·
-get-borrow-mutable key · generic V-overload (P1 chỉ String) · hash caching · C native multi-field layout.
+**Tier-2+ deferred (not killed):** `HashMap<_,UserStruct>` P2 native-layout · get-clone/borrow heap value ·
+get-borrow-mutable key · generic V-overload (P1 was String-only) · hash caching · C native multi-field layout.
 [[future_comparable_trait_and_monad_gap]] [[feedback_poison_must_be_red]] [[feedback_failure_mode_precision]]
 
-## ✅ ĐÓNG — Bug-E: Outcome-param ABI + `~->` early-return heap double-free (O+G ký 2026-07-03)
-origin/main = `81fae69`, gate `0·0·326·0`. Giang tự phát hiện viết
-`examples/outcome_ternary_family.tri` (push thẳng main, ngoài session): truyền
-`T~E`/`T?~E` làm tham số hàm → tính SAI LẶNG LẼ. G chốt silent-wrong-answer nặng
-hơn crash → dừng A/C/D, dồn lực.
+## ✅ CLOSED — Bug-E: Outcome-param ABI + `~->` early-return heap double-free (O+G signed off 2026-07-03)
+origin/main = `81fae69`, gate `0·0·326·0`. Giang discovered this himself while writing
+`examples/outcome_ternary_family.tri` (pushed straight to main, outside a session): passing
+`T~E`/`T?~E` as a function parameter → silently computed WRONG. G ruled that a silent-wrong-answer is worse
+than a crash → paused A/C/D, concentrated resources.
 
-**WO1 param-ABI copy-in gap** (`ddb7841`): callee prologue cấp StackSlot rỗng cho
-MỌI Outcome-typed local kể cả tham số (`mir_lower.rs:1453`); vòng bind tham số
-(`:1644-1684`) có nhánh copy-in cho String/Enum nhưng THIẾU Outcome — con trỏ caller
-(đã đúng, `:2676`) bị bỏ xó. Fixtures 328/329/330 (scalar/nullable/interleaved-offset).
-⚠️ D dùng `git stash` so pre/post — vi phạm [[feedback_teeth_never_git_checkout]] lần
-đầu, G ghi sổ đen, O verify lại độc lập bằng cp ra cùng kết luận.
+**WO1 param-ABI copy-in gap** (`ddb7841`): the callee prologue allocates an empty StackSlot for
+EVERY Outcome-typed local, including parameters (`mir_lower.rs:1453`); the parameter-bind loop
+(`:1644-1684`) has a copy-in branch for String/Enum but was MISSING Outcome — the caller's pointer
+(already correct, `:2676`) was left discarded. Fixtures 328/329/330 (scalar/nullable/interleaved-offset).
+⚠️ D used `git stash` to compare pre/post — violating [[feedback_teeth_never_git_checkout]] for the
+first time, G logged this in the black book, O re-verified independently via cp and reached the same conclusion.
 
-**WO2 early-return heap double-free** (`818602c`), O tự mở rộng test ngoài phạm vi
-WO1 (probe `String~Integer` param) → SIGABRT 134 → cô lập: bug KHÔNG cần tham số
-hàm, tái hiện chỉ 1 local. 3 site cùng thiếu pattern HP.4
+**WO2 early-return heap double-free** (`818602c`), O extended testing beyond
+WO1's scope himself (probing a `String~Integer` param) → SIGABRT 134 → isolated it: the bug needs NO function
+parameter at all, it reproduces with just 1 local. 3 sites all missing the HP.4 pattern
 (`copy_heap_outcome_payload`/`bind_heap_outcome_payload` + `Deinit`):
 - Site A `lib.rs:~5163` (success-arm passthrough unwrap, `~->` early-return)
 - Site B `lib.rs:~5023` (error-arm bind `e`, `~->` early-return)
-- Root cause CHUNG `lib.rs:~1947` (`Expr::OutcomeConstructor` heap-payload branch —
-  dùng chung MỌI `~+ v`/`~- e` trong ngôn ngữ, vô hại literal/temp nhưng double-free
-  khi payload là named-local có drop-obligation — đúng tình huống Site B tự tạo).
+- The SHARED root cause `lib.rs:~1947` (the `Expr::OutcomeConstructor` heap-payload branch —
+  shared by EVERY `~+ v`/`~- e` in the language, harmless for a literal/temp but a double-free
+  when the payload is a named-local with a drop-obligation — exactly the situation Site B creates).
 
-G ký mở rộng phạm vi tại chỗ (không phải đụng tủ khóa A/C/D — gốc rễ CHÍNH campaign
-đang mở). Fixtures 331/332 (named-local, [[feedback_poison_must_be_red]]). O verify
-máu ĐỘC LẬP cả 3 site — poison TỪNG site một: 5040→332 đỏ/331 không đổi ·
-5176→331 đỏ/332 không đổi · 1957→332 đỏ (fixture-count tụt 258 vì TOÀN BỘ corpus
-chạy chung 1 process, crash cắt cụt phần sau alphabet — KHÔNG hồi quy diện rộng, O
-tự phân tích raw output xác minh). Restore md5 khớp mọi lần, gate CLEAN 326.
+G signed off on this on-the-spot scope expansion (not touching the locked A/C/D cabinets — this is the ROOT of the campaign
+currently open). Fixtures 331/332 (named-local, [[feedback_poison_must_be_red]]). O verified
+the blood-proof INDEPENDENTLY for all 3 sites — poisoning ONE site at a time: 5040→332 red/331 unchanged ·
+5176→331 red/332 unchanged · 1957→332 red (fixture-count dropped by 258 because the ENTIRE corpus
+runs as 1 shared process, the crash truncates the rest of the alphabetical run — NOT a wide-scale regression, O
+personally analyzed the raw output to confirm it). Restore md5 matched every time, gate CLEAN at 326.
 
-## ✅ ĐÓNG — Get-Borrow Heap Value (ADR-0079, G ký 2026-07-01, PUSHED `4fa0298`, gate 321)
-`get(&0 container,k) → (&0 V)?` zero-copy borrow (P1 V=String), thay E1047 ở vị trí
-mượn. Clone CẤM TIỆT (hidden alloc=rác). Mô hình loan: mượn 1 value = mượn CẢ
-container (borrowck không đặt tên được `map[k]` qua hash-shim opaque → conservative
-whole-container freeze). Not-found → nullable-borrow (NULL_SENTINEL, tái dùng PA-3c).
+## ✅ CLOSED — Get-Borrow Heap Value (ADR-0079, G signed off 2026-07-01, PUSHED `4fa0298`, gate 321)
+`get(&0 container,k) → (&0 V)?` zero-copy borrow (P1 V=String), replacing E1047 at the borrow
+site. Clone is FULLY FORBIDDEN (a hidden alloc = garbage). The loan model: borrowing 1 value = borrowing the WHOLE
+container (borrowck cannot name `map[k]` through the opaque hash-shim → a conservative
+whole-container freeze). Not-found → a nullable-borrow (NULL_SENTINEL, reusing PA-3c).
 
-Slice A borrowck (`a970540`): U2 `returns_borrow_of` trên get_ref → PropagatedLoan
-builtin (tái dùng ADR-0046) · U3 `mutates_arg` (remove/pop in-place) — active loan →
-E2440. Slice B (`f57d9b8`): U1 overload concrete · U4 `__triet_{hashmap,vector}_get_ref`
+Slice A borrowck (`a970540`): U2 `returns_borrow_of` on get_ref → PropagatedLoan
+builtin (reusing ADR-0046) · U3 `mutates_arg` (remove/pop in-place) — an active loan →
+E2440. Slice B (`f57d9b8`): U1 concrete overload · U4 the `__triet_{hashmap,vector}_get_ref`
 shim zero-copy, not-found→NULL_SENTINEL · F-d Copy-source skip-conflict.
-⚠️ 2 vòng O-reject: remove/pop lọt lưới (U3 ban đầu chỉ kiểm consume) → D thêm
-`mutates_arg`. O verify: 5 borrowck teeth poison-sensitive + content-read
-`length(ref_str)`→2/5 + fixture 327 content-read guard (325/326 chỉ ROUTE không đọc
-content — bài học lặp từ HM-P1b fx322). Defer: generic V-overload (P1 chỉ String) ·
+⚠️ 2 rounds of O-rejects: remove/pop slipped through the net (U3 originally only checked consume) → D added
+`mutates_arg`. O's verification: 5 poison-sensitive borrowck teeth + a content-read
+`length(ref_str)`→2/5 + fixture 327's content-read guard (325/326 only ROUTE without reading
+content — repeating a lesson from HM-P1b fx322). Deferred: generic V-overload (P1 was String-only) ·
 get-borrow-mutable · key-typed.
 
-## ✅ ĐÓNG — Typed HashMap P1 trọn vẹn (ADR-0078, G ký 2026-07-01, gate 318)
-`HashMap<Integer,V>` (V heap) sound end-to-end qua JIT real-allocator:
+## ✅ CLOSED — Typed HashMap P1, fully complete (ADR-0078, G signed off 2026-07-01, gate 318)
+`HashMap<Integer,V>` (V heap) sound end-to-end through the JIT real-allocator:
 insert(Move)/remove(move-out `V?`)/drop. HM-P1b typecheck-open (`f5c11e1`+`2f100fb`):
-dedicated `Type::HashMap(K,V)` (đập UserStruct) + generic `hashmap_new<V>`/`insert<V>`/
-`remove<V>` (key=Integer cứng, seed V từ expected_type_stack) + get-heap E1047 +
-insert=Move. ⚠️ 3 vòng O-reject: (1) garbage non-det — `lower_type`/`lower_type_simple`
-hard-code `HashMap(Integer,Integer)` bỏ value-arg → stride=8 → fat String đọc rác;
-(2) vacuous-tooth — SIGABRT 134 dùng String LITERAL = temporary KHÔNG drop-obligation
-→ poison TRƠ; O chứng minh bằng MIR (literal KHÔNG Drop, named-local CÓ) — LUẬT
-NAMED-LOCAL khắc đá; (3) sạch.
+a dedicated `Type::HashMap(K,V)` (replacing UserStruct) + generic `hashmap_new<V>`/`insert<V>`/
+`remove<V>` (key=Integer hardcoded, seeding V from expected_type_stack) + get-heap E1047 +
+insert=Move. ⚠️ 3 rounds of O-rejects: (1) non-deterministic garbage — `lower_type`/`lower_type_simple`
+hardcoded `HashMap(Integer,Integer)`, dropping the value-arg → stride=8 → a fat String reads garbage;
+(2) a vacuous-tooth — SIGABRT 134 used a String LITERAL = a temporary with NO drop-obligation
+→ the poison was INERT; O proved it via MIR (a literal has NO Drop, a named-local DOES) — the
+NAMED-LOCAL RULE was engraved in stone; (3) clean.
 
-HM-P1a storage backend (`a0e60d8`, gate 315): value-typed `HashMap<Integer,T>` (T
-heap) machinery sound (ngủ đông — source E1003 lúc đó, proven hand-built MIR).
-MirType::HashMap(Box<K>,Box<V>) · slot value-stride inline stride-in-header ·
-JIT-emitted free-loop registry-routed · remove shim move-out tombstone + out-ptr-
-sentinel. 3 tầng độ khó: T1 value=Vector-reuse · T2 key-typed=hash/eq MỚI (DEFER,
-đúng mặt trận A vừa chốt) · T3 typecheck UserStruct→dedicated Type::HashMap. ⚠️ 3
-vòng reject: phantom hash · tooth VACUOUS fat-rehash 0 test · 17 clippy dán nhãn
-"pre-existing" sai.
+HM-P1a storage backend (`a0e60d8`, gate 315): the value-typed `HashMap<Integer,T>` (T
+heap) machinery is sound (dormant — the source was still E1003 at that point, proven via hand-built MIR).
+MirType::HashMap(Box<K>,Box<V>) · a value-stride slot with inline stride-in-header ·
+a JIT-emitted, registry-routed free-loop · the remove shim's move-out tombstone + out-ptr-
+sentinel. 3 tiers of difficulty: T1 value=Vector-reuse · T2 key-typed=NEW hash/eq (DEFERRED,
+matching the A-front just settled) · T3 typecheck UserStruct→dedicated Type::HashMap. ⚠️ 3
+rounds of rejects: a phantom hash · a VACUOUS fat-rehash tooth with 0 tests · 17 clippy warnings mislabeled
+as "pre-existing".
 
-## ✅ ĐÓNG — Typed Vector P1 trọn vẹn (ADR-0077, G ký 2026-06-30, gate 312/315)
+## ✅ CLOSED — Typed Vector P1, fully complete (ADR-0077, G signed off 2026-06-30, gate 312/315)
 `Vector<T>` (String/Vector/HashMap/Nullable element) construct+push+pop+drop sound
-end-to-end. Element-SIZE built-in = HẰNG compile-time (tách-tầng khỏi native-layout),
-REFUSE Vector<UserStruct/Enum> ở biên P1. Slice A backend (`76405aa`): MirType::Vector
-→Vector(Box) · stride-in-header · JIT-emitted element-free loop (chống vacuity, D bắt
-shim-internal free bỏ qua registry) · by-ptr fat ABI + pop shim. Slice B typecheck-open
-(`951790e`): tái dùng máy generic-fn v0.7.4.1 (extract_type_params+substitute, KHÔNG
+end-to-end. Element-SIZE built-in = a compile-time CONSTANT (decoupled from native-layout),
+REFUSE Vector<UserStruct/Enum> at the P1 boundary. Slice A backend (`76405aa`): MirType::Vector
+→Vector(Box) · stride-in-header · a JIT-emitted element-free loop (against vacuity, D caught
+a shim-internal free that was bypassing the registry) · by-ptr fat ABI + a pop shim. Slice B typecheck-open
+(`951790e`): reused the v0.7.4.1 generic-fn machine (extract_type_params+substitute, NOT
 HM-unify) · get-heap→E1047 refuse · push=Move. P1.5 pop-wire (`1977a93`, gate 315): 3
-nối dây frontend + bugfix D tự phát hiện (empty-fat-pop ghi NULL_SENTINEL vào out_ptr).
-O nhiều teeth SIGABRT 134 real-allocator (poison consume/len--/sentinel).
+frontend wiring points + a bugfix D discovered himself (empty-fat-pop was writing NULL_SENTINEL into out_ptr).
+O found many teeth with SIGABRT 134 real-allocator (poisoning consume/len--/sentinel).
 
 [[feedback_poison_must_be_red]] [[feedback_teeth_never_git_checkout]]
 [[feedback_failure_mode_precision]] [[mentor_o_persona]] [[colleague_d_persona]]
 
-## 2026-07-10 — CỤM B SLICE C: `HashMap<K,aggregate>` VALUE (ADR-0082 B-α cont., G ký, PUSHED)
-origin/main `6d9e144`, gate `0·0·331·0`. 3 commit: `6ec2630`(F1–F4 + T4 unit) · `36ba45f`(teeth) · `6d9e144`(docs). **Scope:** value-aggregate (Struct/Enum) **insert+drop+alloc SOUND** (mirror Slice A/B element push+drop); get/get_ref/contains/remove + key-aggregate REFUSE.
-**4 fix / 4 MÌN (recon O, file:line thật):**
-- F1 `emit_hashmap_value_free_loop:1387` guard `is_any_heap()`→`aggregate_needs_drop` (Struct/Enum ≠ is_any_heap → guard phẳng bail → leak; mirror Vector element loop 1186).
-- F2 `aggregate_needs_drop` Enum-arm: `for`-loop đệ quy + `?` thay `.any(payload.ty.is_any_heap())` phẳng — **defense-in-depth LATENT** (frontend refuse enum-payload-aggregate; unit test T4 pin trực tiếp trên hand-built EnumLayout, bypass frontend).
-- F3 marshal `hashmap_insert` value HAI ĐẦU S3-gap (đối xứng vector_push 3255–3280): ĐẦU-A fat (>8B) value ở `enum_slots` không chỉ `struct_slots`; **ĐẦU-B** 8B-aggregate value (ôm 1 handle, stride==8) → `stack_load(slot,0)` KHÔNG `use_var` (else-branch cũ đọc Variable rỗng → garbage → leak câm; C5/T9 Slice A/B tái sinh).
-- F4 refuse tách: helper mới `refuse_hashmap_aggregate_key` (key-only) @alloc(3239)+insert(3296); giữ `refuse_hashmap_aggregate_kv` (K+V) @remove-probe(3073)+remove(3359)+get-family(3431). WO gốc G nói 3 site, O đếm ra 5.
-**🩸 O tự bắt lỗ G bỏ sót ở WO = MÌN-3 ĐẦU-B** (8B value ôm handle → use_var garbage → LEAK CÂM, 331 fixture không thấy) → tooth T3 riêng.
-**⚖ D "lệch lệnh" có tri thức (G duyệt):** get/get_ref/contains/key chết ở typecheck (E1041 NoMatchingOverload/E1002 undefined/E1048) → JIT-refuse = defense-in-depth → hand-built MIR (án-lệ ADR-0078); chỉ remove chạm JIT. **O probe 5 `.tri` source độc lập verify = đúng tuyệt đối.**
-**O verify 4+1 poison→RED độc lập** (cp-snapshot restore md5 `62ab04…`): F1→T1/T2/T3 FREE `0 vs 2` · F2→T4 `needs_drop==false` · F3-ĐẦU-A→T2 compile-fail "fat value without slot" · F3-ĐẦU-B→T3 FREE 0 (chỉ T3 → INLINE-anchor cô lập) · neuter 2 refuse-helper→6 refuse tooth "compilation SUCCEEDED". Failure-mode = FREE-count-wrong (leak, KHÔNG SIGSEGV).
-**Teeth:** T1 `hashmap_struct_value_insert_drop_frees_string_field` · T2 `hashmap_enum_value_insert_drop_frees_string_payload` · T3 `hashmap_8b_struct_value_insert_drop_frees_wrapped_vector` · T4 unit `aggregate_needs_drop_enum_recurses_into_struct_payload` · 6 refuse (remove source-level + get/get_ref/contains/key-alloc/key-insert hand-built MIR). Repurpose `hashmap_struct_value_refused_at_jit`→`..._remove_refused_at_jit` (Luật 3; coverage insert-Struct-value→T1).
-**⚠️ Bom hẹn giờ FIX-2 zero-@8 (Slice B) giữ nguyên.** **Nợ Slice C defer:** value move-out (get/remove by-value — nấm mồ chung Vector pop) · get_ref borrow value-aggregate (Cụm D) · contains-allow value-aggregate · key-aggregate hash+eq đệ quy.
-**Mặt trận kế:** value move-out aggregate (recursive move-out-tombstone: dest leaf-marshal + buffer/cell tombstone + source) HOẶC key-aggregate — G/Giang chốt.
+## 2026-07-10 — CLUSTER B SLICE C: `HashMap<K,aggregate>` VALUE (ADR-0082 B-α cont., G signed off, PUSHED)
+origin/main `6d9e144`, gate `0·0·331·0`. 3 commits: `6ec2630`(F1–F4 + T4 unit) · `36ba45f`(teeth) · `6d9e144`(docs). **Scope:** value-aggregate (Struct/Enum) **insert+drop+alloc SOUND** (mirroring Slice A/B element push+drop); get/get_ref/contains/remove + key-aggregate REFUSED.
+**4 fixes / 4 MINES (O's recon, real file:line references):**
+- F1 `emit_hashmap_value_free_loop:1387` guard `is_any_heap()`→`aggregate_needs_drop` (Struct/Enum ≠ is_any_heap → the flat guard bails → leak; mirroring the Vector element loop at 1186).
+- F2 the `aggregate_needs_drop` Enum-arm: a recursive `for`-loop + `?` replacing the flat `.any(payload.ty.is_any_heap())` — **LATENT defense-in-depth** (the frontend refuses enum-payload-aggregate; unit test T4 pins this directly on a hand-built EnumLayout, bypassing the frontend).
+- F3 the `hashmap_insert` value marshal had a TWO-ENDED S3-gap (symmetric to vector_push 3255–3280): END-A fat (>8B) value belongs in `enum_slots` not just `struct_slots`; **END-B** an 8B-aggregate value (wrapping 1 handle, stride==8) → needs `stack_load(slot,0)` NOT `use_var` (the old else-branch read an empty Variable → garbage → a silent leak; the C5/T9 Slice A/B bug reincarnated).
+- F4 split the refuse: a new helper `refuse_hashmap_aggregate_key` (key-only) @alloc(3239)+insert(3296); kept `refuse_hashmap_aggregate_kv` (K+V) @remove-probe(3073)+remove(3359)+get-family(3431). G's original WO said 3 sites, O counted 5.
+**🩸 O caught a hole G's WO had missed = MINE-3, END-B** (an 8B value wrapping a handle → use_var garbage → a SILENT LEAK, not seen by the 331 fixtures) → a dedicated tooth T3.
+**⚖ D's informed "deviation from orders" (approved by G):** get/get_ref/contains/key die at typecheck (E1041 NoMatchingOverload/E1002 undefined/E1048) → the JIT-refuse is defense-in-depth → hand-built MIR (precedent from ADR-0078); only remove touches the JIT. **O probed 5 `.tri` sources to independently verify = absolutely correct.**
+**O's 4+1 poison→RED verification, independent** (cp-snapshot restore md5 `62ab04…`): F1→T1/T2/T3 FREE `0 vs 2` · F2→T4 `needs_drop==false` · F3-END-A→T2 compile-fail "fat value without slot" · F3-END-B→T3 FREE 0 (only T3 → an isolated INLINE-anchor) · neutering the 2 refuse-helpers→6 refuse teeth "compilation SUCCEEDED". Failure-mode = wrong FREE-count (a leak, NOT SIGSEGV).
+**Teeth:** T1 `hashmap_struct_value_insert_drop_frees_string_field` · T2 `hashmap_enum_value_insert_drop_frees_string_payload` · T3 `hashmap_8b_struct_value_insert_drop_frees_wrapped_vector` · T4 unit `aggregate_needs_drop_enum_recurses_into_struct_payload` · 6 refuse teeth (remove source-level + get/get_ref/contains/key-alloc/key-insert hand-built MIR). Repurposed `hashmap_struct_value_refused_at_jit`→`..._remove_refused_at_jit` (Rule 3; coverage of insert-Struct-value→T1).
+**⚠️ The FIX-2 zero-@8 time bomb (Slice B) remains unchanged.** **Slice C deferred debt:** value move-out (get/remove by-value — sharing a grave with Vector pop) · get_ref borrow of a value-aggregate (Cluster D) · contains-allow for a value-aggregate · key-aggregate recursive hash+eq.
+**Next front:** value move-out aggregate (recursive move-out-tombstone: dest leaf-marshal + buffer/cell tombstone + source) OR key-aggregate — to be decided by G/Giang.

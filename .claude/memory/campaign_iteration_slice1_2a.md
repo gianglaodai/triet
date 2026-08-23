@@ -1,6 +1,6 @@
 ---
 name: campaign_iteration_slice1_2a
-description: "✅ ĐÓNG — ADR-0084 verify (386 vacuous→sole-guard) + ADR-0089 Iteration Slice 1 (loop/break/continue+for-Range) + Slice 2a (for-item Vector copy sugar). Phiên 2026-07-26, 3 pháo đài."
+description: "✅ CLOSED — the ADR-0084 verification (386 vacuous → sole guard) + ADR-0089 Iteration Slice 1 (loop/break/continue + for-Range) + Slice 2a (for-item Vector copy sugar). Session 2026-07-26, 3 fortresses."
 metadata:
   node_type: memory
   type: project
@@ -8,54 +8,65 @@ metadata:
   modified: 2026-07-26T10:44:40.186Z
 ---
 
-# Phiên 2026-07-26 — 3 pháo đài: ADR-0084 verify + ADR-0089 Slice 1 + Slice 2a
+# Session 2026-07-26 — 3 fortresses: the ADR-0084 verification + ADR-0089 Slice 1 + Slice 2a
 
 origin/main **`adfe8f9`** (synced), gate `0·clean·0·479·0`.
 
-## 🏁 ADR-0084 verify (`9ff47c1`) — 386 vacuous → sole-guard
-Nợ-verify treo từ phiên trước: code land+corpus xanh nhưng ADR DRAFT + tooth-386 VACUOUS.
-**O bóc mẽ harness:** `integration_test` `run_fixture` gộp-đa-pha (không dừng typecheck-fatal) →
-E2450 chỉ hiện qua harness; **CLI thật 386 → E2400 typecheck-fatal** (main.rs:58-64 dừng trước
-borrowck), user KHÔNG BAO GIỜ thấy E2450. G lệnh "đâm nách typecheck": thêm `dummy: &0 String` param
-→ tie return-borrow → né E2400 → E2450 nổ SẠCH ở borrowck (đo 2 lần D+O). Thay ruột 386 = răng thật.
-**O poison chase (checker.rs:710-714 plain-strip)** → 386 compile SẠCH exit 0 (would-dangle→JIT=UAF) =
-chase **sole-guard trên đường tới-runtime** (khác 386 cũ E2400 che). ADR §định-lý-phân-tầng: typecheck
-E2400=guard UNBOUND return-escape; borrowck chase=SOLE-GUARD cho E2440 (move-while-borrowed 387) +
-E2450 (BOUND return-escape param-tie 386).
+## 🏁 The ADR-0084 verification (`9ff47c1`) — 386 went from vacuous to sole guard
+A verification debt hanging from the previous session: the code had landed and the corpus was green, but the
+ADR was a DRAFT and tooth-386 was VACUOUS.
+**O exposed the harness:** `integration_test`'s `run_fixture` merges phases (it does not stop on a fatal
+typecheck error) → E2450 only appears through the harness; **the real CLI gives 386 → E2400, fatal in
+typecheck** (main.rs:58-64 stops before borrowck), so a user would NEVER see E2450. G ordered "stab past
+typecheck": add a `dummy: &0 String` param → tie the return borrow → dodge E2400 → E2450 fires CLEANLY in
+borrowck (measured twice, by D and O). Replacing 386's guts gave it real teeth.
+**O's poison of the chase (checker.rs:710-714, the plain strip)** → 386 compiles CLEANLY with exit 0 (a
+would-dangle case reaching the JIT = a UAF) = the chase is the **sole guard on the path to runtime** (unlike
+the old 386, which E2400 masked). The ADR's layering theorem: typecheck E2400 guards an UNBOUND return
+escape; the borrowck chase is the SOLE GUARD for E2440 (move-while-borrowed, 387) and E2450 (a BOUND return
+escape with a param tie, 386).
 
-## 🏁 ADR-0089 Slice 1 (`85371a6`) — loop/break/continue + for-Range (Scope B, amends ADR-0003)
-G chốt Scope B (concrete CFG desugar, CẤM generic trait — ADR-0003 trait-Iterator defer vô hạn +
-tombstone "AI-first"). **Loop-context stack** (break_bb/continue_bb/drop_snapshot). for-Range=while-shape
-+ **step block** (continue→step KHÔNG hdr, tránh vô hạn). break/continue emit_scope_drops
-`owned_locals[snapshot..]` emit-không-clear (mirror flush_all_for_return Case-D) → drop đúng 1 lần/đường.
-**Borrowck KHÔNG chạm** (CFG-generic fixpoint back-edge). 3 guard: **E1052** non-Range typecheck (kill
-silent-Unknown), **E0009** parse_break reject break-value (G tự soi `stmt.rs:169` nuốt câm), **E1143**
-break/continue-outside-loop (D bác giả định ADR "parser ràng break"=SAI bằng data; đổi từ E1140-mượn).
-Răng permanent **`break_drop_counting.rs`** (O poison→FREE 3→2 leak). SPEC §7.2 hết nói dối.
+## 🏁 ADR-0089 Slice 1 (`85371a6`) — loop/break/continue + for-Range (Scope B, amending ADR-0003)
+G settled on Scope B (a concrete CFG desugar, FORBIDDING a generic trait — ADR-0003's trait Iterator is
+deferred indefinitely + the "AI-first" tombstone). A **loop-context stack** (break_bb/continue_bb/
+drop_snapshot). for-Range is the while shape + a **step block** (continue→step, NOT hdr, to avoid an
+infinite loop). break/continue call emit_scope_drops over `owned_locals[snapshot..]`, emitting without
+clearing (mirroring flush_all_for_return Case-D) → each path drops exactly once.
+**Borrowck was NOT touched** (a CFG-generic fixpoint over back edges). 3 guards: **E1052** for a non-Range
+in typecheck (killing a silent Unknown), **E0009** in parse_break rejecting a break value (G spotted
+`stmt.rs:169` swallowing it silently), and **E1143** for break/continue outside a loop (D refuted the ADR's
+assumption that "the parser constrains break" as FALSE with data; changed from the borrowed E1140).
+Permanent teeth in **`break_drop_counting.rs`** (O's poison → FREE 3→2, a leak). SPEC §7.2 no longer lies.
 
-## 🏁 ADR-0089 Slice 2a (`adfe8f9`) — for-item Vector copy sugar (scalar + bare copy-Struct)
-`for item in v` desugar index-loop, **infallible in-bounds get** (bind `item:T`, KHÔNG `!!`/nullable),
-tái dùng shim `__triet_vector_get`/`_get_copy` raw (bỏ nullable-wrap). **KHÔNG move-out/tombstone** —
-copy bytes, v nguyên vẹn.
-**Bãi mìn G #1 (heap-element by-value = alias→double-free):** refuse tại typecheck **E1053**.
-**Bãi mìn G #2 (handle-aliasing container double-free):** desugar tái-dùng local của v (KHÔNG alias
-handle vào owned_local mới). Răng permanent `vector_iter_container_free_counting.rs` FREE=1 lvalue+rvalue.
-**🚩 O đào 2 loose-end sau khi D nộp lần 1:** (a) **asymmetry bẫy câm MỚI** — typecheck
-`is_copy_aggregate()` broad allow Vector<CopyEnum>/Nullable nhưng lower E1100 (O probe Vector<Color>→E1100
-SỐNG). G lệnh thắt typecheck khớp CHÍNH XÁC lower: `is_scalar() || (UserStruct && is_copy_aggregate())`.
-(b) **dead code** — `if !is_lvalue push_owned` REDUNDANT (O poison 2 hướng FREE không đổi → truy
-`emit_shim_call:1783` push_owns arg → dòng D thừa; map-trace D sót). Cleanup xóa + sửa comment.
-Poison guard broad→485 E1100 (trap tái mở)=load-bearing.
+## 🏁 ADR-0089 Slice 2a (`adfe8f9`) — for-item Vector copy sugar (scalars + bare Copy structs)
+`for item in v` desugars into an index loop with an **infallible in-bounds get** (binding `item:T`, with no
+`!!` and no nullable), reusing the raw shims `__triet_vector_get`/`_get_copy` (dropping the nullable wrap).
+**No move-out, no tombstone** — it copies bytes and leaves v intact.
+**G's minefield #1 (a heap element by value = an alias → a double free):** refused in typecheck with **E1053**.
+**G's minefield #2 (handle aliasing → a container double free):** the desugar reuses v's own local (it does
+NOT alias the handle into a new owned local). Permanent teeth in
+`vector_iter_container_free_counting.rs`, FREE=1 for both lvalues and rvalues.
+**🚩 O dug out 2 loose ends after D's first submission:** (a) **an asymmetry creating a NEW silent trap** —
+typecheck's `is_copy_aggregate()` broadly allows Vector<CopyEnum>/Nullable while the lowerer gives E1100
+(O's probe: Vector<Color>→E1100 is LIVE). G ordered typecheck tightened to match the lowerer EXACTLY:
+`is_scalar() || (UserStruct && is_copy_aggregate())`. (b) **dead code** — `if !is_lvalue push_owned` is
+REDUNDANT (O poisoned it in 2 directions with no change in FREE → traced `emit_shim_call:1783` push_owning
+the arg → D's line was superfluous; D's map trace had missed that layer). Cleanup removed it and fixed the
+comment. Poisoning the guard back to broad → 485 E1100 (the trap reopens) = load-bearing.
 
-## Bài học phiên (Mentor O)
-1. **Harness ≠ thế giới thực** (386): răng qua test-harness-gộp-pha có thể VACUOUS — user thật thấy mã khác.
-2. **Luật #12 stale-binary cứu 2 lần:** probe 478/485 ra E1140/E1100 do `./target/release` chưa rebuild;
-   rebuild-first mỗi lần chạy binary. Suýt cắm cờ giả (như P1 phiên trước).
-3. **push_owned idempotent** (lib.rs:651) → poison "double-push cùng local" = no-op không đỏ; bãi mìn thật
-   là "alloc fresh local + Assign". Chọn đúng shape poison.
-4. **emit_shim_call push_owns arg không-consumed** (lib.rs:1783) — nguồn ownership ngầm của iter_local;
-   ai thiết kế ownership quanh shim-call phải tính tầng này.
-5. **D (Sonnet 5) MVP:** map-trace tự làm, tự poison handle-alias→SIGABRT trước khi nộp, khai thật asymmetry
-   + dead-code cho O đào tiếp. Vết: treo-lượt-chờ-gate (luật 17 hạ tầng) — O verify bằng máu mình bất kể.
+## Session lessons (Mentor O)
+1. **The harness is not the real world** (386): teeth that only bite through a phase-merging test harness can
+   be VACUOUS — a real user sees a different code.
+2. **Law #12, the stale binary, saved us twice:** probes 478/485 gave E1140/E1100 because
+   `./target/release` had not been rebuilt; rebuild first every time you run a binary. It nearly planted a
+   false flag (like P1 in the previous session).
+3. **push_owned is idempotent** (lib.rs:651) → poisoning it with "double-push the same local" is a no-op and
+   never goes red; the real minefield is "allocate a fresh local + Assign". Choose the right poison shape.
+4. **emit_shim_call push_owns a non-consumed argument** (lib.rs:1783) — the implicit ownership source for
+   iter_local; anyone designing ownership around a shim call must account for that layer.
+5. **D (Sonnet 5) was MVP:** it produced the map trace itself, poisoned the handle-alias case itself
+   (→SIGABRT) before submitting, and honestly declared the asymmetry and the dead code for O to dig into.
+   Blemish: leaving a turn hanging while waiting on the gate (law 17, infrastructure) — O verified with its
+   own blood regardless.
 
 → [[mentor_o_persona]] [[colleague_d_persona]] [[feedback_poison_must_be_red]] [[campaign_typed_collections]] [[campaign_aggregate_nullable]]

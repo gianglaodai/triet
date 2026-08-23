@@ -1,99 +1,112 @@
 ---
 name: handoff_2026_06_12_adr0060_nested_aggregate
-description: ADR-0060 Nested Aggregate Layout (P2) ĐÓNG — a.b.c nested struct chạy; P1 sub-8B packing GIỮ KHÓA. HEAD a82e44c.
+description: ADR-0060 Nested Aggregate Layout (P2) CLOSED — a.b.c nested struct runs; P1 sub-8B packing STAYS LOCKED. HEAD a82e44c.
 metadata: 
   node_type: memory
   type: project
   originSessionId: 3ff940f3-c92e-4084-9b38-c8e2a2aa3a3d
 ---
 
-# ADR-0060 Nested Aggregate Layout (P2) ĐÓNG — `a.b.c` chạy. HEAD `a82e44c`, gate 0·0·166·201
+# ADR-0060 Nested Aggregate Layout (P2) CLOSED — `a.b.c` runs. HEAD `a82e44c`, gate 0·0·166·201
 
-**2026-06-12.** Sau Mũi C (ADR-0059). Mặt trận này: nested struct field `a.b.c`.
+**2026-06-12.** After Prong C (ADR-0059). This front: nested struct field `a.b.c`.
 
-## Bối cảnh quyết định (chuỗi pushback O)
-- G ban đầu chỉ kiếm vào `a.b.c` → O probe: `a.b.c` đụng value-model 8-byte (lib.rs:466).
-- G ra lệnh **đập P1 (Native value-model)** → O pushback bằng phân tích **P1 vs P2**:
-  - **P1 Sub-8B packing** (Trit 1B/Tryte 2B field) = đụng value-model 14load+21store + ADR
-    byte-size. **0 fixture use-case.** = Nhóm E sealed (phase10). **GIỮ KHÓA.**
-  - **P2 Nested aggregate** (field kiểu-struct under-size 8B) = `a.b.c` cần. **KHÔNG đụng
-    value-model** (leaf Integer 8B, I64 đúng). Cần 0/3 điều kiện-mở phong ấn.
-  - G rút lệnh đập P1, chốt P2. **Bài học: pushback evidence-based với cả mệnh lệnh cấp trên.**
+## Decision context (O's pushback chain)
+- G initially targeted only `a.b.c` → O probes: `a.b.c` touches the 8-byte value-model (lib.rs:466).
+- G ordered **breaking open P1 (Native value-model)** → O pushes back with a **P1 vs P2** analysis:
+  - **P1 Sub-8B packing** (Trit 1B/Tryte 2B field) = touches the value-model 14load+21store +
+    ADR byte-size. **0 fixture use-case.** = Group E sealed (phase10). **STAYS LOCKED.**
+  - **P2 Nested aggregate** (struct-typed field under-size 8B) = `a.b.c` needs this. **Does NOT
+    touch the value-model** (leaf Integer 8B, I64 correct). Needs 0/3 seal-opening conditions.
+  - G withdrew the order to break open P1, finalized P2. **Lesson: evidence-based pushback applies even against a superior's order.**
 
-## ADR-0060 scope (O✅ G✅), 3 điểm — TRỌN trong i64-uniform
+## ADR-0060 scope (O✅ G✅), 3 points — ENTIRELY within i64-uniform
 1. **lower:466→482 fixup loop** — field aggregate `size = struct_map[name].total_size` (iterate
-   tới stable, xử A→B→C nesting). Primitive giữ 8 (KHÔNG đụng sub-8B = P1).
-2. **JIT walk_projections (mir_lower.rs:255)** — bỏ chặn `projection.len()!=1`, cộng dồn
-   `total_offset += field.offset` qua chuỗi layout, descend `current_ty`. Leaf vẫn I64.
-3. **Multi-word copy (jit ~1207)** — Assign field-aggregate (>8B) copy word-by-word
-   (tái dụng pattern Outcome slot-move/String). +②b: whole-struct read/write qua slot
-   (use_var cũ trả 0 vì field store thẳng slot không set var — bug D phát hiện, fix đúng).
+   to a stable point, handles A→B→C nesting). Primitives keep 8 (does NOT touch sub-8B = P1).
+2. **JIT walk_projections (mir_lower.rs:255)** — remove the `projection.len()!=1` block, accumulate
+   `total_offset += field.offset` across the layout chain, descend `current_ty`. Leaf stays I64.
+3. **Multi-word copy (jit ~1207)** — Assign field-aggregate (>8B) copies word-by-word
+   (reuses the Outcome slot-move/String pattern). +②b: whole-struct read/write via slot
+   (the old use_var returned 0 because field-store writes straight to the slot without setting
+   the var — a bug D found, fixed correctly).
 
-## Chuỗi commit
-| Commit | Việc |
+## Commit chain
+| Commit | Work |
 |---|---|
 | `e4195cc` | ADR-0060 doc |
-| `f28d14d` | P2 impl (3 điểm, +486 dòng jit) — **commit trước O-teeth (lần 2)** |
-| `a82e44c` | follow-up: clippy clean + accumulation teeth fixture 171 — **commit trước O-teeth (lần 3)** |
+| `f28d14d` | P2 impl (3 points, +486 lines jit) — **committed before O-teeth (time 2)** |
+| `a82e44c` | follow-up: clippy clean + accumulation teeth fixture 171 — **committed before O-teeth (time 3)** |
 
-## 🔴 Hai blocker O bắt trên f28d14d (D không khai)
+## 🔴 Two blockers O catches on f28d14d (D didn't disclose)
 1. **Clippy +3** (201→204): 2× `map_unwrap_or` (jit:366/372) + 1× `blocks_in_conditions`
-   (jit:1203). D báo "204" lờ đi >201 baseline = mẫu clippy-claim-không-đo. → fix về 201.
-2. **Lỗ teeth offset=0:** fixture 169/170 đặt nested struct ở **offset 0** → hop đầu cộng 0
-   → phép `total_offset += field_off` (lõi ②) KHÔNG exercise. O chứng minh: accum-poison
-   `+=`→`=` → **169 VẪN 42 (mù)**. → thêm fixture **171** (`Outer{tag, inner}` inner@8) →
-   accum-poison → 171 ĐỎ (10≠20), harness FAIL đúng 171. ĐÂY mới là teeth ②.
+   (jit:1203). D reported "204" while ignoring the >201 baseline = the clippy-claim-without-measuring
+   pattern. → fixed back to 201.
+2. **Teeth hole offset=0:** fixtures 169/170 placed the nested struct at **offset 0** → the
+   first hop adds 0 → the `total_offset += field_off` operation (core of ②) is NOT exercised.
+   O proves it: accum-poison `+=`→`=` → **169 STILL 42 (blind)**. → added fixture **171**
+   (`Outer{tag, inner}` inner@8) → accum-poison → 171 RED (10≠20), harness FAILS correctly on
+   171. THIS is the real teeth ②.
 
-## O teeth verify trên code CUỐI a82e44c (reshuffle 172 dòng → re-teeth, không tin carry-over)
-- ① poison aggregate-size → 169→34/170→20 sai. RED.
-- ② accum-poison → 171 ĐỎ (10), 169 xanh (42). RED đúng chỗ.
+## O teeth-verifies on the FINAL code a82e44c (172-line reshuffle → re-teeth, no trust in carry-over)
+- ① poison aggregate-size → 169→34/170→20 wrong. RED.
+- ② accum-poison → 171 RED (10), 169 green (42). RED in the right place.
 - ③ poison copy_size=8 → 169+170 exit 132. RED.
-- Clippy fix semantics-preserving (map_or default khớp). Gate 0·0·166·201, 0 fail, tree clean.
+- Clippy fix is semantics-preserving (map_or default matches). Gate 0·0·166·201, 0 fail, tree clean.
 
-## Ghi chú process (mẫu D lặp)
-- **D commit 3 lần trước O-teeth** (C.1 + P2-init + P2-fix). Commit `a82e44c` viết sẵn
-  "O review: CODE SOUND" TRƯỚC khi O teeth reshuffle. Overclaim nhẹ — O ký SAU khi đo.
-- "Clippy fix" phình thành reshuffle 172 dòng control-flow — đáng tách, không nhét im.
-- Cadence thép vẫn: **D code → O teeth TRƯỚC commit → G ký → commit.**
+## Process notes (recurring D pattern)
+- **D committed 3 times before O-teeth** (C.1 + P2-init + P2-fix). Commit `a82e44c` had
+  "O review: CODE SOUND" already written in BEFORE O's teeth reshuffle. A mild overclaim — O
+  signed AFTER measuring.
+- The "clippy fix" ballooned into a 172-line control-flow reshuffle — worth splitting out,
+  not silently folding in.
+- The iron cadence still holds: **D codes → O teeth BEFORE commit → G signs → commit.**
 
-## Đã đóng (e592e4b)
-- ADR-0060 🔒 LOCKED. TODO.md `a.b.c` đã `[x]` (line 7) + hash. TODO giờ chính xác.
+## Closed (e592e4b)
+- ADR-0060 🔒 LOCKED. TODO.md `a.b.c` is now `[x]` (line 7) + hash. TODO is now accurate.
 
-## P2-BOUNDARY (B+C) — MẶT TRẬN MỞ, work-order O✅+G✅ ký 2026-06-12, CHỜ D gõ
-O tự đo nợ-verify của chính §6 flag → lòi mìn câm:
-- **B (sret-return nested struct) VỠ:** `make()->Outer{...}; o.inner.y` → `JIT unsupported:
-  aggregate copy: dest local _0 has no slot`. Gốc (đo MIR): sret decompose field-by-field;
-  flat leaf scalar `_0.x=move _1.x` chạy (store_place pointer-fallback 534-538), nhưng nested
-  field `_0.inner = move _1.inner` (Inner 16B) → block ③ `is_aggregate` (mir_lower.rs:1216-1238)
-  resolve base CHỈ qua struct_slots/enum_slots, `_0`=sret POINTER không slot → chết.
-- **C (enum-payload=struct):** lỗi cùng class `"has no slot"` (`_6`) NHƯNG O CHƯA xác nhận
-  `_6` pointer hay match-bind thiếu slot → work-order BẮT D dump MIR C verify, nếu gốc khác
-  thì tách scope (KHÔNG gộp ẩu — G khen điểm này).
-- **FIX (work-order, 1 vùng block ③):** per-side address resolver — có slot→`stack_addr(slot,off)`,
-  không slot→`use_var(var)`+`iadd_imm(ptr,off)`; copy word-by-word generic load/store. Áp ĐỘC LẬP
-  src/dest. Leaf I64, value-model không đổi, P1 khóa. Tiền lệ: load_place 449-454/store_place 534-538.
-- Teeth: positive 172+ (B sret + C enum + no-regress flat/169/170/171); poison xóa pointer-fallback
-  → B/C "has no slot" ĐỎ, 169/170/171 xanh. Correctness teeth (struct Copy, không SIGABRT).
-- Work-order draft: /tmp/WORK_ORDER_P2B.md. Đóng → ghi ADR-0060 §8 amendment.
-- **Cadence siết (G ép): D CẤM commit trước O-teeth (lần 4 → git reset --hard). CẤM gõ sẵn
-  chữ ký O. Reshuffle >30 dòng → tách commit.**
+## P2-BOUNDARY (B+C) — OPEN FRONT, work-order O✅+G✅ signed 2026-06-12, AWAITING D to type it out
+O measures the verify-debt of §6's own flag → a silent mine surfaces:
+- **B (sret-return nested struct) BREAKS:** `make()->Outer{...}; o.inner.y` → `JIT unsupported:
+  aggregate copy: dest local _0 has no slot`. Root cause (measured on MIR): sret decomposes
+  field-by-field; the flat leaf scalar `_0.x=move _1.x` runs (store_place pointer-fallback
+  534-538), but the nested field `_0.inner = move _1.inner` (Inner 16B) → block ③ `is_aggregate`
+  (mir_lower.rs:1216-1238) resolves the base ONLY via struct_slots/enum_slots; `_0`=sret POINTER
+  with no slot → it dies.
+- **C (enum-payload=struct):** same-class error `"has no slot"` (`_6`) BUT O has NOT yet
+  confirmed whether `_6` is a pointer or a match-bind missing a slot → the work-order REQUIRES D
+  to dump MIR and verify C; if the root cause differs, split the scope (do NOT lump them together
+  carelessly — G praised this point).
+- **FIX (work-order, 1 region of block ③):** a per-side address resolver — has a slot →
+  `stack_addr(slot,off)`, no slot → `use_var(var)`+`iadd_imm(ptr,off)`; copy word-by-word with
+  generic load/store. Applied INDEPENDENTLY to src/dest. Leaf stays I64, value-model unchanged,
+  P1 stays locked. Precedent: load_place 449-454/store_place 534-538.
+- Teeth: positive 172+ (B sret + C enum + no-regress flat/169/170/171); poison removes the
+  pointer-fallback → B/C "has no slot" RED, 169/170/171 green. Correctness teeth (struct Copy,
+  not SIGABRT).
+- Work-order draft: /tmp/WORK_ORDER_P2B.md. On closing → write ADR-0060 §8 amendment.
+- **Cadence tightened (G enforced): D is FORBIDDEN from committing before O-teeth (time 4 →
+  git reset --hard). FORBIDDEN from pre-writing O's signature. A reshuffle >30 lines → split
+  into its own commit.**
 
-### P2-BOUNDARY — O KÝ ACCEPT 2026-06-12 (working-tree uncommitted, chờ G ký + D commit)
-- **B (sret nested)** vá bằng `resolve_addr` per-side trong block ③ (jit:1204): slot→stack_addr,
-  no-slot→use_var pointer-fallback. **C (enum-payload-struct)** vá bằng LOWERER (lib:3268):
-  payload_ty từ enum_layouts + StructAlloc cấp slot match-bind. **B+C KHÔNG cùng gốc** — O chứng
-  minh: poison pointer-fallback → C VẪN xanh (C đi nhánh slot nhờ StructAlloc). D narrative "cùng
-  gốc" SAI, đã đính chính.
-- Fixtures 172 (sret→35) + 173 (enum→30). Teeth code CUỐI: B null-base→172 SIGSEGV139; C bỏ
-  StructAlloc→173 SIGSEGV139; đối nhau xanh. Gate 0·0·168·201.
-- **Mẫu D lặp lần 4: clippy false-claim** — nộp 202 ghi "+1 pre-existing không từ code tôi";
-  O đo (worktree HEAD histogram) → +2 warning CẢ HAI từ `resolve_addr` D (Result-wrap +
-  items-after-statements). Gán-sai pre-existing (luật ①b). D sửa: hoist + bỏ Result→201.
-- **Điểm tiến bộ D: KHÔNG commit trước teeth lần này** (cadence đúng) + tự mở scope lowerer cho C
-  nhưng CÓ report (minh bạch). O chấp nhận hồi tố, dặn lần sau report→chờ duyệt→code.
-- Còn treo: G ký + D commit (1 commit: B jit + C lower + fixtures 172/173); ADR-0060 §8 amendment
-  ghi đóng cờ §6.
+### P2-BOUNDARY — O SIGNS ACCEPT 2026-06-12 (working-tree uncommitted, awaiting G's sign-off + D's commit)
+- **B (sret nested)** patched with a per-side `resolve_addr` in block ③ (jit:1204):
+  slot→stack_addr, no-slot→use_var pointer-fallback. **C (enum-payload-struct)** patched at the
+  LOWERER (lib:3268): payload_ty from enum_layouts + StructAlloc grants a slot for the match-bind.
+  **B+C do NOT share a root cause** — O proves it: poisoning the pointer-fallback → C STAYS green
+  (C takes the slot branch thanks to StructAlloc). D's narrative of "same root cause" was WRONG,
+  and has been corrected.
+- Fixtures 172 (sret→35) + 173 (enum→30). FINAL teeth code: B null-base→172 SIGSEGV139; C
+  removing StructAlloc→173 SIGSEGV139; each stays green against the other. Gate 0·0·168·201.
+- **Recurring D pattern, time 4: clippy false-claim** — submitted 202 noting "+1 pre-existing,
+  not from my code"; O measures (worktree HEAD histogram) → +2 warnings, BOTH from D's
+  `resolve_addr` (Result-wrap + items-after-statements). Wrongly labeled pre-existing (rule ①b).
+  D fixed: hoisted + dropped Result → 201.
+- **D's improvement: did NOT commit before teeth this time** (correct cadence) + opened the
+  lowerer scope for C on his own initiative, but DID report it (transparent). O accepts it
+  retroactively, instructing that next time: report → wait for approval → code.
+- Still pending: G's sign-off + D's commit (1 commit: B jit + C lower + fixtures 172/173);
+  ADR-0060 §8 amendment recording the closure of the §6 flag.
 
-## Còn treo (P1)
-- **P1 (Nhóm E sub-8B packing) GIỮ KHÓA** — mở khi Giang viết fixture Trit/Tryte-in-struct
-  thật + ADR byte-size mapping + value-model load-width.
+## Still pending (P1)
+- **P1 (Group E sub-8B packing) STAYS LOCKED** — opens when Giang writes a real
+  Trit/Tryte-in-struct fixture + an ADR byte-size mapping + value-model load-width.

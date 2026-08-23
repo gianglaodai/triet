@@ -12,7 +12,7 @@ User favors **explicit strictness over ergonomic-but-dangerous APIs**. Two enfor
 1. **Property access (field-like) MUST be 100% safe** — no panic-possible field syntax. If runtime panic is possible, it MUST be a method (verbose, visible at call site).
 2. **Dangerous operations MUST be verbose methods** — names like `.unwrap_value(message: String)`, `.unwrap_error(message: String)` that include a panic-reason message. The method call's verbosity serves as a reading-time warning sign.
 
-**Why:** explicit confirmation 2026-05-17 during ADR-0020 error handling design. User: *"Tuyệt đối KHÔNG dùng field access (.value / .error) cho các thao tác có thể sinh Panic. Thuộc tính (Property access) phải đảm bảo khế ước 100% safe. Nếu có rủi ro abort VM, hành vi đó phải là một Method rõ ràng để nhắc nhở developer. Chúng ta ưu tiên Explicit Strictness (chuẩn Rust) hơn Ergonomics nguy hiểm (chuẩn Java/C++)."*
+**Why:** explicit confirmation 2026-05-17 during ADR-0020 error handling design. The user said (in Vietnamese): *"ABSOLUTELY do not use field access (.value / .error) for operations that can panic. Property access must guarantee a 100% safe contract. If there is any risk of aborting the VM, that behaviour must be an explicit method so the developer is warned. We favour Explicit Strictness (the Rust standard) over dangerous Ergonomics (the Java/C++ standard)."*
 
 **How to apply:**
 

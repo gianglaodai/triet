@@ -50,7 +50,7 @@ Remaining 189 warnings are ALL in generated/ (123 empty-`///` missing_docs + ~66
 (ModuleDecl→ModuleItem, tuple→struct variants, Const→Constant, `is_visible` takes `&Visibility`,
 `.clone()` on non-Copy Visibility field reads). Then hit the LEGACY COUPLING:
 
-**2026-06-04 — Phương án C (mentor): severed legacy from typecheck's closure.**
+**2026-06-04 — Option C (the mentor's): severed legacy from typecheck's closure.**
 - `triet-pack/Cargo.toml`: removed `triet-ir` dep — it was DECLARED-BUT-UNUSED (pack/src never imports triet_ir). This alone severs typecheck→pack→ir. triet-pack builds clean without it.
 - Root `Cargo.toml`: removed `triet-ir` + `triet-interpreter` from `members`. **NOTE: necessary-but-NOT-sufficient** to evict legacy from `cargo --workspace` build — `triet-jit` (244 triet_ir refs — the current JIT IS the v0.10 delegate-to-VM, not yet MIR-based), `triet-cli` (VM run path), `triet-bootstrap` still depend on triet-ir/interpreter as path-deps, so `--workspace` still compiles them. Full legacy eviction = a Track-A sunset decision on jit/cli/bootstrap (leaves no working backend until triet-lower→mir→new-jit is wired).
 - Reverted my dead `triet-ir/lowerer.rs` import-fix (corpse, no longer built).
