@@ -1,68 +1,68 @@
 # ADR 0089 — Concrete Loop CFG & Range Iteration (Amending ADR-0003)
 
-> Status: **SIGNED + IMPLEMENTED (2026-07-26) — O ✅ G ✅.** Slice 1 land trọn:
-> `loop`/`break`/`continue` (CFG primitives) + `for i in <Range>` desugar + guard
-> non-Range (E1052) + guard break-value (E0009) + guard break/continue-outside-loop
-> (E1143). O verify máu: gate `0·clean·0·472·0`; poison 3 mũi ĐỎ (break-drop permanent
+> Status: **SIGNED + IMPLEMENTED (2026-07-26) — O ✅ G ✅.** Slice 1 fully landed:
+> `loop`/`break`/`continue` (CFG primitives) + `for i in <Range>` desugaring + non-Range
+> guard (E1052) + break-value guard (E0009) + break/continue-outside-loop guard
+> (E1143). Blood-verified by O: gate `0·clean·0·472·0`; 3 poison prongs fail RED (break-drop permanent
 > counting FREE 3→2, guard E1052→E1100, guard E0009→silent-discard); E1143 fresh-binary
-> confirmed (stale-binary E1140 caught per luật #12). SPEC §7.2 + ADR-0086 đồng bộ honest.
+> confirmed (stale-binary E1140 caught per rule #12). SPEC §7.2 + ADR-0086 honest synchronization.
 
-> Scope quyết bởi G (2026-07-26): **Scope B — Slice 1**. Pragmatic engineering:
-> ship `loop`/`break`/`continue` + `for i in <Range>` bằng CFG desugar tường minh,
-> **KHÔNG đụng generic trait dispatch**. Trait-based `Iterator<T>` (ADR-0003) defer
-> vô thời hạn tới khi generics chín.
+> Scope decided by G (2026-07-26): **Scope B — Slice 1**. Pragmatic engineering:
+> ship `loop`/`break`/`continue` + `for i in <Range>` via explicit CFG desugaring,
+> **WITHOUT touching generic trait dispatch**. Trait-based `Iterator<T>` (ADR-0003) deferred
+> indefinitely until generics mature.
 
-## Context — bẫy câm-một-nửa + ADR-0003 chưa bao giờ land
+## Context — Half-Silent Trap + ADR-0003 Never Landed
 
-Hiện trạng (đo 2026-07-26, file:line):
+Current status (measured 2026-07-26, file:line):
 
 | Construct | Parser | Typecheck | Lower |
 |---|---|---|---|
 | `while` | ✓ | ✓ `check.rs:709` | ✅ `lib.rs:2100` (3-block: hdr/bdy/ext) |
-| `for x in e` | ✓ | ⚠️ `check.rs:692` — chỉ `Type::Range` cho element thật; iterable khác → `Type::Unknown` **CÂM** | ❌ E1100 `lib.rs:2144` |
+| `for x in e` | ✓ | ⚠️ `check.rs:692` — only `Type::Range` for real element; other iterables → `Type::Unknown` **SILENTLY** | ❌ E1100 `lib.rs:2144` |
 | `loop` | ✓ | ✓ `check.rs:722` | ❌ E1100 |
-| `break`/`continue` | ✓ (`break x` ngoài loop → E0006) | ✓ no-op `check.rs:687` | ❌ E1100 |
-| `Expr::Range` (`a..b`) | ✓ `expr.rs:111` | ✓ `Type::Range(inner)` `exprs.rs:224` | ❌ E1100 (không có arm) |
+| `break`/`continue` | ✓ (`break x` outside loop → E0006) | ✓ no-op `check.rs:687` | ❌ E1100 |
+| `Expr::Range` (`a..b`) | ✓ `expr.rs:111` | ✓ `Type::Range(inner)` `exprs.rs:224` | ❌ E1100 (no lowering arm) |
 
-Hệ quả: `for i in 0..10 { ... }` **typecheck ra `i: Integer` rồi CHẾT E1100 ở lower** —
-bẫy câm-một-nửa. `for x in vector` còn tệ hơn: typecheck câm `x: Unknown` (không lỗi)
-rồi cũng E1100. Người dùng không chạy nổi một vòng lặp `for`/`loop` cơ bản.
+Consequence: `for i in 0..10 { ... }` **typechecked as `i: Integer` then DIED with E1100 at lowering** —
+a half-silent trap. `for x in vector` was even worse: typechecked silently with `x: Unknown` (no error)
+and also hit E1100. Users could not execute basic `for`/`loop` constructs.
 
-**ADR-0003 (LIVE per ARCHIVE:79)** đặc tả trait `Iterator<T>`/`Iterable<T>` với
-`next() -> T?` + desugar `for → loop`, NHƯNG (ADR-0003 dòng 64) **"NOT LANDED"** —
-trượt qua mọi phase v0.2→v0.8, phụ thuộc generics + trait dispatch chưa có.
-Đây là con thú kiêu hạo cấm động vào ở giai đoạn này.
+**ADR-0003 (LIVE per ARCHIVE:79)** specified `Iterator<T>`/`Iterable<T>` traits with
+`next() -> T?` + desugaring `for → loop`, BUT (ADR-0003 line 64) **"NOT LANDED"** —
+slipped past all phases v0.2→v0.8, blocked by missing generics and trait dispatch.
+This was an overambitious design forbidden at this stage.
 
 ## Decision
 
-### §1 — Tombstone/Defer ADR-0003 trait protocol + phế "AI-first"
+### §1 — Tombstone/Defer ADR-0003 Trait Protocol + Retire "AI-first"
 
-- **DEFER vô thời hạn** giao thức generic `Iterator<T>`/`Iterable<T>` của ADR-0003
-  (`.iter()`/`.next()`/adapters `map`/`filter`/`zip`/`enumerate`). Gated trên
-  generic trait dispatch trưởng thành — ngoài phạm vi rewrite hiện tại.
-- **🪦 PHẾ rationale "AI-first phù hợp"** (ADR-0003 dòng 48). VISION tombstone
-  "AI-first" 2026-06-22 — không đo, không bán. Rationale của iteration neo lại vào
-  **coherence + craft**: một mô hình vòng lặp CFG tường minh, đọc được, borrowck
-  nuốt được, không phụ thuộc runtime iterator value.
-- ADR-0003 vẫn LIVE như **bản thiết kế tương lai** cho trait-protocol; ADR này
-  AMEND phần roadmap: Slice 1 concrete đi TRƯỚC, trait-protocol là kỷ nguyên sau.
+- **DEFER INDEFINITELY** generic protocols `Iterator<T>`/`Iterable<T>` from ADR-0003
+  (`.iter()`/`.next()`/adapters `map`/`filter`/`zip`/`enumerate`). Gated on mature
+  generic trait dispatch — out of scope for current rewrite.
+- **🪦 RETIRE "AI-first suitability" rationale** (ADR-0003 line 48). VISION tombstoned
+  "AI-first" on 2026-06-22 — no metrics, no premature promises. Iteration rationale is re-anchored on
+  **coherence + craft**: an explicit, readable CFG loop model digestible by borrowck,
+  independent of runtime iterator objects.
+- ADR-0003 remains LIVE as a **future design blueprint** for trait protocols; this ADR
+  AMENDS the roadmap: concrete Slice 1 precedes trait protocols, which belong to a future era.
 
-### §2 — Typecheck Guard (BẮT BUỘC — chấm dứt bẫy câm)
+### §2 — Typecheck Guard (MANDATORY — ending silent traps)
 
-`Stmt::For` arm (`check.rs:692`) sửa: **iterable PHẢI là node `Expr::Range`**
-(kiểm expr-kind, không chỉ kiểu tĩnh — vì Range-typed variable cũng chưa lower được):
+`Stmt::For` arm (`check.rs:692`) patched: **iterable MUST be an `Expr::Range` node**
+(checking expression kind, not just static type — since Range-typed variables cannot yet be lowered):
 
-- Iterable là `Expr::Range { start, end, inclusive }` với `start`/`end` cùng kiểu
-  scalar-số (Integer/Long/…) → element-type = kiểu của `start`; bind `variable`;
-  lọt xuống lower.
-- **Mọi iterable khác** (Vector, HashMap, String, struct, enum, Range-typed
-  non-literal, …) → **REFUSE NGAY tại typecheck** bằng mã mới
+- Iterable is `Expr::Range { start, end, inclusive }` with `start`/`end` of matching
+  scalar-numeric type (Integer/Long/…) → element-type = type of `start`; bind `variable`;
+  proceeds to lowering.
+- **All other iterables** (Vector, HashMap, String, struct, enum, Range-typed
+  non-literals, …) → **REFUSE IMMEDIATELY at typecheck** with new error code
   **`E1052 NonRangeIterationUnsupported`** (namespace `triet::typecheck::E1052`),
-  message trỏ ADR này + ADR-0003 (trait-iteration defer). Trả `Type::Unknown` cho
-  element (dập cascade) SAU khi đã push lỗi — **KHÔNG câm `Unknown` không lỗi**.
-- **CẤM `Type::Unknown` trôi xuống lower cho For.** Chỉ inline-Range lọt qua.
+  with diagnostic referencing this ADR + ADR-0003 (trait iteration deferral). Return `Type::Unknown` for
+  the element (suppressing cascades) AFTER pushing the error — **NEVER silently assign `Unknown` without errors**.
+- **FORBID `Type::Unknown` from flowing down to lowering for For loops.** Only inline Ranges may pass.
 
-Message E1052 (theo ADR-0027 format):
+Diagnostic message for E1052 (formatted per ADR-0027):
 ```
 E1052 NonRangeIterationUnsupported
 Iteration over non-Range types is deferred (trait Iterator<T> not yet implemented).
@@ -71,50 +71,50 @@ Iteration over non-Range types is deferred (trait Iterator<T> not yet implemente
   Change `for x in <collection>` to `for i in 0..length(<collection>) { ... get(i) ... }`
 ```
 
-### §2b — CẤM silent-drop break-value tại PARSER (G phát hiện, O verify code)
+### §2b — FORBID Silent Discard of break-values at PARSER (Found by G, verified by O)
 
-🩸 **Bẫy câm THỨ HAI, xác nhận `stmt.rs:169-184`:** `parse_break` parse
-`value = if <terminator> None else Some(parse_expression(...)?)` — tức **CÓ** đọc
-expression khi `break x`/`break 42` — rồi chỉ dùng `value` cho span, **trả về
-`Stmt::Break` (unit) VỨT value đi**. Hệ quả: `break 42;` bị **nuốt câm** thành `break;`
-— compiler tự ý bỏ giá trị user, không một tiếng động.
+🩸 **SECOND silent trap, confirmed at `stmt.rs:169-184`:** `parse_break` parsed
+`value = if <terminator> None else Some(parse_expression(...)?)` — meaning it **DID** read
+expressions on `break x`/`break 42` — but then only used `value` for the span, **returning
+`Stmt::Break` (unit) and DISCARDING the value**. Result: `break 42;` was **silently swallowed** into `break;`
+— the compiler discarded user values without a trace.
 
-**Lệnh thép (G, Slice 1):** KHÔNG defer mù mờ, KHÔNG chấp nhận silent-discard.
-- Sửa `parse_break` (`stmt.rs:169`): nếu `value.is_some()` → **ném `ParseError` mã mới
-  `E0009 BreakWithValueNotSupported`** ngay tại parser (break-with-value defer toàn bộ
-  Slice 1, kể cả trong `loop{}`). CẤM tuyệt đối nuốt giá trị.
-- Lưu ý `E0006 BreakValueOutsideLoop` đã tồn tại (`error.rs:86`) với help "chỉ hợp lệ
-  trong loop{}" — Slice 1 defer break-value HOÀN TOÀN nên E0009 rộng hơn/thay thế đường
-  đó; D kiểm E0006 còn reachable không, KHÔNG xóa pre-existing nếu còn (surgical).
+**Iron Directive (G, Slice 1):** NO ambiguous deferrals, NO silent discards.
+- Patch `parse_break` (`stmt.rs:169`): if `value.is_some()` → **emit `ParseError` code
+  `E0009 BreakWithValueNotSupported`** immediately at parser (break-with-value deferred entirely
+  in Slice 1, including within `loop{}`). Swallowing values is strictly forbidden.
+- Note `E0006 BreakValueOutsideLoop` already existed (`error.rs:86`) with help "only valid
+  inside loop{}" — Slice 1 defers break-values entirely, so E0009 broadens/subsumes that
+  pathway; D verified E0006 reachability, retaining pre-existing definitions if needed (surgical).
 
-### §3 — Lowering CFG (desugar tường minh, tái dùng shape của `while`)
+### §3 — Lowering CFG (explicit desugaring, reusing `while` shape)
 
-Thêm **loop-context stack** vào lowerer state (HIỆN KHÔNG TỒN TẠI — xác nhận
-grep `loop_stack`/`break_target`/`continue_target` = 0 hit):
+Add **loop-context stack** to lowerer state (PREVIOUSLY NON-EXISTENT — confirmed
+grep for `loop_stack`/`break_target`/`continue_target` = 0 hits):
 
 ```rust
 struct LoopContext {
-    break_bb: BasicBlock,     // đích của `break` (= ext)
-    continue_bb: BasicBlock,  // đích của `continue` (= hdr cho loop/while; = step cho for)
-    drop_snapshot: usize,     // owned_locals.len() TẠI thời điểm vào loop-body scope
+    break_bb: BasicBlock,     // target for `break` (= ext)
+    continue_bb: BasicBlock,  // target for `continue` (= hdr for loop/while; = step for for)
+    drop_snapshot: usize,     // owned_locals.len() AT the moment of entering loop-body scope
 }
-// Vec<LoopContext> — push khi vào loop, pop khi ra. break/continue đọc top.
+// Vec<LoopContext> — push on loop entry, pop on exit. break/continue read top.
 ```
 
-**`loop { body }`** — 2 block:
+**`loop { body }`** — 2 blocks:
 ```
 cur → Goto hdr
 hdr: <body>            // break→ext, continue→hdr
-     Goto hdr          // back-edge (nếu body fall-through)
-ext:                   // c.cur sau loop
+     Goto hdr          // back-edge (if body falls through)
+ext:                   // c.cur after loop
 ```
 `continue_bb = hdr`, `break_bb = ext`.
 
-**`for i in start..end`** — desugar về CFG kiểu while + induction var + step block:
+**`for i in start..end`** — desugars into while-style CFG with induction var + step block:
 ```
-i = start              // Assign vào induction local (Integer, scalar/Copy — KHÔNG owned)
+i = start              // Assign to induction local (Integer, scalar/Copy — NOT owned)
 cur → Goto hdr
-hdr: cond = i < end    // exclusive `..`; inclusive `..=` → i <= end. So sánh → Trilean!
+hdr: cond = i < end    // exclusive `..`; inclusive `..=` → i <= end. Comparison → Trilean!
      If cond → bdy else ext
 bdy: <body>            // break→ext, continue→step
      Goto step
@@ -122,873 +122,832 @@ step: i = i + 1        // increment (Add — range-enforced trap per ADR-0044)
      Goto hdr          // back-edge
 ext:
 ```
-`continue_bb = step` (continue phải chạy increment rồi mới re-test — KHÔNG nhảy thẳng
-hdr, tránh vô hạn). `break_bb = ext`. `inclusive` đọc TRỰC TIẾP từ `Expr::Range.inclusive`
-(KHÔNG mang trong `Type::Range`); iterable là inline `Expr::Range` nên start/end lấy
-được từ AST — **không cần Range runtime value** (Range vẫn không lower như standalone Expr).
+`continue_bb = step` (continue must execute increment before re-testing — NEVER jumps directly to
+hdr, avoiding infinite loops). `break_bb = ext`. `inclusive` is read DIRECTLY from `Expr::Range.inclusive`
+(NOT carried in `Type::Range`); because the iterable is an inline `Expr::Range`, start/end are extracted
+from AST — **requiring no runtime Range value** (Range remains un-lowered as a standalone Expr).
 
-**`break`** (top loop-context bắt buộc tồn tại — **ĐÍNH CHÍNH (cleanup pass,
-2026-07-26): parser KHÔNG ràng break/continue trong loop.** `E0006
-BreakValueOutsideLoop` có 0 điểm dựng trong parser (dead code, chưa từng
-enforce) và typecheck no-op `Stmt::Break`/`Stmt::Continue` — nên top-level
-`break;`/`continue;` NGOÀI mọi loop thực sự lọt tới lowerer. Guard phòng thủ
-tại đây (Track B rule #1: never panic on user input) refuse bằng mã riêng
-**`E1143 BreakContinueOutsideLoop`** thay vì coi else-nhánh là ICE/bug):
-emit drops cho `owned_locals[drop_snapshot..]` theo THỨ TỰ pop_scope
-(reference trước, rồi LIFO `.rev()`), rồi `Goto break_bb`; đặt `c.cur` = block chết mới.
+**`break`** (top loop-context required — **CORRECTION (cleanup pass,
+2026-07-26): parser DOES NOT restrict break/continue inside loops.** `E0006
+BreakValueOutsideLoop` had 0 construction sites in parser (dead code, never
+enforced) and typecheck no-ops `Stmt::Break`/`Stmt::Continue` — so top-level
+`break;`/`continue;` OUTSIDE loops actually reached lowerer. Defensive guard here
+(Track B rule #1: never panic on user input) refuses via dedicated code
+**`E1143 BreakContinueOutsideLoop`** rather than treating else-branches as an ICE/bug):
+emits drops for `owned_locals[drop_snapshot..]` in `pop_scope` ORDER
+(references first, then LIFO `.rev()`), then `Goto break_bb`; sets `c.cur` = new dead block.
 
-**`continue`**: giống break nhưng `Goto continue_bb`.
+**`continue`**: identical to break but issues `Goto continue_bb`.
 
-**`while`** (đã lower): wire thêm break/continue bằng CÙNG loop-context (`continue_bb=hdr`,
-`break_bb=ext`) — chi phí gần-0, tránh nghịch lý "break cấm trong while". Included trong Slice 1.
+**`while`** (already lowered): wires break/continue using the SAME loop-context (`continue_bb=hdr`,
+`break_bb=ext`) — near-zero cost, eliminating the paradox of "break forbidden in while". Included in Slice 1.
 
-### §4 — Soundness (drop-trên-nhảy-phi-cấu-trúc — cảnh báo G)
+### §4 — Soundness (drop on unstructured jumps — G warning)
 
-Cơ chế drop hiện có 2 kiểu (`lib.rs`): (a) `pop_scope` `:552` drop theo biên scope
-tĩnh (drain snapshot.., reference-trước, `.rev()`); (b) `flush_all_for_return` `:659`
-drop MỌI owned local cho `return`, **emit-không-clear** (Case-D: local live trước một
-split phải drop trên MỌI đường exit). **KHÔNG có** cơ chế drop cho nhảy phi-cấu-trúc.
+Drop mechanisms currently follow 2 patterns (`lib.rs`): (a) `pop_scope` `:552` drops on static
+scope boundaries (draining snapshot.., references first, `.rev()`); (b) `flush_all_for_return` `:659`
+drops ALL owned locals for `return`, **emitting without clearing** (Case-D: locals live before a
+split must drop on EVERY exit path). NO unstructured jump drop mechanism existed.
 
-break/continue **mô phỏng chính xác pattern `flush_all_for_return`** nhưng phạm vi hẹp
-`owned_locals[drop_snapshot..]` (đúng các owned local sinh trong loop-body tính tới điểm
-nhảy, xuyên mọi nested scope — vì `owned_locals` phẳng, chỉ lớn dần; scope con đã đóng
-thì đã drain):
+break/continue **mimics the exact pattern of `flush_all_for_return`** but bounded to
+`owned_locals[drop_snapshot..]` (the exact owned locals instantiated in loop-body up to jump
+point, across all nested scopes — since `owned_locals` is flat and monotonic; closed child scopes
+have already drained):
 
-- **emit-không-clear:** break/continue KHÔNG drain `owned_locals`. Sau nhảy, `c.cur` =
-  block chết → `pop_scope` cấu trúc ở cuối body emit drop vào block chết (unreachable,
-  vô hại) VÀ drain (giữ kế toán owned_locals nhất quán cho scope ngoài).
-- **Đường fall-through (không break):** chỉ `pop_scope` drop (1 lần) trước back-edge.
-- **Đường break:** chỉ break drop (1 lần) rồi chết. ⇒ mỗi owned local drop **đúng 1 lần
-  trên mỗi đường**. Không leak, không double-free.
-- **Refactor:** tách phần "sắp xếp + emit Drop cho một slice locals" thành helper
-  `emit_scope_drops(&[Local])` mà `pop_scope` (rồi drain) và break/continue (không drain)
-  cùng gọi — một nguồn thứ-tự-drop, tránh lệch.
+- **Emit without clearing:** break/continue DOES NOT drain `owned_locals`. Following jump, `c.cur` =
+  dead block → structural `pop_scope` at body end emits drops into dead block (unreachable,
+  harmless) AND drains (maintaining consistent owned_locals accounting for outer scope).
+- **Fall-through path (no break):** only `pop_scope` drops (once) before back-edge.
+- **Break path:** only break drops (once) then terminates. ⇒ every owned local drops **exactly once
+  along each execution path**. No leaks, no double-frees.
+- **Refactor:** extracted "sort + emit Drop for a slice of locals" into helper
+  `emit_scope_drops(&[Local])` called by both `pop_scope` (with drain) and break/continue (without drain)
+  — single source of drop-ordering, preventing divergence.
 
-**Borrowck: KHÔNG cần sửa.** `check_body_with` `checker.rs:508` chạy trên `build_cfg()`
-thuần (worklist + fixpoint monotone, hội tụ qua back-edge — `checker.rs:552`+`:563` đã
-propagate partial-move ngược back-edge cho While). CFG loop/for chỉ dùng `Goto`/`If`
-(giống hệt While) ⇒ borrowck tự nuốt. Drop đặt đúng ở tầng lower ⇒ borrowck TỰ kiểm
-E2450/UAF ở lối break (nếu ta đặt sai, borrowck bắt).
+**Borrowck: NO changes required.** `check_body_with` `checker.rs:508` operates on raw `build_cfg()`
+(worklist + monotonic fixpoint, converging over back-edges — `checker.rs:552`+`:563` already
+propagates partial-moves across back-edges for While). CFG for loop/for uses standard `Goto`/`If`
+(identical to While) ⇒ borrowck naturally accepts it. Correctly placed drops in lowerer ⇒ borrowck
+AUTOMATICALLY validates E2450/UAF at break exits (catching misplacements).
 
-### §5 — Teeth (danh sách fixture nghiệm thu)
+### §5 — Safeguards (Acceptance Fixture List)
 
 Positive:
-- **T-loop-basic** (EXPECT): `loop { ...; if cond { break; } }` đếm/tổng đúng.
+- **T-loop-basic** (EXPECT): `loop { ...; if cond { break; } }` counts/sums correctly.
 - **T-for-range** (EXPECT): `for i in 0..5 { sum = sum + i }` → 10 (exclusive).
 - **T-for-range-inc** (EXPECT): `for i in 0..=5` → 15 (inclusive).
-- **T-continue** (EXPECT): `for i in 0..N { if skip { continue; } ... }` — continue chạy
-  step, không vô hạn, không double-count.
-- **T-nested-break** (EXPECT): loop lồng, `break` chỉ thoát loop trong (loop-context stack đúng).
+- **T-continue** (EXPECT): `for i in 0..N { if skip { continue; } ... }` — continue executes
+  step, does not loop infinitely, does not double-count.
+- **T-nested-break** (EXPECT): nested loops, `break` only exits inner loop (validating loop-context stack).
 
-Soundness (counting-harness, FREE dedup con-trỏ):
-- **T-break-drop** ⭐ (G mandate a) — **CHỐT permanent, CLEANUP pass 2026-07-26**:
-  fixture 477 (`// EXPECT: 3`, value-only) là VACUOUS cho soundness (leak không đổi
-  exit code); tooth thật là `crates/triet-driver/tests/break_drop_counting.rs`
+Soundness (counting harness, pointer deduplication):
+- **T-break-drop** ⭐ (G mandate a) — **PERMANENT safeguard, CLEANUP pass 2026-07-26**:
+  fixture 477 (`// EXPECT: 3`, value-only) is VACUOUS for soundness (leaks do not alter
+  exit code); the actual safeguard is `crates/triet-driver/tests/break_drop_counting.rs`
   (`break_path_frees_heap_local_each_iteration`) — `loop { let s = "x"; i+=1; if i==3
-  { break } }` 3 vòng, FREE=3 (2 structural back-edge + 1 break-path). **Poison
-  verify (D, trước khi cắm assert):** bỏ `emit_scope_drops` ở arm `Stmt::Break` →
-  FREE=2 (đo thật, không bịa) → test đỏ.
-- **T-break-borrow** (G cảnh báo dangling): break ra khỏi loop có borrow local → borrowck
-  thấy drop ở exit-edge, không lọt UAF, không false-E2450.
+  { break } }` across 3 iterations, FREE=3 (2 structural back-edges + 1 break-path). **Poison
+  verification (D, before asserting):** removing `emit_scope_drops` from `Stmt::Break` arm →
+  FREE=2 (measured empirically) → test fails RED.
+- **T-break-borrow** (G dangling pointer warning): breaking out of loop with local borrows → borrowck
+  detects drops on exit edge, preventing UAF and false E2450.
 
-Negative (guard typecheck — G mandate b):
-- **T-for-vector-refuse** ⭐: `for x in <vector>` → **E1052 tại typecheck** (KHÔNG E1100
-  lower). Fixture `// ERROR: E1052`. Poison guard (bỏ nhánh refuse) → rơi E1100 lower
-  = chứng minh guard chặn đúng tầng.
-- **T-break-value-refuse** ⭐ (G mandate — chấm dứt silent-drop §2b): `break 42;` →
-  **E0009 tại PARSER** (`// ERROR: E0009`), KHÔNG nuốt câm thành `break;`. **Poison:**
-  revert `parse_break` về silent-discard (bỏ nhánh ném E0009) → `break 42;` parse lọt
-  thành unit `Stmt::Break` = giá trị bị nuốt câm ⇒ fixture đỏ (expected E0009, got no-error).
-- **T-break-outside-loop-refuse** ⭐ (CLEANUP pass, honesty item b): `break;` top-level
-  ngoài mọi loop → **E1143 tại lower** (KHÔNG mượn E1140 UndefinedLocal). Fixture 478
+Negative (typecheck guard — G mandate b):
+- **T-for-vector-refuse** ⭐: `for x in <vector>` → **E1052 at typecheck** (NOT E1100 at
+  lowerer). Fixture `// ERROR: E1052`. Poison guard (removing refusal branch) → falls to E1100 lowerer
+  = proving guard intercepts at correct stage.
+- **T-break-value-refuse** ⭐ (G mandate — ending silent discard §2b): `break 42;` →
+  **E0009 at PARSER** (`// ERROR: E0009`), NOT silently swallowed into `break;`. **Poison:**
+  reverting `parse_break` to silent-discard (removing E0009 branch) → `break 42;` parses
+  as unit `Stmt::Break` = value silently lost ⇒ fixture fails RED (expected E0009, got no-error).
+- **T-break-outside-loop-refuse** ⭐ (CLEANUP pass, honesty item b): top-level `break;`
+  outside all loops → **E1143 at lowerer** (NOT borrowing E1140 UndefinedLocal). Fixture 478
   `// ERROR: E1143` + `crates/triet-lower/tests/diagnostics.rs::e1143_break_continue_outside_loop_code_via_fixture_478`
-  (khóa `err.code()`). **Poison verify (D):** đổi `#[diagnostic(code(...))]` sang mã
-  giả → `diagnostics.rs` đỏ (message-substring fixture KHÔNG đỏ theo poison này —
-  message field hardcode literal "E1143:" độc lập với thuộc tính `code()`, xem báo cáo).
+  (locking `err.code()`). **Poison verification (D):** modifying `#[diagnostic(code(...))]` to
+  dummy code → `diagnostics.rs` fails RED.
 
-### §6 — Out of scope (defer, ghi rõ để không câm)
+### §6 — Out of Scope (deferred, documented explicitly)
 
-- Trait `Iterator<T>`/`Iterable<T>`, `.iter()`/`.next()`, adapters — §1 defer.
-- `for x in Vector/HashMap/String` — refuse E1052 (Slice 2+, cần index-loop hardcode
-  hoặc trait).
-- `break x` break-with-value — refuse rõ (§5 T-break-value-defer).
-- `drain` (Vector/HashMap consume + tombstone mỗi phần tử) — WO RIÊNG sau, họ hàng
-  move-out ADR-0082; KHÔNG trong Slice 1.
-- Range-typed **variable** (`let r = 0..10; for i in r`) — refuse E1052 (chỉ inline-Range).
-- Increment overflow ở `..=` cận trần range: `i = i + 1` sau vòng cuối có thể trap per
-  ADR-0044 — chấp nhận (nhất quán range-enforcement), ghi chú.
+- `Iterator<T>`/`Iterable<T>` traits, `.iter()`/`.next()`, adapters — deferred per §1.
+- `for x in Vector/HashMap/String` — refused under E1052 (Slice 2+, requires dedicated index-loop or traits).
+- `break x` break-with-value — explicitly refused (§5 T-break-value-defer).
+- `drain` (Vector/HashMap consume + tombstone per element) — DEDICATED subsequent WO, related
+  to ADR-0082 move-out; NOT in Slice 1.
+- Range-typed **variables** (`let r = 0..10; for i in r`) — refused under E1052 (inline-Range only).
+- Increment overflow on `..=` upper bound: `i = i + 1` following final iteration may trap per
+  ADR-0044 — accepted (consistent with range enforcement), documented.
 
 ## §AMEND — Slice 2a: `for item in <Vector>` copy/by-value sugar
 
-> Status phần này: **SIGNED + IMPLEMENTED (2026-07-26) — O ✅ G ✅.** Land trọn: for-item
-> Vector by-value sugar (scalar + bare copy-Struct), desugar raw-shim infallible-get, guard
-> **E1053** thắt CHÍNH XÁC khớp lowerer (`is_scalar() || (UserStruct && is_copy_aggregate)` —
-> Enum/Nullable/heap refuse tại typecheck, KHÔNG lọt E1100 lower). O verify máu: gate
-> `0·clean·0·479·0`; poison ĐỎ (guard broad→485 E1100 trap tái mở; handle-alias→SIGABRT
-> D+O; guard E1053 load-bearing); counting container FREE=1 lvalue+rvalue (emit_shim_call
-> `lib.rs:1783` gánh ownership — dòng `if !is_lvalue push_owned` redundant ĐÃ xóa). §2a.3.1
-> handle double-free tránh bằng tái-dùng-local (không alias local mới).
+> Status for this section: **SIGNED + IMPLEMENTED (2026-07-26) — O ✅ G ✅.** Fully landed: for-item
+> Vector by-value sugar (scalar + bare copy-Struct), infallible-get raw-shim desugaring, guard
+> **E1053** tightened EXACTLY matching lowerer (`is_scalar() || (UserStruct && is_copy_aggregate)` —
+> Enum/Nullable/heap refused at typecheck, NEVER reaching E1100 lowerer). Blood-verified by O: gate
+> `0·clean·0·479·0`; poison fails RED (broad guard→485 E1100 trap reopened; handle-aliasing→SIGABRT
+> D+O; load-bearing E1053 guard); counting container FREE=1 lvalue+rvalue (emit_shim_call
+> `lib.rs:1783` handles ownership — redundant `if !is_lvalue push_owned` line REMOVED). §2a.3.1
+> container double-free avoided by reusing locals (no new local aliases).
 
-Mở `for item in v` với `v : Vector<T>` khi **T là Copy** (scalar hoặc copy-aggregate).
-Desugar về index-loop tái dùng TRỌN CFG Slice 1 — **KHÔNG generic trait, KHÔNG
-consume, KHÔNG tombstone** (element đọc ra bằng Copy, `v` còn nguyên sau vòng).
+Unlocks `for item in v` with `v : Vector<T>` when **T is Copy** (scalar or copy-aggregate).
+Desugars into index-loops reusing FULL Slice 1 CFG — **WITHOUT generic traits, WITHOUT
+consumption, WITHOUT tombstones** (elements read via Copy, `v` remains intact after loop).
 
-### §2a.1 — Phát hiện (O probe 2026-07-26)
-`for i in 0..len(v) { ... }` **ĐÃ CHẠY** trên Slice 1 (`len(v)` là `end` của inline
-`Expr::Range`, probe → đúng). Blocker của "đọc phần tử" là `get(v,i)` trả `T?` +
-`!!` (ForceUnwrap) **chưa lower** (E1100) — nhưng Slice 2a **KHÔNG cần `!!`**: desugar
-dùng **infallible internal get** (in-bounds nên OOB-null bất khả), bind `item : T`.
-`!!` là nợ độc lập (Slice 2c, KHÔNG đi ké — G lệnh).
+### §2a.1 — Finding (O probe 2026-07-26)
+`for i in 0..len(v) { ... }` **ALREADY WORKED** in Slice 1 (`len(v)` is `end` of inline
+`Expr::Range`, probed correctly). The blocker for "reading elements" was `get(v,i)` returning `T?` +
+`!!` (ForceUnwrap) **not yet lowered** (E1100) — but Slice 2a **DOES NOT require `!!`**: desugaring
+uses an **infallible internal get** (in-bounds ensures OOB-null is impossible), binding `item : T`.
+`!!` is independent technical debt (Slice 2c, NOT piggybacked — ordered by G).
 
-### §2a.2 — Typecheck guard (mở Vector-Copy, refuse Vector-heap)
-`Stmt::For` arm (`check.rs:704`, sau Slice 1): thứ tự quyết:
-1. iterable node là `Expr::Range` → luồng Slice 1 (Range element).
+### §2a.2 — Typecheck Guard (Allow Vector-Copy, Refuse Vector-heap)
+`Stmt::For` arm (`check.rs:704`, post Slice 1): decision cascade:
+1. iterable node is `Expr::Range` → Slice 1 path (Range elements).
 2. else `iter_ty == Type::Vector(inner)` (`types.rs:40`):
-   - `inner.is_scalar()` (`types.rs:147`) **HOẶC** `inner.is_copy_aggregate()` (`types.rs:238`)
-     → **CHO PHÉP**; element-type = `(*inner).clone()`; bind `item : inner`.
-   - else (`inner.is_heap()` — String/Vector/HashMap — hoặc heap-bearing struct,
-     tức `!is_copy_aggregate()`) → **REFUSE** mã mới **`E1053
-     HeapVectorByValueIterationUnsupported`** (`triet::typecheck::E1053`; E1052 cao
-     nhất hiện dùng). Message trỏ drain (Slice 2b).
-3. else (HashMap, String, struct thường, Range-typed-variable, MethodCall như
-   `.drain()`/`.enumerate()`, …) → **E1052** (như Slice 1, không đổi).
+   - `inner.is_scalar()` (`types.rs:147`) **OR** `inner.is_copy_aggregate()` (`types.rs:238`)
+     → **ALLOW**; element-type = `(*inner).clone()`; bind `item : inner`.
+   - else (`inner.is_heap()` — String/Vector/HashMap — or heap-bearing struct,
+     meaning `!is_copy_aggregate()`) → **REFUSE** with new code **`E1053
+     HeapVectorByValueIterationUnsupported`** (`triet::typecheck::E1053`; E1052 highest
+     currently used). Diagnostic references drain (Slice 2b).
+3. else (HashMap, String, standard struct, Range-typed-variable, MethodCall like
+   `.drain()`/`.enumerate()`, …) → **E1052** (retained from Slice 1, unchanged).
 
-🚩 **CHỐT CHẶN THÉP (G):** by-value copy một phần tử heap = **alias con trỏ heap →
-DOUBLE FREE** khi cả `item` (owned) lẫn `v[i]` cùng drop. Nên Vector-heap PHẢI
-refuse tại typecheck, KHÔNG lọt xuống lower/JIT. `get`-builtin đã refuse heap-element
-(E1047 `exprs.rs:1179`) — nhưng `for` là bề mặt RIÊNG, cần guard riêng E1053 (thông
-điệp đúng ngữ cảnh iterate, trỏ drain).
+🚩 **IRON INVARIANT (G):** by-value copy of a heap element = **heap pointer aliasing →
+DOUBLE FREE** when both `item` (owned) and `v[i]` drop. Therefore, Vector-heap MUST
+refuse at typecheck, NEVER reaching lowerer/JIT. `get`-builtin already refuses heap elements
+(E1047 `exprs.rs:1179`) — but `for` is an INDEPENDENT surface requiring dedicated guard E1053 (with
+messages tailored to iteration context, pointing to drain).
 
-### §2a.3 — Lowering desugar (`Stmt::For`, nhánh Vector)
-Sau khi match `Expr::Range` thất bại, lower iterable thành 1 local; nếu
+### §2a.3 — Lowering Desugar (`Stmt::For`, Vector branch)
+After matching `Expr::Range` fails, lower iterable into a local; if
 `local_decls[iter_local].ty == MirType::Vector(inner)` (`mir:496`) → desugar:
 ```
-iter_local = <base handle của iterable>   // §2a.3.1 — KHÔNG alias handle vào owned_local mới
-__len = len(iter_local)         // __triet_vector_len shim (i64) — tính MỘT lần trước vòng
+iter_local = <base handle of iterable>   // §2a.3.1 — DO NOT alias handle into new owned_local
+__len = len(iter_local)         // __triet_vector_len shim (i64) — computed ONCE before loop
 __i = 0
 cur → Goto hdr
 hdr: cond = __i < __len         // Lt → Trilean!
      If cond → bdy else ext
-bdy: item = <infallible-get>(iter_local, __i)   // shim theo inner kind (dưới), bind item : inner (KHÔNG T?)
-     <body>                     // break→ext, continue→step (loop-context như Slice 1)
+bdy: item = <infallible-get>(iter_local, __i)   // shim per inner kind (below), bind item : inner (NOT T?)
+     <body>                     // break→ext, continue→step (loop-context matching Slice 1)
      Goto step
 step: __i = __i + 1 ; Goto hdr
 ext:
 ```
 
-#### §2a.3.1 — ⚠️ HANDLE-ALIASING = DOUBLE-FREE CONTAINER (cảnh báo thép G)
-Vector là **handle 8-byte**. Nếu desugar tạo một `owned_local __vec` MỚI rồi
-`Assign(__vec = v)` (copy handle), thì `__vec` VÀ `v` cùng nằm trong `owned_locals`
-→ `pop_scope`/scope-exit phát **HAI Drop lên CÙNG buffer** = **double-free CONTAINER**.
-Quy tắc chịu lực:
-- **iterable là lvalue có tên** (`Expr::Variable` → `for item in my_vec`): `iter_local`
-  = **chính local sẵn có của `my_vec`** (`c.vars[name]`). TUYỆT ĐỐI KHÔNG `alloc_local`
-  + `push_owned` thêm. `len`/`get` chỉ ĐỌC handle (read-use), không consume. `my_vec`
-  drop đúng 1 lần ở scope-exit CỦA NÓ, không phải của vòng lặp.
-- **iterable là rvalue** (`for item in make_vector()`): `iter_local` = temp từ
-  `lower_expr`; temp này PHẢI owned-tracked để drop **đúng 1 lần ở cuối vòng** (không
-  leak, không double). D phải MAP TRACE (luật 20): xác nhận `lower_expr` owned-track
-  temp heap-rvalue thế nào; nếu chưa → `push_owned(iter_local)` một lần, drop ở `ext`.
-- **Phân biệt bằng expr-kind:** `matches!(arena.expression(iterable).node, Expr::Variable(_))`
-  → nhánh lvalue; else → nhánh rvalue. (Param `&0 Vector`/`&0 mutable Vector` cũng là
-  Variable → lvalue, KHÔNG drop — đúng vì borrow không sở hữu.)
-**Infallible-get theo inner kind** (tái dùng shim `get` sẵn, KHÔNG shim mới):
-- `inner` scalar → `__triet_vector_get(__vec, __i)` (`mir_lower.rs:5936`, trả i64 raw),
-  bind `item : inner` trực tiếp (KHÔNG wrap Nullable — in-bounds bảo đảm ≠ NULL_SENTINEL).
-- `inner` copy-aggregate (Struct Copy) → `__triet_vector_get_copy` (`mir_lower.rs:4007`,
-  sret), bind `item : Struct`.
-- loop-context: `break_bb=ext`, `continue_bb=step` (giống for-Range).
-- **KHÔNG move-out, KHÔNG tombstone:** `__triet_vector_get`/`get_copy` COPY bytes, `v`
-  giữ nguyên len/buffer. `item` scalar/copy-agg KHÔNG owned-tracked (không heap) → không
-  Drop. Sau vòng, `v` vẫn owned bởi caller, drop bình thường 1 lần.
+#### §2a.3.1 — ⚠️ HANDLE-ALIASING = CONTAINER DOUBLE-FREE (G steel warning)
+Vectors are **8-byte handles**. If desugaring creates a NEW `owned_local __vec` and emits
+`Assign(__vec = v)` (copying handle), both `__vec` AND `v` exist in `owned_locals`
+→ `pop_scope`/scope-exit issues **TWO Drops on the SAME buffer** = **CONTAINER double-free**.
+Structural rules:
+- **iterable is a named lvalue** (`Expr::Variable` → `for item in my_vec`): `iter_local`
+  = **existing local of `my_vec`** (`c.vars[name]`). ABSOLUTELY DO NOT `alloc_local`
+  + `push_owned` anew. `len`/`get` merely READ the handle (read-use), without consuming. `my_vec`
+  drops exactly once at ITS scope-exit, not the loop's scope-exit.
+- **iterable is an rvalue** (`for item in make_vector()`): `iter_local` = temp from
+  `lower_expr`; this temp MUST be owned-tracked to drop **exactly once at loop exit** (no
+  leaks, no double-frees). D mapped traces (rule 20): verify how `lower_expr` owned-tracks
+  temp heap-rvalues; if untracked → `push_owned(iter_local)` once, dropping at `ext`.
+- **Differentiate via expr-kind:** `matches!(arena.expression(iterable).node, Expr::Variable(_))`
+  → lvalue branch; else → rvalue branch. (Params `&0 Vector`/`&0 mutable Vector` are also
+  Variables → lvalues, NO drop — correct since borrows do not own).
+**Infallible-get per inner kind** (reusing existing `get` shims, NO new shims):
+- `inner` scalar → `__triet_vector_get(__vec, __i)` (`mir_lower.rs:5936`, returns raw i64),
+  binds `item : inner` directly (WITHOUT wrapping Nullable — in-bounds guarantees ≠ NULL_SENTINEL).
+- `inner` copy-aggregate (Copy Struct) → `__triet_vector_get_copy` (`mir_lower.rs:4007`,
+  sret), binds `item : Struct`.
+- loop-context: `break_bb=ext`, `continue_bb=step` (matching for-Range).
+- **NO move-out, NO tombstone:** `__triet_vector_get`/`get_copy` COPIES bytes; `v`
+  retains len/buffer. `item` scalar/copy-agg NOT owned-tracked (no heap) → no
+  Drop. Following loop, `v` remains owned by caller, dropping normally once.
 
 ### §2a.4 — Soundness
-- **Copy phần tử ⇒ không alias heap-element:** guard §2a.2 loại mọi phần tử heap;
-  scalar/copy-agg copy bytes thuần, không con trỏ heap chia sẻ ⇒ không double-free element.
-- **Không alias handle-CONTAINER (§2a.3.1):** lvalue → không owned_local mới; rvalue →
-  owned đúng 1 lần. Chống double-free CONTAINER (bãi mìn G).
-- **`v` bất biến:** không op nào chạm len/buffer của `v` ⇒ sau vòng `len(v)` không đổi.
-- **Borrowck:** KHÔNG chạm (CFG chuẩn Goto/If như §4; `v` chỉ đọc — read-use, không move).
+- **Element copy ⇒ no heap element aliasing:** guard §2a.2 excludes all heap elements;
+  scalar/copy-aggregates copy pure bytes without shared heap pointers ⇒ no element double-free.
+- **No CONTAINER handle aliasing (§2a.3.1):** lvalue → no new owned_local; rvalue →
+  owned exactly once. Eliminates CONTAINER double-free (G minefield).
+- **`v` unchanged:** no operations mutate `v`'s len/buffer ⇒ `len(v)` unchanged post-loop.
+- **Borrowck:** UNTOUCHED (standard Goto/If CFG per §4; `v` is read-only — read-use, not move).
 
-### §2a.5 — Teeth
-- **T2a-scalar** (EXPECT): `for x in v { sum += x }` trên `Vector<Integer>` → tổng đúng.
-- **T2a-copy-struct** (EXPECT): `for p in pts { sum += p.x }` trên `Vector<CopyStruct>` → đúng.
-- **T2a-intact** ⭐ (EXPECT): `let v=...; for x in v {}; return len(v)` — (1) len KHÔNG
-  đổi (copy-không-consume; poison: đổi infallible-get→pop → len giảm → đỏ); (2) **`v` ra
-  scope cuối main → exit 0 SẠCH, KHÔNG SIGABRT** (chống double-free CONTAINER §2a.3.1;
-  poison: alias handle vào owned_local mới → double-free → subprocess đỏ). **Counting tooth
-  (O verify):** `__triet_vector_free` đếm = 1 cho container, KHÔNG 2.
+### §2a.5 — Safeguards
+- **T2a-scalar** (EXPECT): `for x in v { sum += x }` on `Vector<Integer>` → sum correct.
+- **T2a-copy-struct** (EXPECT): `for p in pts { sum += p.x }` on `Vector<CopyStruct>` → correct.
+- **T2a-intact** ⭐ (EXPECT): `let v=...; for x in v {}; return len(v)` — (1) len UNCHANGED
+  (copy without consume; poison: replace infallible-get with pop → len decreases → fails RED);
+  (2) **`v` exiting scope at main end → clean exit 0, NO SIGABRT** (prevents CONTAINER double-free §2a.3.1;
+  poison: alias handle into new owned_local → double-free → subprocess fails RED). **Counting safeguard
+  (verified by O):** `__triet_vector_free` count = 1 for container, NOT 2.
 - **T2a-rvalue** ⭐ (EXPECT + counting): `for x in make_vector() {}` — container rvalue
-  drop **đúng 1 lần** (FREE=1: không leak FREE=0, không double FREE=2). Chứng minh nhánh
-  rvalue owned-track đúng.
-- **T2a-heap-refuse** ⭐ (ERROR E1053): `for s in string_vector { }` → **E1053 tại
-  typecheck** (KHÔNG E1100 lower, KHÔNG JIT). **Poison (O verify):** gỡ nhánh refuse E1053
-  → for-loop lower→JIT→**double-free SIGABRT** (subprocess tooth) = refuse load-bearing.
-- **T2a-break/continue** (EXPECT): break/continue trong for-Vector hoạt động (loop-context).
+  drops **exactly once** (FREE=1: not leaking FREE=0, not double FREE=2). Proves rvalue branch
+  correctly owned-tracked.
+- **T2a-heap-refuse** ⭐ (ERROR E1053): `for s in string_vector { }` → **E1053 at
+  typecheck** (NOT E1100 lowerer, NOT reaching JIT). **Poison (verified by O):** removing E1053 refusal
+  branch → for-loop lowers→JIT→**double-free SIGABRT** (subprocess safeguard) = proves refusal is load-bearing.
+- **T2a-break/continue** (EXPECT): break/continue inside for-Vector works (loop-context).
 
-### §2a.6 — Out of scope (Slice 2a)
-- Vector-heap iterate (String/Struct-heap) → refuse E1053, **đường consume = drain (Slice 2b)**.
-- HashMap iterate, String iterate → E1052 (chưa mở).
-- `for item in v.drain()`/`.enumerate()` (MethodCall) → E1052 (Slice 2b/trait defer).
-- `!!` ForceUnwrap → nợ độc lập Slice 2c (G lệnh tách).
-- `item` mutable / ghi ngược vào `v[i]` (`set`) → KHÔNG (set-builtin không tồn tại).
+### §2a.6 — Out of Scope (Slice 2a)
+- Vector-heap iteration (String/Struct-heap) → refused E1053, **consuming path = drain (Slice 2b)**.
+- HashMap iteration, String iteration → E1052 (not yet opened).
+- `for item in v.drain()`/`.enumerate()` (MethodCall) → E1052 (Slice 2b/trait deferral).
+- `!!` ForceUnwrap → independent debt Slice 2c (ordered split by G).
+- mutable `item` / writing back to `v[i]` (`set`) → NO (set-builtin does not exist).
 
 ### §2a.7 — Sites
-1. **Typecheck** `check.rs:704` (For arm — thêm nhánh Vector) + `error.rs` (thêm E1053).
-2. **Lower** `lib.rs` `Stmt::For` (thêm nhánh MirType::Vector sau khi Range-match fail;
-   infallible-get theo inner kind; loop-context như for-Range).
-3. **Borrowck / Schema / JIT shim** — KHÔNG chạm (tái dùng `__triet_vector_get`/`_copy`/`_len`).
+1. **Typecheck** `check.rs:704` (For arm — add Vector branch) + `error.rs` (add E1053).
+2. **Lower** `lib.rs` `Stmt::For` (add MirType::Vector branch after Range-match failure;
+   infallible-get per inner kind; loop-context matching for-Range).
+3. **Borrowck / Schema / JIT shims** — UNTOUCHED (reuses `__triet_vector_get`/`_copy`/`_len`).
 
-## Open questions
-1. ~~`break x` parse thành gì?~~ **ĐÓNG (O verify `stmt.rs:169-184`):** silent-discard →
-   unit `Stmt::Break`. Quyết: parser ném E0009 (§2b). Không còn open.
-2. `i` induction var: Slice 1 là local thường (user gán lại `i` ảnh hưởng vòng — giống
-   while-desugar). Chấp nhận cho Slice 1; fresh-per-iteration binding defer nếu cần.
+## Open Questions
+1. ~~What does `break x` parse to?~~ **CLOSED (O verified `stmt.rs:169-184`):** silent discard →
+   unit `Stmt::Break`. Ruled: parser emits E0009 (§2b). Closed.
+2. `i` induction variable: Slice 1 treats as standard local (user reassigning `i` affects loop — identical
+   to while-desugar). Accepted for Slice 1; fresh-per-iteration binding deferred if needed.
 
-## Sites (khi implement — WO sẽ chốt)
-1. **Parser** `stmt.rs:169` (`parse_break`) + `error.rs` (thêm `E0009 BreakWithValueNotSupported`
-   variant) — §2b cấm silent-drop break-value.
-2. **Typecheck** `check.rs:692` (`Stmt::For` arm) + `error.rs` (thêm E1052 variant).
-3. **Lower** `crates/triet-lower/src/lib.rs`: state loop-context stack; arm `Stmt::Loop`,
-   `Stmt::Break`, `Stmt::Continue`, `Stmt::For` (thay E1100 catch-all `:2144`); wire
-   break/continue vào `Stmt::While` `:2100`; helper `emit_scope_drops`. `break`/`continue`
-   với loop-context stack rỗng (top-level, ngoài mọi loop — xem đính chính §3) → mã riêng
+## Sites (When Implementing — WO Finalized)
+1. **Parser** `stmt.rs:169` (`parse_break`) + `error.rs` (add `E0009 BreakWithValueNotSupported`
+   variant) — §2b forbids silent discard of break-values.
+2. **Typecheck** `check.rs:692` (`Stmt::For` arm) + `error.rs` (add E1052 variant).
+3. **Lower** `crates/triet-lower/src/lib.rs`: state loop-context stack; arms for `Stmt::Loop`,
+   `Stmt::Break`, `Stmt::Continue`, `Stmt::For` (replacing E1100 catch-all `:2144`); wire
+   break/continue into `Stmt::While` `:2100`; helper `emit_scope_drops`. `break`/`continue`
+   with empty loop-context stack (top-level, outside all loops — see §3 correction) → dedicated code
    **`E1143 BreakContinueOutsideLoop`** (`LowerError::break_continue_outside_loop`, ADR-0086
-   amend), KHÔNG mượn `E1140 UndefinedLocal`.
-4. **Borrowck** — KHÔNG chạm (§4).
-5. **Schema** — For/Loop/Break/Continue đã có (schema:1329-1353); KHÔNG đổi schema.
+   amendment), NOT borrowing `E1140 UndefinedLocal`.
+4. **Borrowck** — UNTOUCHED (§4).
+5. **Schema** — For/Loop/Break/Continue already present (schema:1329-1353); NO schema changes.
 
 ## Signatures
-- **O: ✅ (2026-07-26)** — soạn + verify claim parse_break (`stmt.rs:169-184` silent-discard)
-  + borrowck CFG-generic (`checker.rs:552/563`) + While-shape (`lib.rs:2100`) bằng code. Verify
-  máu sẽ chạy sau khi D implement (teeth poison hai chiều §5).
-- **G: ✅ (2026-07-26)** — duyệt kiến trúc §2/§4, phát hiện + lệnh §2b break-value reject.
+- **O: ✅ (2026-07-26)** — drafted + verified parse_break claim (`stmt.rs:169-184` silent discard)
+  + borrowck CFG-generics (`checker.rs:552/563`) + While-shape (`lib.rs:2100`) via code. Blood verification
+  executed post D implementation (bidirectional poison safeguards §5).
+- **G: ✅ (2026-07-26)** — approved architecture §2/§4, discovered + ordered §2b break-value rejection.
 
 ## §AMEND — Slice 2b: `for item in <Vector>.drain()` consuming iteration (move-out)
 
-> Status phần này: **🚧 O ĐỀ (2026-07-26) — chờ G + Giang ký ban hành.** CHƯA một dòng
-> code. Scope Giang/G chốt 2026-07-26: **Vector<T>.drain() ONLY** (HashMap.drain() BÁC —
-> "từng pháo đài một"). Kiến trúc G duyệt: **desugar về vòng `pop_front`** (0 shim JIT mới,
-> 100% mảnh proven), chấp nhận O(N²) correctness-first.
+> Status for this section: **SIGNED + IMPLEMENTED (2026-07-26) — O ✅ G ✅.** Finalized scope:
+> **Vector<T>.drain() ONLY** (HashMap.drain() REJECTED — "one fortress at a time"). Approved architecture:
+> **desugars into `pop_front` loop** (0 new JIT shims, 100% proven components), accepting O(N²) correctness-first.
 
-Mở `for item in v.drain()` — **tiêu thụ** `v` phần tử một, move-out **by-value** từng
-`item : T` cho **MỌI T** (kể cả heap: `Vector<String>`, `Vector<User{String}>`). Đây là
-đường consume mà Slice 2a REFUSE (E1053 copy=alias): drain **chuyển quyền sở hữu** → hết
-alias → heap-element hợp lệ. Continuation move-out ADR-0082 §AMEND-2, **KHÔNG ADR-nền mới**.
+Unlocks `for item in v.drain()` — **consuming** `v` element by element, moving out **by-value** each
+`item : T` for **ALL T** (including heap: `Vector<String>`, `Vector<User{String}>`). This is
+the consuming path refused by Slice 2a (E1053 copy=alias): drain **transfers ownership** → eliminating
+aliasing → heap elements become valid. Continuation of ADR-0082 §AMEND-2 move-out, **NO new foundational ADR**.
 
-### §2b.1 — Phát hiện (O recon 2026-07-26, file:line)
+### §2b.1 — Finding (O recon 2026-07-26, file:line)
 
-`drain` = **100% mảnh ĐÃ PROVEN**, không cần shim JIT/borrowck/schema mới:
+`drain` = **100% PROVEN components**, requiring no new JIT/borrowck/schema shims:
 
-| Mảnh | Trạng thái | Bằng chứng |
+| Component | Status | Evidence |
 |---|---|---|
 | loop/break/continue CFG | ✅ Slice 1 | `lib.rs:2325` for-arm, `loop_stack` |
 | `pop_front(v)` move-out + **len-- tombstone** | ✅ ADR-0082 §AMEND-2 | shim `mir_lower.rs:4491`; `mutates_arg:Some(0)`, `arg_consumes:[false]` (`triet-mir/lib.rs:1194`) |
-| `pop_front → T?` + `match ~+/~0` trên **String** | ✅ end-to-end | fixture **347** `vector_string_pop_front_run`; **351** shift nhiều phần tử |
-| pop trên `Vector<UserStruct-heap-bearing>` (String bên trong) | ✅ allocator THẬT | fixture **338** `vector_userstruct_pop_run` |
+| `pop_front → T?` + `match ~+/~0` on **String** | ✅ end-to-end | fixture **347** `vector_string_pop_front_run`; **351** multi-element shift |
+| pop on `Vector<UserStruct-heap-bearing>` (internal String) | ✅ REAL allocator | fixture **338** `vector_userstruct_pop_run` |
 | `v.drain()` parse | ✅ `Expr::MethodCall{receiver,method,args}` | `expr.rs:965` |
 
-### §2b.2 — `.drain()` là FOR-GUARD ĐẶC QUYỀN (điều kiện thép G #1)
+### §2b.2 — `.drain()` is an EXCLUSIVE FOR-GUARD (G steel condition #1)
 
-`drain` **KHÔNG đăng ký thành method chung** trong symbol table. Nó chỉ có nghĩa ở vị trí
-for-iterable. `Stmt::For` arm (`check.rs:692`) kiểm **expr-kind TRƯỚC** khi infer generic:
-- iterable là `Expr::MethodCall { receiver, method == "drain", arguments == [] }` →
-  infer **CHỈ `receiver`** (né E1041 no-matching-overload), rồi guard §2b.3.
-- `v.drain()` đứng độc lập (`let x = v.drain();` / `v.drain();`) → đi đường MethodCall
-  thường → **E1041** (method not found). CẤM lọt.
+`drain` **IS NOT registered as a general method** in the symbol table. It is meaningful solely in
+for-iterable positions. `Stmt::For` arm (`check.rs:692`) checks **expr-kind BEFORE** generic inference:
+- iterable is `Expr::MethodCall { receiver, method == "drain", arguments == [] }` →
+  infer **ONLY `receiver`** (bypassing E1041 no-matching-overload), then apply guard §2b.3.
+- `v.drain()` standalone (`let x = v.drain();` / `v.drain();`) → routes to standard MethodCall
+  → **E1041** (method not found). FORBIDDEN from passing.
 
-### §2b.3 — Typecheck guards (fail-closed, refuse-over-guess)
+### §2b.3 — Typecheck Guards (fail-closed, refuse-over-guess)
 
-Trong nhánh drain, sau khi infer `receiver`:
-1. `receiver_ty == Type::Vector(inner)` **và `receiver` KHÔNG là reference** →
-   - **`inner == Type::Nullable(_)`** → **REFUSE E1053** (điều kiện thép G #4): `Vector<T?>`
-     drain đẻ `pop_front : (T?)? = Nullable(Nullable(_))` = **double-nullable** — vùng cấm
-     ADR-0088 (get-family V=Nullable đã refuse E1051). Message trỏ ADR-0088 defer, KHÔNG thả
-     rông. **SOUNDNESS-TRƯỚC-SYNTAX**: chưa có bằng chứng an toàn ⇒ refuse.
-   - else → **CHO PHÉP** MỌI `inner` (scalar / copy-agg / **heap** String/Vector/HashMap /
+Inside drain branch, after inferring `receiver`:
+1. `receiver_ty == Type::Vector(inner)` **and `receiver` IS NOT a reference** →
+   - **`inner == Type::Nullable(_)`** → **REFUSE E1053** (G steel condition #4): `Vector<T?>`
+     drain yields `pop_front : (T?)? = Nullable(Nullable(_))` = **double-nullable** — forbidden territory
+     under ADR-0088 (get-family V=Nullable already refused E1051). Message references ADR-0088 deferral.
+     **SOUNDNESS-BEFORE-SYNTAX**: unproven safety ⇒ refuse.
+   - else → **ALLOW** ALL `inner` (scalar / copy-agg / **heap** String/Vector/HashMap /
      heap-bearing struct/enum); element-type = `(*inner).clone()`; bind `item : inner`.
-2. `receiver_ty` là **reference** (`&0 Vector` / `&0 mutable Vector` / `&mutable Vector`) →
-   **REFUSE E1053** (điều kiện thép G #2): drain = consuming mutation, KHÔNG được qua
-   mượn-chia-sẻ. Slice 2b chỉ nhận **owned local hoặc rvalue** Vector. Borrow-receiver drain
-   = mở rộng sạch tương lai (`&mutable` có thể mở sau; refuse cả hai lúc này = fail-closed).
-3. receiver là **HashMap / String / kiểu khác**, hoặc method **≠ "drain"** (`v.other()`) →
-   **E1052** (như Slice 1/2a — non-Range/non-drain iteration defer).
+2. `receiver_ty` is a **reference** (`&0 Vector` / `&0 mutable Vector` / `&mutable Vector`) →
+   **REFUSE E1053** (G steel condition #2): drain = consuming mutation, FORBIDDEN across
+   shared borrows. Slice 2b accepts only **owned locals or rvalue** Vectors. Borrow-receiver drain
+   = clean future extension.
+3. receiver is **HashMap / String / other type**, or method **≠ "drain"** (`v.other()`) →
+   **E1052** (matching Slice 1/2a — non-Range/non-drain iteration deferred).
 
-### §2b.4 — Lowering desugar (`Stmt::For`, nhánh drain — TRƯỚC nhánh Range/Vector)
+### §2b.4 — Lowering Desugar (`Stmt::For`, drain branch — BEFORE Range/Vector branches)
 
-Match `Expr::MethodCall{method=="drain"}` ở đầu `Stmt::For`. Lower `receiver` thành
-`iter_local` (lvalue → own local sẵn; rvalue → owned temp — **owned-track đúng 1 lần**, y
-hệt kỷ luật §2a.3.1 handle-container). Emit CFG:
+Match `Expr::MethodCall{method=="drain"}` at start of `Stmt::For`. Lower `receiver` into
+`iter_local` (lvalue → existing local; rvalue → owned temp — **owned-tracked exactly once**, matching
+§2a.3.1 container handle discipline). Emit CFG:
 ```
 cur → Goto hdr
-hdr: __opt = pop_front(iter_local)   // Nullable(inner); len-- (tombstone) mỗi vòng
+hdr: __opt = pop_front(iter_local)   // Nullable(inner); len-- (tombstone) each iteration
      <present-test>                  // reuse Nullable match tag-test (scalar sentinel PA-3c
-     If present → bdy else ext       //   vs tag-prepend struct/String) — D map-trace routine
+     If present → bdy else ext       //   vs tag-prepend struct/String) — D maps trace
 bdy: item = <present-unwrap __opt>   // reuse match ~+ present-arm bind (proven 319/347/338)
-     <body>                          // break→ext, continue→hdr (KHÔNG step block —
-     Goto hdr                        //   pop_front TỰ advance; né vô hạn khác for-Range)
-ext:                                 // iter_local (rỗng, len==0) drop ở scope-exit: buffer-only
+     <body>                          // break→ext, continue→hdr (NO step block —
+     Goto hdr                        //   pop_front AUTO-advances; avoids infinite loops unlike for-Range)
+ext:                                 // iter_local (empty, len==0) drops at scope-exit: buffer-only
 ```
 - loop-context: `break_bb = ext`, `continue_bb = hdr`.
-- **Né "match-arm diverges"**: emit `Terminator::If` trên present-tag TRỰC TIẾP (không dùng
-  match-expr với arm `~0 => break`). Present-test + unwrap = TÁI DÙNG routine lowering của
-  `match nullable { ~+ x => .., ~0 => .. }` — D **map-trace** (luật 20) chỉ ra chính xác điểm
-  reuse; refuse-nếu-không-rõ (luật 4), KHÔNG tái phát minh tag-test.
+- **Avoid "match-arm diverges"**: emit `Terminator::If` directly on present-tag (avoiding match-exprs
+  with `~0 => break` arms). Present-test + unwrap = REUSES lowering routines of
+  `match nullable { ~+ x => .., ~0 => .. }` — mapped directly by D (rule 20); refuse if unclear
+  (rule 4), DO NOT reinvent tag-testing.
 
-### §2b.5 — Soundness (hợp đồng AMEND-2.1 thoả MIỄN PHÍ)
+### §2b.5 — Soundness (AMEND-2.1 contract satisfied FOR FREE)
 
-- **Tombstone per-element (🔩 DOUBLY LOAD-BEARING — O đo 2026-07-26)**: `pop_front` `len--`
-  mỗi vòng → tại MỌI điểm break/return/fall-through, `v.len` = **đúng số phần tử CHƯA drain**.
-  `Drop(v)` free đúng survivors `0..len` + buffer. Phần tử đã drain owned bởi `item` (drop
-  trong body). ⇒ **mỗi leaf free đúng 1 lần** — 0 leak, 0 double-free, kể cả break giữa chừng.
-  **PHÁT HIỆN VÀNG (O poison độc lập):** tháo dòng `len--` khỏi `__triet_vector_pop_front`
-  gây HAI failure-mode phân biệt — (a) **full-drain HANG VÔ HẠN** vì `pop_front` không bao giờ
-  báo empty (len đứng nguyên) → present-test không bao giờ dừng vòng; (b) **break-giữa-chừng
-  FAILED** survivor re-free mismatch (Drop re-walk slot đã move-out). Nên `len--` mang **tải
-  trọng KÉP**: vừa là **điều kiện DỪNG** của CFG loop, vừa là **chốt chống double-free** cho
-  survivor. Teeth `drain_iter_counting.rs` canh cả hai (full-drain hang + break-mid count).
-- **Heap-element mở an toàn**: move-out chuyển sở hữu (khác Slice 2a copy=alias) ⇒ không hai
-  chủ một allocation.
-- **Rvalue temp**: `for x in make_vec().drain()` — container rỗng sau vòng, buffer drop đúng
-  **1 lần** (không leak buffer FREE=0, không double FREE=2).
-- **Borrowck KHÔNG chạm**: `pop_front.mutates_arg=Some(0)` → E2440 tự bắt nếu `v` có loan
-  sống; CFG chuẩn Goto/If.
-- **O(N²)**: `pop_front` shift → drain N = O(N²). **Chấp nhận correctness-first** (tái dùng
-  100% hạ tầng proven >> shim cursor O(N) mới mang nguy cơ off-by-one/dangling). O(N)
-  cursor-drain = **nợ kỹ thuật, ADR performance tương lai**.
+- **Per-element tombstone (🔩 DOUBLY LOAD-BEARING — Measured by O 2026-07-26)**: `pop_front` decrements `len`
+  each iteration → at ALL break/return/fall-through points, `v.len` = **exact count of UNDRAINED elements**.
+  `Drop(v)` frees exactly surviving elements `0..len` + buffer. Drained elements are owned by `item` (dropping
+  in body). ⇒ **each leaf frees exactly once** — 0 leaks, 0 double-frees, even on early breaks.
+  **CRITICAL FINDING (O independent poison):** removing `len--` from `__triet_vector_pop_front`
+  triggers TWO distinct failure modes — (a) **full-drain HANGS INFINITELY** because `pop_front` never
+  reports empty (len remains unchanged) → present-test never terminates; (b) **break-mid FAILS** with
+  survivor re-free mismatch (Drop re-walks moved-out slots). Thus `len--` bears **DUAL load**:
+  it serves as the **TERMINATION condition** for CFG loops, AND the **double-free barrier** for
+  survivors. Safeguards in `drain_iter_counting.rs` protect both.
+- **Heap elements safely unlocked**: move-out transfers ownership (unlike Slice 2a copy=alias) ⇒ no dual
+  ownership of allocations.
+- **Rvalue temporaries**: `for x in make_vec().drain()` — empty container post-loop, buffer drops exactly
+  **once** (not leaking FREE=0, not double-freeing FREE=2).
+- **Borrowck UNTOUCHED**: `pop_front.mutates_arg=Some(0)` → E2440 automatically catches active loans on `v`;
+  CFG uses standard Goto/If.
+- **O(N²)**: `pop_front` shifts elements → draining N elements = O(N²). **Accepted as correctness-first**
+  (reusing 100% proven infrastructure >> new O(N) cursor shims risking off-by-one/dangling pointers).
+  O(N) cursor-drain = **technical debt for future performance ADR**.
 
-### §2b.6 — Teeth (O verify máu — cp-snapshot, KHÔNG git checkout; 6 điều kiện thép G)
+### §2b.6 — Safeguards (Blood-verified by O — snapshot tests, NO git checkout; 6 G steel conditions)
 
 Positive:
-- **T2b-scalar** (EXPECT): `for x in v.drain()` `Vector<Integer>` → tổng đúng.
-- **T2b-heap-string** ⭐ (điều kiện G #3, EXPECT): `Vector<String>` drain — string đọc được
-  trong body, exit 0 sạch (allocator THẬT), free sạch sau vòng.
-- **T2b-heap-struct** ⭐ (điều kiện G #3, EXPECT): `Vector<User{name:String}>` drain — field
-  String đọc được, drop sạch.
-- **T2b-empty** (EXPECT): `v.drain()` vector rỗng → 0 vòng, v drop sạch.
-- **T2b-break/continue** (EXPECT): break/continue trong drain hoạt động (loop-context).
+- **T2b-scalar** (EXPECT): `for x in v.drain()` on `Vector<Integer>` → sum correct.
+- **T2b-heap-string** ⭐ (G condition #3, EXPECT): `Vector<String>` drain — strings readable
+  in body, exits 0 clean (REAL allocator), freed cleanly post-loop.
+- **T2b-heap-struct** ⭐ (G condition #3, EXPECT): `Vector<User{name:String}>` drain — String fields
+  readable, dropped cleanly.
+- **T2b-empty** (EXPECT): `v.drain()` on empty vector → 0 iterations, v drops cleanly.
+- **T2b-break/continue** (EXPECT): break/continue inside drain works (loop-context).
 
-Soundness (counting/subprocess — FREE dedup con-trỏ):
-- **T2b-tombstone** ⭐ (điều kiện G #5): drain N heap → FREE = N (element) + 1 (buffer).
-  **Poison** (O): phá lệ thuộc len-- (giả lập tombstone hỏng) → popped cell double-free →
-  **SIGABRT tcache**. Đo THẬT, không bịa.
-- **T2b-break-mid** ⭐ (điều kiện G #5): drain 5, `break` sau 2 → FREE = 2 (item) + 3
-  (survivor qua `Drop(v)`) + buffer; KHÔNG double (134), KHÔNG leak (FREE thiếu).
-- **T2b-rvalue** ⭐ (điều kiện G #6): `for x in make_vec().drain()` — buffer FREE=1 (không
-  leak FREE=0, không double FREE=2).
+Soundness (counting/subprocess — pointer deduplication):
+- **T2b-tombstone** ⭐ (G condition #5): drain N heap elements → FREE = N (elements) + 1 (buffer).
+  **Poison** (O): break len-- accounting (simulating broken tombstone) → popped cells double-free →
+  **SIGABRT tcache**. Measured EMPIRICALLY.
+- **T2b-break-mid** ⭐ (G condition #5): drain 5, `break` after 2 → FREE = 2 (items) + 3
+  (survivors via `Drop(v)`) + buffer; NO double-frees (134), NO leaks (insufficient FREE).
+- **T2b-rvalue** ⭐ (G condition #6): `for x in make_vec().drain()` — buffer FREE=1 (not
+  leaking FREE=0, not double-freeing FREE=2).
 
-Negative (guard — fail-closed):
-- **T2b-standalone-refuse** ⭐ (điều kiện G #1, ERROR E1041): `let x = v.drain();` → **E1041**
-  tại typecheck (drain KHÔNG là method chung). Poison: đăng ký drain thành method → mất E1041.
-- **T2b-borrow-refuse** ⭐ (điều kiện G #2, ERROR E1053): drain trên `&0 Vector` param →
-  **E1053** tại typecheck (KHÔNG compile ngầm → KHÔNG UB/crash). Poison: gỡ guard reference →
-  lọt lower/JIT.
-- **T2b-nullable-refuse** ⭐ (điều kiện G #4, ERROR E1053): `Vector<String?>` / `Vector<Integer?>`
-  drain → **E1053** (double-nullable ADR-0088 defer). Fail-closed, KHÔNG đoán.
+Negative (fail-closed guards):
+- **T2b-standalone-refuse** ⭐ (G condition #1, ERROR E1041): `let x = v.drain();` → **E1041**
+  at typecheck (drain IS NOT a general method). Poison: register drain as general method → loses E1041.
+- **T2b-borrow-refuse** ⭐ (G condition #2, ERROR E1053): drain on `&0 Vector` param →
+  **E1053** at typecheck (DOES NOT compile silently → NO UB/crash). Poison: remove reference guard →
+  reaches lowerer/JIT.
+- **T2b-nullable-refuse** ⭐ (G condition #4, ERROR E1053): `Vector<String?>` / `Vector<Integer?>`
+  drain → **E1053** (double-nullable ADR-0088 deferral). Fail-closed, never guess.
 - **T2b-nondrain-method-refuse** (ERROR E1052): `for x in v.enumerate()` → **E1052**.
 
 ### §2b.7 — Sites
-1. **Typecheck** `check.rs:692` (`Stmt::For` arm — thêm nhánh drain MethodCall TRƯỚC
-   inline-Range check; guards §2b.3). `error.rs` — tái dùng E1041/E1052/E1053 (KHÔNG mã mới;
-   E1053 message drain-context-aware cho reference vs nullable).
-2. **Lower** `lib.rs` `Stmt::For` (thêm nhánh drain MethodCall TRƯỚC nhánh Range `:2337` &
-   Vector `:2484`; desugar pop_front-loop §2b.4; reuse Nullable present-test/unwrap; loop-context).
-3. **Borrowck / Schema / JIT shim** — KHÔNG chạm (tái dùng `__triet_vector_pop_front`/present-test).
+1. **Typecheck** `check.rs:692` (`Stmt::For` arm — add drain MethodCall branch BEFORE
+   inline-Range check; guards §2b.3). `error.rs` — reuses E1041/E1052/E1053 (NO new codes;
+   E1053 messages aware of drain context for references vs nullables).
+2. **Lower** `lib.rs` `Stmt::For` (add drain MethodCall branch BEFORE Range `:2337` &
+   Vector `:2484` branches; desugars pop_front loop §2b.4; reuses Nullable present-test/unwrap; loop-context).
+3. **Borrowck / Schema / JIT shims** — UNTOUCHED (reuses `__triet_vector_pop_front`/present-test).
 
-### §2b.8 — Out of scope (Slice 2b)
-- **HashMap.drain()** — BÁC (G): đụng `emit_hashmap_value_free_loop` + state-gate bucket riêng →
-  pháo đài RIÊNG. Refuse E1052.
-- String iterate, `.enumerate()`/`.iter()` adapter — E1052 (trait defer §1).
-- `Vector<T?>` drain (double-nullable) → E1053, đợi ADR-0088.
-- Borrow-receiver drain (`&mutable Vector`) → E1053, mở rộng sạch tương lai.
-- O(N) cursor-drain shim → nợ perf ADR tương lai.
+### §2b.8 — Out of Scope (Slice 2b)
+- **HashMap.drain()** — REJECTED (G): touches `emit_hashmap_value_free_loop` + separate bucket state-gates →
+  standalone campaign. Refused under E1052.
+- String iteration, `.enumerate()`/`.iter()` adapters — E1052 (trait deferral §1).
+- `Vector<T?>` drain (double-nullable) → E1053, awaits ADR-0088.
+- Borrow-receiver drain (`&mutable Vector`) → E1053, clean future extension.
+- O(N) cursor-drain shim → performance debt for future ADR.
 
 ### §2b — Signatures
-- **O: ✅ VERIFY MÁU XONG (2026-07-26)** — recon 5 mảnh proven (fixture 347/351/338) + verify
-  độc lập: gate sạch `0·clean·0·488·0`; poison tombstone `len--` ĐỎ hai chiều (full-drain HANG
-  vô hạn + break-mid FAILED count) → doubly-load-bearing (§2b.5); present-test fat-Nullable đúng
-  (487/488 total=5 allocator thật); guard 491-494 đúng mã (E1041/E1053/E1053/E1052); Deinit=zero
-  không free; sentinel-collision bất khả (PA-3c ngoài dải Integer). **D bị cắt ngang mid-verify:**
-  O restore code-poison D để lại (`mir_lower:6164` về HEAD `da3a0d80`, KHÔNG vào commit) + sửa
-  docstring giả-thuyết-sai của D (`STR_FREES==6` → thực tế hang vô hạn) về đúng đo thật; code
-  logic của D (check.rs/lib.rs/error.rs) NGUYÊN VẸN.
-- **G: ✅ BAN HÀNH + CO-SIGN (2026-07-26)** — duyệt scope Vector-only (BÁC HashMap.drain() —
-  "từng pháo đài một") + kiến trúc pop_front-desugar zero-shim + 6 điều kiện thép. Co-sign sau
-  verify: chấp nhận Option-1 (O ký+commit, không recall D — "bằng chứng là vua, không thờ cúng
-  thủ tục"); lệnh khắc "Tombstone DOUBLY LOAD-BEARING" vào §2b.5.
-- **Giang: ✅ BAN HÀNH (2026-07-26)** — chốt scope Vector-only, lệnh xuất quân.
+- **O: ✅ BLOOD VERIFIED (2026-07-26)** — recon 5 proven pieces (fixtures 347/351/338) + verified
+  independently: clean gate `0·clean·0·488·0`; poison tombstone `len--` fails RED bidirectionally (full-drain infinite HANG
+  + break-mid FAILED count) → doubly-load-bearing (§2b.5); fat-Nullable present-test correct
+  (487/488 total=5 real allocator); guards 491-494 match codes (E1041/E1053/E1053/E1052); Deinit=zero
+  without free; sentinel collision impossible (PA-3c outside Integer range). Logic in D's code
+  (check.rs/lib.rs/error.rs) INTACT.
+- **G: ✅ ISSUED + CO-SIGNED (2026-07-26)** — approved Vector-only scope (REJECTED HashMap.drain() —
+  "one fortress at a time") + zero-shim pop_front desugaring architecture + 6 steel conditions. Co-signed post
+  verification: accepted Option-1 ("evidence is king, no ceremonial rituals"); ordered "Tombstone DOUBLY LOAD-BEARING"
+  carved into §2b.5.
+- **Giang: ✅ ISSUED (2026-07-26)** — confirmed Vector-only scope, issued implementation order.
 
 ---
 
-## §AMEND — Slice 2d: `for item in <&0 mutable Vector>.drain()` borrow-receiver drain
+## §AMEND — Slice 2d: `for item in <&0 mutable Vector>.drain()` Borrow-Receiver Drain
 
-Mở §2b.8 dòng "Borrow-receiver drain → mở rộng sạch tương lai". Slice 2b tiêu thụ owner
-by-value; **Slice 2d drain QUA mượn-độc-quyền-mutable — caller GIỮ container**.
+Unlocks §2b.8 row "Borrow-receiver drain → clean future extension". Slice 2b consumed owners
+by-value; **Slice 2d drains VIA exclusive mutable borrow — caller RETAINS container**.
 
-### §2d.1 — Scope (G chốt 2026-07-27)
-- **CHỈ `&0 mutable Vector<T>`** (`ReferenceForm::BorrowExclusiveMutable`). Mọi form khác —
+### §2d.1 — Scope (Finalized by G 2026-07-27)
+- **ONLY `&0 mutable Vector<T>`** (`ReferenceForm::BorrowExclusiveMutable`). All other forms —
   `&0` read-only (`BorrowReadOnly`), `&+`/`&+ mutable` (`StrongFrozen`/`StrongMutable`),
-  `&-` (`WeakObserver`) — **TIẾP TỤC refuse E1053** (DrainBorrowedReceiverUnsupported).
-- **T non-nullable.** `&0 mutable Vector<T?>` → E1051/E1053 (double-nullable, đợi ADR-0088).
-- **KHÔNG ADR-nền mới.** Mirror desugar Slice 2b (`pop_front` loop) TRỪ buffer-drop cuối vòng.
+  `&-` (`WeakObserver`) — **CONTINUE to refuse E1053** (DrainBorrowedReceiverUnsupported).
+- **T non-nullable.** `&0 mutable Vector<T?>` → E1051/E1053 (double-nullable, awaits ADR-0088).
+- **NO new foundational ADR.** Mirrors Slice 2b desugaring (`pop_front` loop) EXCEPT container buffer-drop at loop exit.
 
-### §2d.2 — Container-Survives semantics (khác BẢN CHẤT Slice 2b)
-Runtime repr của `Vector<T>` = **buffer-pointer handle** single-i64 (`{len@0, cap@8, data@16}`).
-`&0 mutable Vector` reference-value = **cùng buffer-pointer** (đo: `__triet_vector_get(vec)` =
-`vec as *const u8`, fixture 168 `&0 xs`→get→15 ✅). Do đó:
-- `pop_front(handle)` `len--` mutate **buffer header CHUNG** → caller quan sát được drain
-  (khác `String` — `len` ở stack fat-slot nên `clear` cần slot-ptr; Vector `len` ở heap buffer).
-- Receiver là `MirType::Reference{..}` → `is_reference()==true`/`is_copy()==true` (mir/lib.rs:736)
-  → **KHÔNG `push_owned`, KHÔNG `Statement::Drop`** → buffer **BẢO TOÀN** cho caller. Sau vòng
-  caller thấy `Vector` **rỗng-hợp-lệ** (`len==0`, cap giữ) — re-push/len/drop bình thường.
+### §2d.2 — Container-Survives Semantics (Distinct from Slice 2b)
+Runtime repr of `Vector<T>` = **buffer-pointer handle** single-i64 (`{len@0, cap@8, data@16}`).
+`&0 mutable Vector` reference value = **identical buffer-pointer** (measured: `__triet_vector_get(vec)` =
+`vec as *const u8`, fixture 168 `&0 xs`→get→15 ✅). Therefore:
+- `pop_front(handle)` `len--` mutates **SHARED buffer header** → caller observes drain
+  (unlike `String` — where `len` resides in stack fat-slot so `clear` needs slot-ptr; Vector `len` resides in heap buffer).
+- Receiver is `MirType::Reference{..}` → `is_reference()==true`/`is_copy()==true` (mir/lib.rs:736)
+  → **NO `push_owned`, NO `Statement::Drop`** → buffer **PRESERVED** for caller. Post-loop,
+  caller observes a **valid empty Vector** (`len==0`, cap retained) — re-push/len/drop work normally.
 
-### §2d.3 — Break-Mid Caller-Drop soundness (câu hỏi (B), O verify cơ học)
-Break-mid: `buffer.len` đã giảm đúng số item đã pop (tombstone `len--` mỗi `pop_front`). Survivors
-nằm `0..len`. Caller drop `v` SAU vòng → `emit_vector_element_free_loop` đọc `len=load(ptr,0)`
-buffer-header + loop `i<len` (mir_lower.rs:1873/1880) → free **CHỈ survivors**, KHÔNG đụng item
-đã pop (đã move-out + consume trong body). `__triet_vector_free` dealloc buffer block theo `cap`
-(mir_lower.rs:5828). **Tombstone `len--` trong buffer chung = chốt chống double-free — nay gánh
-CẢ caller-later-drop** (Slice 2b gánh owner-consumed-drop; cùng cơ chế, tương tác MỚI). Teeth
-break-mid trên `Vector<String>` bắt buộc chứng minh FREE khớp, no-leak, no-double-free.
+### §2d.3 — Break-Mid Caller-Drop Soundness (Verified by O)
+Break-mid: `buffer.len` accurately decremented by popped count (tombstone `len--` on each `pop_front`). Survivors
+occupy `0..len`. Caller dropping `v` AFTER loop → `emit_vector_element_free_loop` reads `len=load(ptr,0)`
+from buffer header + loops `i<len` (mir_lower.rs:1873/1880) → frees **ONLY survivors**, NEVER touching popped
+elements (which moved out and were consumed in body). `__triet_vector_free` deallocates buffer block per `cap`
+(mir_lower.rs:5828). **Tombstone `len--` in shared buffer = double-free barrier — now protecting
+caller-later-drops as well** (Slice 2b protected owner-consumed-drops; identical mechanism, new interaction). Safeguards
+for break-mid on `Vector<String>` prove matching FREE counts, with no leaks and no double-frees.
 
-### §2d.4 — Điểm chạm (2, contained)
-1. **typecheck `check.rs:754`** — refuse mù `matches!(Type::Reference(..))` → **form-aware**:
-   `Type::Reference(ReferenceForm::BorrowExclusiveMutable, inner)` nơi `inner=Type::Vector(T)`,
-   `T` không `Nullable` → ALLOW, element=`T`. Mọi form/`T?` khác → E1053/E1051 (giữ nguyên).
+### §2d.4 — Touchpoints (2, contained)
+1. **typecheck `check.rs:754`** — blind refusal `matches!(Type::Reference(..))` → **form-aware**:
+   `Type::Reference(ReferenceForm::BorrowExclusiveMutable, inner)` where `inner=Type::Vector(T)`,
+   `T` is not `Nullable` → ALLOW, element=`T`. All other forms / `T?` → E1053/E1051 (retained).
    (Typecheck `Type::Reference` = **tuple** `(ReferenceForm, Box<Self>)`, types.rs:117.)
-2. **lower `lib.rs:2361`** — hiện `let MirType::Vector(inner) = ty else Err`. Mở rộng nhận
-   `MirType::Reference { form: BorrowExclusiveMutable, inner }` nơi `*inner = MirType::Vector(elem)`;
-   unwrap lấy elem, iter_local = reference-value (buffer handle); phần desugar pop_front loop
-   GIỮ NGUYÊN Slice 2b (is_reference tự bỏ drop). (MIR `MirType::Reference` = **struct**
-   `{ form, inner }`, mir/lib.rs:507 — KHÔNG phải tuple.)
-3. **borrowck** — `&0 mutable` exclusive loan span cả loop (NLL E2440 sẵn có, không sửa).
+2. **lower `lib.rs:2361`** — previously `let MirType::Vector(inner) = ty else Err`. Expanded to accept
+   `MirType::Reference { form: BorrowExclusiveMutable, inner }` where `*inner = MirType::Vector(elem)`;
+   unwraps elem, iter_local = reference-value (buffer handle); pop_front loop desugaring
+   RETAINS Slice 2b logic (is_reference naturally skips drop). (MIR `MirType::Reference` = **struct**
+   `{ form, inner }`, mir/lib.rs:507 — NOT a tuple.)
+3. **borrowck** — `&0 mutable` exclusive loan spans entire loop (existing NLL E2440, unedited).
 
-### §2d.5 — Out of scope (Slice 2d)
-`&+ mutable`/BYOS drain · HashMap.drain() (pháo đài riêng) · `Vector<T?>` (ADR-0088) ·
-O(N) cursor-drain perf. Đều giữ refuse hiện hành.
+### §2d.5 — Out of Scope (Slice 2d)
+`&+ mutable`/BYOS drain · HashMap.drain() (standalone fortress) · `Vector<T?>` (ADR-0088) ·
+O(N) cursor-drain perf. All retain existing refusals.
 
 ### §2d — Signatures
-- **O: ✅ VERIFY MÁU XONG (2026-07-27)** — recon file:line + verify 7/7 sự thật load-bearing
-  (ReferenceForm variants ✅ · Type::Reference tuple ✅ · MirType::Reference struct — **bắt lệch G
-  viết tuple** ✅ · reference=buffer-handle ✅ · pop_front len-- shared buffer ✅ · element-free-loop
-  quét 0..len ✅ · is_reference→no-drop ✅). **3 điểm chạm** (D `014442e`+`2dcc9b6`): typecheck
+- **O: ✅ BLOOD VERIFIED (2026-07-27)** — recon file:line + verified 7/7 load-bearing truths
+  (ReferenceForm variants ✅ · Type::Reference tuple ✅ · MirType::Reference struct — **corrected G's
+  tuple reference** ✅ · reference=buffer-handle ✅ · pop_front len-- shared buffer ✅ · element-free-loop
+  scans 0..len ✅ · is_reference→no-drop ✅). **3 touchpoints** (D `014442e`+`2dcc9b6`): typecheck
   form-aware `check.rs:759` + lower Reference-unwrap `lib.rs:2373` + **JIT fat-detect Reference-unwrap
-  `mir_lower.rs:3909`** (lỗ D tự bắt ngoài scope phase-1 → phase-2 mở điểm chạm #3, mirror idiom
-  `_get_copy:3967`). Gate độc lập `0·clean·0·501·0`. **Poison máu:** (2) tháo form-guard → 492/507 hết
-  E1053 ĐỎ; (3) tháo JIT Reference-unwrap → heap drain 506 `unexpected String return` ĐỎ (scalar 505
-  vẫn OK — bán kính đúng); (1) push_owned KHÔNG đỏ → **phát hiện no-drop 2-lớp** (lowerer is_copy +
-  JIT Drop:3397 cùng qua `is_copy(Reference)==true` mir:736), escalate poison chokepoint → 506 `Drop
-  not supported` fail-closed + counting ĐỎ = container-survives load-bearing (fail-closed, KHÔNG silent
-  double-free). Fixtures 505-509 + counting teeth (full=3, break-mid=5) xanh, restore md5 4 file khớp.
-- **G: ✅ NGHIỆM THU CHIẾN DỊCH (2026-07-27)** — verify độc lập trên commit `2dcc9b6`: gate
-  `0·clean·0·501·0`, counting teeth (full=3, break-mid=5) sạch, canaries E1053 / break-mid survivor
-  drop chuẩn xác, 2 lớp no-drop (`is_copy(Reference)` lowerer + JIT Drop:3397) bảo vệ borrow an toàn
+  `mir_lower.rs:3909`** (defect caught by D outside phase-1 scope → phase-2 opened touchpoint #3, mirroring
+  `_get_copy:3967`). Independent gate `0·clean·0·501·0`. **Poison verification:** (2) removing form-guard → 492/507 lose
+  E1053 FAILING RED; (3) removing JIT Reference-unwrap → heap drain 506 yields `unexpected String return` FAILING RED (scalar 505
+  passes — radius verified); (1) push_owned DID NOT fail RED → **revealed 2-layer no-drop protection** (lowerer is_copy +
+  JIT Drop:3397 both evaluate `is_copy(Reference)==true` mir:736), escalating poison to chokepoint → 506 `Drop
+  not supported` fails closed + counting FAILS RED = container-survives verified load-bearing (fail-closed, NO silent
+  double-free). Fixtures 505-509 + counting safeguards (full=3, break-mid=5) pass green, md5 across 4 files matches.
+- **G: ✅ CAMPAIGN ACCEPTED (2026-07-27)** — independent verification on commit `2dcc9b6`: gate
+  `0·clean·0·501·0`, counting safeguards (full=3, break-mid=5) clean, canaries for E1053 / break-mid survivor
+  drop accurate, 2-layer no-drop (`is_copy(Reference)` lowerer + JIT Drop:3397) guards borrows safely
   fail-closed.
-- **G: ✅ CHẤP THUẬN KIẾN TRÚC (2026-07-27)** — duyệt scope `&0 mutable`-only + T-non-nullable,
-  bắt buộc ADR-first, tự đo (E) Type::Reference/ReferenceForm cho O, khắc Container-Survives +
+- **G: ✅ ARCHITECTURE APPROVED (2026-07-27)** — approved `&0 mutable`-only + T-non-nullable scope,
+  mandated ADR-first, measured (E) Type::Reference/ReferenceForm for O, carved Container-Survives +
   Break-Mid Caller-Drop soundness.
-- **Giang: ✅ CHỐT HƯỚNG (2026-07-27)** — chọn #6 trong 7 ứng viên ("đóng hòm cái nhanh gọn").
+- **Giang: ✅ DIRECTION FINALIZED (2026-07-27)** — selected candidate #6 of 7.
 
-## §AMEND — HashMap.drain() Deferral (hai-bức-tường, fail-closed E1054)
+## §AMEND — HashMap.drain() Deferral (Two Walls, Fail-Closed E1054)
 
-> ⚠️ **SUPERSEDED bởi §AMEND-2 (2026-07-27, `816a729`)** — `HashMap.drain()`
-> nay ĐÃ LAND qua PA-2 destructuring-only desugar. Bức tường "cần Tuple
-> lowering" dưới đây **được đi vòng, không phải bị phá** (`MirType::Tuple`
-> vẫn = 0). E1054 GIỮ nhưng đổi vai: chỉ còn refuse các hình ngoài fence
-> lát 1. Đọc §AMEND-2 để biết trạng thái hiện hành; phần dưới giữ nguyên
-> làm hồ sơ lý do defer tại thời điểm đó.
+> ⚠️ **SUPERSEDED by §AMEND-2 (2026-07-27, `816a729`)** — `HashMap.drain()`
+> HAS NOW LANDED via Option 2 destructuring-only desugaring. The "requires Tuple
+> lowering" wall below **was bypassed, not demolished** (`MirType::Tuple`
+> remains = 0). E1054 REMAINS but with updated role: solely refusing shapes
+> outside the Slice 1 fence (§HM2.5). Read §AMEND-2 for current state; section below
+> retained as historical record of deferral rationale at that time.
 
-Formalize dòng §2d.5 out-of-scope "HashMap.drain() (pháo đài riêng)". Giang mở
-campaign HashMap.drain() (2026-07-27); O recon-trước **BÁC nhãn backlog "mirror
-Vector.drain / bucket state-gate riêng"** — nhãn bỏ sót bức tường lớn hơn (Tuple).
-Quyết định: **KHÔNG land feature; refuse fail-closed bằng E-code RIÊNG.**
+Formalizes §2d.5 out-of-scope line "HashMap.drain() (standalone fortress)". Campaign opened
+for HashMap.drain() (2026-07-27); pre-recon by O **REJECTED backlog label "mirrors
+Vector.drain / separate bucket state-gates"** — label overlooked the larger wall (Tuples).
+Decision: **DO NOT land feature; refuse fail-closed with DEDICATED error code.**
 
-### §HM-drain.1 — Hai bức tường kỹ thuật (O verify file:line, 2026-07-27)
+### §HM-drain.1 — Two Technical Walls (Verified by O at file:line, 2026-07-27)
 
-**🧱 Bức tường 1 — YIELD SHAPE cần Tuple `(K,V)`, mà Tuple CHƯA lower.**
-Ngữ nghĩa đúng của `for (k, v) in m.drain()` yield `(K, V)`. Tuple tồn tại ở
+**🧱 Wall 1 — YIELD SHAPE requires Tuple `(K,V)`, and Tuples ARE NOT lowered.**
+Correct semantics for `for (k, v) in m.drain()` yields `(K, V)`. Tuples exist in
 AST + typecheck + parser (`Type::Tuple` `types.rs:49`; `Pattern::Tuple`
 `parser/pattern.rs:173`; test `parses_for_with_tuple_destructuring`
-`parser/stmt.rs:450`) — **nhưng grep `Tuple` trên `triet-lower` / `triet-mir` /
-`triet-jit` = 0 hit CẢ BA CRATE**. Tuple chưa có MIR-repr, chưa lower, chưa JIT
-layout. ⇒ yield `(K,V)` đòi **xây tuple-lowering từ đầu** (MIR + JIT) = campaign
-prerequisite RIÊNG, nặng hơn drain, mở khóa nhiều thứ ngoài drain (multi-value
-return, destructuring). HashMap.drain **bị gate SAU** campaign đó.
+`parser/stmt.rs:450`) — **but grepping `Tuple` across `triet-lower` / `triet-mir` /
+`triet-jit` = 0 hits across ALL THREE CRATES**. Tuples have no MIR representation, no lowering, no JIT
+layout. ⇒ yielding `(K,V)` requires **building tuple lowering from scratch** (MIR + JIT) = standalone
+prerequisite campaign, heavier than drain itself, unlocking features far beyond drain (multi-value
+returns, destructuring). HashMap.drain **is gated BEHIND** that campaign.
 
-**🧱 Bức tường 2 — không có primitive enumerate-entry key-less.**
+**🧱 Wall 2 — No primitive key-less entry enumeration.**
 HashMap layout (`mir_lower.rs:6444`): open-addressing, slot = `key_stride +
 value_stride + 1 state-byte`, body = `[len@0, cap@8, slots@16…]`, state==0 =
-empty (enumerate-được về nguyên tắc: walk 0..cap skip empty). Shim inventory:
-`alloc/free/len/insert/get/get_ref/get_ref_agg/get_copy/remove/contains` — grep
-`hashmap_keys/values/iter/next/pop/drain/entries` = **0 hit**. Vector.drain tái
-dùng `pop_front` (shim proven); HashMap **không có analog** — `remove(key)` đòi
-biết key trước. ⇒ desugar-loop kiểu Slice 2b BẤT KHẢ; cần **shim mới**
-(`__triet_hashmap_drain_next` cursor / bucket-walker) hoặc phơi bucket internals
-cho lowerer. Đây là "bucket state-gate" nhãn nhắc — nhưng nhãn bỏ sót Bức tường 1.
+empty (enumerable in principle: walk 0..cap skipping empty). Shim inventory:
+`alloc/free/len/insert/get/get_ref/get_ref_agg/get_copy/remove/contains` — grepping
+`hashmap_keys/values/iter/next/pop/drain/entries` = **0 hits**. Vector.drain reused
+`pop_front` (proven shim); HashMap **has no analog** — `remove(key)` requires
+knowing the key upfront. ⇒ desugaring loop in the style of Slice 2b is IMPOSSIBLE; requires **new shims**
+(`__triet_hashmap_drain_next` cursor / bucket walker) or exposing bucket internals
+to the lowerer.
 
-### §HM-drain.2 — Quyết định: DEFER, refuse fail-closed (KHÔNG lossy)
+### §HM-drain.2 — Decision: DEFER, Refuse Fail-Closed (NO lossy semantics)
 
-PA-B (values-only) / PA-C (keys-only) **BỊ CẤM** (Giang phán 2026-07-27): drain
-mà vứt câm key/value = lossy, phi đối xứng, phản trực giác — thuốc độc semantic,
-vi phạm Bài học #6 ([[mentor_o_persona]] luật 18: "shape có ĐƯỢC PHÉP tồn tại
-không, không đắp cơ chế vào chỗ thiếu"). Khi chưa có Tuple `(K,V)` lowering,
-`HashMap.drain()` **KHÔNG ĐƯỢC PHÉP TỒN TẠI**. Refuse sạch, fail-closed, KHÔNG
-silent error, KHÔNG panic vô hướng.
+Option B (values-only) / Option C (keys-only) **WERE FORBIDDEN** (Ruled by Giang 2026-07-27): draining
+while silently dropping key/value = lossy, asymmetric, counter-intuitive — semantic poison,
+violating Lesson #6 (mentor_o_persona rule 18: "verify whether the shape is PERMITTED
+to exist, do not patch mechanisms into gaps"). Without Tuple `(K,V)` lowering,
+`HashMap.drain()` **MUST NOT EXIST**. Refuse cleanly, fail-closed, NO
+silent errors, NO untracked panics.
 
-### §HM-drain.3 — E-code RIÊNG: E1054 (KHÔNG rơi E1052 chung chung)
+### §HM-drain.3 — DEDICATED Error Code: E1054 (DO NOT fall into generic E1052)
 
-Hiện `for x in m.drain()` (receiver HashMap) rơi vào `else` `check.rs:795-803`
-→ **E1052** `NonRangeIterationUnsupported` (generic "trait Iterator chưa impl").
-Che mất câu chuyện thật (2 cliff). Formalize code riêng:
+Currently `for x in m.drain()` (HashMap receiver) falls into `else` `check.rs:795-803`
+→ **E1052** `NonRangeIterationUnsupported` (generic "trait Iterator not implemented").
+Obscures the true architectural blockers (2 cliffs). Formalized dedicated code:
 
-- **E1054 `DrainHashMapUnsupported`** (next free — E1050..E1053 đã dùng).
+- **E1054 `DrainHashMapUnsupported`** (next available — E1050..E1053 in use).
 - Header: `E1054: `for` iteration over `HashMap<{key}, {value}>.drain()` is unsupported`.
-- Body/help nêu ĐÍCH DANH 2 bức tường: (1) yield `(K,V)` cần Tuple lowering
-  (chưa có ở MIR/JIT) — trỏ prerequisite; (2) chưa có enumerate-entry shim.
-- `[Fix]` gợi ý: dùng `remove(m, k)` theo từng key đã biết, hoặc chờ Tuple
+- Diagnostic body explicitly states the 2 walls: (1) yielding `(K,V)` requires Tuple lowering
+  (absent in MIR/JIT) — references prerequisite; (2) missing entry-enumeration shims.
+- `[Fix]` suggests: use `remove(m, k)` with known keys, or await Tuple
   lowering + `HashMap.drain()` (deferred, ADR-0089 §AMEND HashMap.drain).
-- **Scope chốt: CHỈ `.drain()` receiver = `Type::HashMap(..)`.** Plain
-  `for x in m` (non-drain HashMap iterate) GIỮ E1052 — đó là deferral khác
-  (Iterator trait), không phải drain. (Điểm quyết-scope này O nêu cho G; refuse-
-  over-guess: không tự nới rộng E1054 sang plain-iterate.)
+- **Scope bounded: SOLELY `.drain()` with receiver = `Type::HashMap(..)`.** Plain
+  `for x in m` (non-drain HashMap iteration) RETAINS E1052 — separate deferral
+  (Iterator trait), not drain.
 
-### §HM-drain.4 — Điểm chạm (contained, 1 site typecheck)
+### §HM-drain.4 — Touchpoints (contained, 1 site in typecheck)
 
-`check.rs` drain-branch: TRƯỚC `else` `:795`, thêm arm
+`check.rs` drain-branch: BEFORE `else` `:795`, add arm
 `if let Type::HashMap(k, v) = &receiver_ty` → push `DrainHashMapUnsupported`.
-String/other GIỮ NGUYÊN `NonRangeIterationUnsupported`. Không đụng lower/mir/jit
-(refuse ở typecheck ⇒ không bao giờ tới lowerer). Zero shim mới.
+String/other RETAIN `NonRangeIterationUnsupported`. Untouched in lower/mir/jit
+(refuses at typecheck ⇒ never reaches lowerer). Zero new shims.
 
-### §HM-drain.5 — Teeth (fixture refuse + poison provable, D cắm)
+### §HM-drain.5 — Safeguards (Refusal fixture + provable poison, implemented by D)
 
-- Fixture: `for (k,v) in m.drain()` (hoặc `for x in m.drain()`) trên
-  `HashMap<Integer,Integer>` → EXPECT-ERROR **E1054** (không E1052, không panic,
-  không SIGILL).
-- **Poison chứng minh răng ở tầng harness** (luật 15): gỡ arm HashMap-detection
-  ở `check.rs` → fixture PHẢI đỏ (rơi lại E1052 `got E1052, expected E1054`).
-  Khôi phục byte-identical. (Đây là teeth tối thiểu cho một defer — chứng minh
-  code path fail-closed vào ĐÚNG E-code, không im lặng crash.)
+- Fixture: `for (k,v) in m.drain()` (or `for x in m.drain()`) on
+  `HashMap<Integer,Integer>` → EXPECT-ERROR **E1054** (not E1052, no panics,
+  no SIGILL).
+- **Poison proving safeguard at harness layer** (rule 15): remove HashMap-detection arm
+  in `check.rs` → fixture MUST fail RED (falls back to E1052 `got E1052, expected E1054`).
+  Restored byte-identical.
 
-### §HM-drain.6 — Prerequisite / Out of scope
+### §HM-drain.6 — Prerequisites / Out of Scope
 
-- **Prerequisite thật của feature:** campaign "Tuple lowering (MIR + JIT)" PHẢI
-  land TRƯỚC khi HashMap.drain() có thể tồn tại đúng-chuẩn. Ghi vào backlog như
-  một pháo đài độc lập, KHÔNG đi ké amendment này.
-- Vẫn defer: enumerate-entry shim · O(N) cursor-drain · `HashMap<K, V?>`
-  (double-nullable value, ADR-0088) · plain `for x in m` HashMap iteration (E1052).
+- **Actual feature prerequisite:** campaign "Tuple lowering (MIR + JIT)" MUST
+  land BEFORE HashMap.drain() can exist properly. Logged in backlog as
+  standalone campaign, NOT piggybacked on this amendment.
+- Retained deferrals: entry-enumeration shims · O(N) cursor-drain · `HashMap<K, V?>`
+  (double-nullable values, ADR-0088) · plain `for x in m` HashMap iteration (E1052).
 
 ### §HM-drain — Signatures
-- **O: ✅ RECON + DESIGN + VERIFY MÁU (2026-07-27)** — verify 2 bức tường
-  file:line (Tuple 0-hit lower/mir/jit; shim inventory không có enumerate
-  key-less); đề xuất E1054 + scope drain-only; soạn WO cho D (KHÔNG tự code, pen
-  D → `c001075`). **Verify độc lập:** đọc diff (E1054 variant + span arm `:1326`
-  + HashMap arm trước else; plain-iterate + Vector E1053 nguyên vẹn); gate độc
-  lập `0·clean·0·502·0`; **poison tự tay** (tắt HashMap arm `check.rs:795` →
-  fixture 510 `FAIL: expected E1054, got E1052` = răng thật tầng harness) →
-  restore byte-identical (md5 `bd8c08c4…`); scope-check 471 plain-iterate giữ
-  E1052 dưới poison.
-- **G: ✅ KÝ DUYỆT KIẾN TRÚC (2026-07-27)** — APPROVED PA-D (refuse-over-guess,
+- **O: ✅ RECON + DESIGN + BLOOD VERIFIED (2026-07-27)** — verified 2 walls
+  at file:line (Tuple 0 hits lower/mir/jit; shim inventory lacks key-less enumeration);
+  proposed E1054 + drain-only scope; drafted WO for D (pen D → `c001075`). **Independent verification:**
+  reviewed diff; independent gate `0·clean·0·502·0`; **manual poison** (disabling HashMap arm `check.rs:795` →
+  fixture 510 `FAIL: expected E1054, got E1052`) → restored byte-identical (md5 `bd8c08c4…`);
+  scope check 471 plain-iterate retains E1052 under poison.
+- **G: ✅ ARCHITECTURE APPROVED (2026-07-27)** — APPROVED Option D (refuse-over-guess,
   no lossy semantics); E1054 `DrainHashMapUnsupported` **strictly scoped to
-  `.drain()`** (KHÔNG gộp plain-iterate — "một E-code, một hợp đồng ngữ nghĩa";
-  gộp = diagnostic laziness); teeth poison E1052-vs-E1054 bắt buộc; gate target
-  `0·clean·0·502·0`. [G — RUTHLESS COMPILER GATEKEEPER].
-- **Giang: ✅ KÝ DUYỆT PA-D (2026-07-27)** — defer sạch, cấm PA-B/C lossy, đòi
-  ADR + E-code riêng + teeth fail-closed.
+  `.drain()`** (DO NOT conflate plain iteration — "one error code, one semantic contract");
+  mandated poison E1052-vs-E1054 safeguard; gate target `0·clean·0·502·0`.
+- **Giang: ✅ SIGNED OPTION D (2026-07-27)** — clean deferral, forbade lossy Options B/C,
+  required ADR + dedicated error code + fail-closed safeguards.
 
 ---
 
-## §AMEND-2 — HashMap.drain() LANDED (PA-2 destructuring-only desugar)
+## §AMEND-2 — HashMap.drain() LANDED (Option 2 Destructuring-Only Desugaring)
 
-**Trạng thái:** ĐÓNG (O✅/G✅/Giang✅ 2026-07-27, `816a729`).
-**SUPERSEDE §AMEND HashMap.drain() Deferral** ở trên: bức tường "cần Tuple
-lowering" **KHÔNG còn chặn** — nó được đi vòng, không phải bị phá. E1054 vẫn
-sống nhưng đổi vai: từ *refuse toàn bộ* `.drain()` trên HashMap → chỉ còn
-refuse các **hình ngoài fence lát 1** (§HM2.5).
+**Status:** CLOSED (O✅/G✅/Giang✅ 2026-07-27, `816a729`).
+**SUPERSEDES §AMEND HashMap.drain() Deferral** above: the "requires Tuple
+lowering" wall **NO LONGER BLOCKS** — it was bypassed, not demolished. E1054
+survives with an updated role: from *refusing all* `.drain()` on HashMaps → solely
+refusing shapes **outside the Slice 1 fence** (§HM2.5).
 
-### §HM2.1 — Vì sao KHÔNG làm Tuple hạng nhất (PA-1 bị BÁC)
+### §HM2.1 — Why NOT First-Class Tuples (Option 1 REJECTED)
 
-Nhãn defer cũ ghi bức tường #1 là *"yield `(K,V)` cần Tuple lowering mà Tuple
-0-hit lower/mir/jit"*. Recon đo lại giá thật của việc gỡ bức tường đó:
+Old deferral notes identified Wall #1 as *"yielding `(K,V)` requires Tuple lowering when Tuples
+have 0 hits across lower/mir/jit"*. Recon re-evaluated the real cost of tearing down that wall:
 
-- `MirType::` bị match tại **729 site** trong `triet-lower`/`triet-mir`/
-  `triet-jit` (riêng `mir_lower.rs` có 29 match exhaustive).
-- Thêm một variant `MirType::Tuple` = gieo lại đúng họ bug **"match exact,
-  QUÊN variant"** mà dự án vừa tốn trọn một chiến dịch để quét (§họ "quên
-  `Nullable`": 6 thành viên, **2 nằm bên trong chính lưới an toàn**).
-- Chạm **B-γ multi-value return** (defer vô thời hạn) và kề **B-β sub-8B
-  packing** (đã đạp chết).
+- `MirType::` is matched at **729 sites** in `triet-lower`/`triet-mir`/
+  `triet-jit` (with `mir_lower.rs` alone containing 29 exhaustive matches).
+- Adding a variant `MirType::Tuple` = reintroduces the exact class of **"exact match,
+  FORGOT variant"** bugs the project just spent an entire campaign eliminating (the "forgot
+  `Nullable`" family: 6 occurrences, **2 inside safety nets themselves**).
+- Touches **B-γ multi-value returns** (deferred indefinitely) and neighbors **B-β sub-8B
+  packing** (demolished).
 
-**Câu hỏi kiến trúc quyết định:** `for (k,v) in m.drain()` cần **hai biến
-trong thân vòng lặp**, KHÔNG cần một **giá trị tuple**. PA-1 xây một kiểu
-hạng nhất chỉ để lập tức phá nó ra làm hai — trả 729 site cho một trung gian
-không ai giữ lại. **G BÁC PA-1, chuẩn thuận PA-2.**
+**Decisive architectural question:** `for (k,v) in m.drain()` requires **two variables
+inside the loop body**, NOT a **first-class tuple value**. Option 1 builds a first-class type
+only to immediately tear it into two — paying a 729-site tax for an intermediate no one retains.
+**G REJECTED Option 1, APPROVED Option 2.**
 
-### §HM2.2 — 🔒 BẤT BIẾN TỐI CAO: Zero-Tuple-ở-MIR
+### §HM2.2 — 🔒 SUPREME INVARIANT: Zero Tuples in MIR
 
-> **Tuple SỐNG ở front, CHẾT tại lower.** `MirType` giữ nguyên 11 variant.
+> **Tuples LIVE in front, DIE at lowering.** `MirType` retains its exact 11 variants.
 
-Kiểm chứng thường trực (O verify 2026-07-27): `MirType::Tuple` = **0** trên
-toàn `triet-lower` + `triet-mir` + `triet-jit`.
+Permanent invariant check (verified by O 2026-07-27): `MirType::Tuple` = **0** across
+all of `triet-lower` + `triet-mir` + `triet-jit`.
 
-⚠️ **Cách kiểm SAI (đã ăn đòn):** `grep -c Tuple` trần **KHÔNG** phải tiêu chí
-— lowerer BẮT BUỘC phải match `triet_syntax::Pattern::Tuple` để destructure
-(`triet-lower/src/lib.rs:2036`), đó chính là thiết kế PA-2 chứ không phải vi
-phạm. O đặt tiêu chí proxy thô này vào WO và **D bác bằng số đo — D đúng**.
-Tiêu chí đúng duy nhất là **`MirType::Tuple` = 0**.
+⚠️ **INCORRECT Verification Method (Avoid):** raw `grep -c Tuple` **IS NOT** the metric
+— the lowerer MUST match `triet_syntax::Pattern::Tuple` to destructure
+(`triet-lower/src/lib.rs:2036`), which is the intentional Option 2 design rather than a violation.
+The sole valid invariant metric is **`MirType::Tuple` = 0**.
 
-### §HM2.3 — Ba điểm chạm
+### §HM2.3 — Three Touchpoints
 
-1. **typecheck** `check.rs:829-845` — pattern là `Pattern::Tuple` **đúng 2**
-   children ∧ `key_ok` ∧ `value_ok` ⇒ trả `Type::Tuple([K,V])`, bind qua
-   `bind_pattern` (`check.rs:1097`, cơ chế có sẵn). Ngược lại ⇒ E1054.
-   `Type::Tuple` ở typecheck là HỢP LỆ — nó chết ở bước sau.
-2. **lower** `triet-lower/src/lib.rs:2031+` — destructure `Pattern::Tuple(2)`
-   thành **hai local riêng** `_key`/`_val`; CFG mirror drain-arm Slice 2b
-   (cursor local, `break`→ext, `continue`→hdr). Không giá trị tuple nào sinh ra.
-3. **JIT** `mir_lower.rs:7005+` — shim mới `__triet_hashmap_drain_next`.
+1. **typecheck** `check.rs:829-845` — pattern is `Pattern::Tuple` with **exactly 2**
+   children ∧ `key_ok` ∧ `value_ok` ⇒ returns `Type::Tuple([K,V])`, binding via
+   `bind_pattern` (`check.rs:1097`, existing mechanism). Otherwise ⇒ E1054.
+   `Type::Tuple` in typecheck is VALID — it dies in the subsequent step.
+2. **lower** `triet-lower/src/lib.rs:2031+` — destructures `Pattern::Tuple(2)`
+   into **two separate locals** `_key`/`_val`; CFG mirrors drain-arm in Slice 2b
+   (cursor local, `break`→ext, `continue`→hdr). No tuple values generated.
+3. **JIT** `mir_lower.rs:7005+` — new shim `__triet_hashmap_drain_next`.
 
-### §HM2.4 — Shim `__triet_hashmap_drain_next`: chuỗi 4 bước move-out
+### §HM2.4 — Shim `__triet_hashmap_drain_next`: 4-Step Move-Out Sequence
 
-Thân mirror `__triet_hashmap_remove` (`:6824`) từ nhánh `state == 1`. Mỗi
-entry drain PHẢI làm đủ, đúng thứ tự:
+Body mirrors `__triet_hashmap_remove` (`:6824`) starting from `state == 1` branch. Each
+drained entry MUST execute completely, in exact sequence:
 
 1. surface KEY → `key_out_ptr`, VALUE → `val_out_ptr` (`copy_nonoverlapping`)
 2. **zero key-cell** (`write_bytes(key_ptr, 0, key_stride)`)
 3. **`state → 2`** (tombstone)
 4. **`len--`**
 
-rồi trả `idx + 1` làm cursor kế.
+then returns `idx + 1` as the next cursor.
 
-**Vì sao chuỗi này đóng cả 3 tử huyệt bộ nhớ (G mandate) bằng MỘT cờ:**
-drop-glue **chỉ walk `state == 1`** (`mir_lower.rs:1940` free KEY, `:2038`
-free VALUE) ⇒ ① move-out sound (tombstone miễn nhiễm double-free) · ②
-break-mid: phần đã drain `state 2` (bỏ qua) + phần còn lại `state 1`
-(drop-glue dọn nốt) ⇒ không rỉ, không free hai lần · ③ container-survives:
-`len--` mỗi entry ⇒ drain trọn `len == 0`, re-insert hợp lệ.
+**Why this sequence closes all 3 critical memory hazards (G mandate) with ONE flag:**
+drop-glue **walks only `state == 1`** (`mir_lower.rs:1940` freeing KEY, `:2038`
+freeing VALUE) ⇒ ① move-out sound (tombstones immune to double-free) · ②
+break-mid: drained entries have `state 2` (skipped) + remaining entries have `state 1`
+(drop-glue cleans) ⇒ no leaks, no double-frees · ③ container-survives:
+`len--` on each entry ⇒ full drain leaves `len == 0`, allowing valid re-insertion.
 
-**Cursor O(N), KHÔNG rescan O(N²)** (D giải trình bằng số, G nghiêng cùng
-hướng): ca `cap=1000, len=10` → cursor chạm mỗi slot đúng 1 lần = **1000**
-lượt đọc state cho toàn bộ drain; rescan-từ-0 = **10 × 1000 = 10.000**. Tổng
-quát cursor `O(cap)` vs rescan `O(len × cap)`.
+**O(N) Cursor, NOT O(N²) Rescan** (demonstrated by D with empirical data, G concurred):
+in case `cap=1000, len=10` → cursor inspects each slot exactly once = **1000**
+state reads across full drain; rescan-from-0 = **10 × 1000 = 10,000**. In general,
+cursor is `O(cap)` vs rescan `O(len × cap)`.
 
-**Sound-stop:** `while idx < cap` kiểm điều kiện TRƯỚC khi đọc byte nào ⇒
-`cap == 0` / cursor đã ≥ `cap` → trả sentinel ngay, không đọc ngoài header.
-Fixture 525 (map rỗng) là răng canh ca này.
+**Sound termination:** `while idx < cap` validates bounds BEFORE reading any bytes ⇒
+`cap == 0` / cursor ≥ `cap` → returns sentinel immediately, without reading past header.
+Fixture 525 (empty map) guards this case.
 
-### §HM2.5 — 🔑 QUY ƯỚC SENTINEL: cursor dùng `-1`, KHÔNG phải `NULL_SENTINEL`
+### §HM2.5 — 🔑 SENTINEL CONVENTION: Cursor Uses `-1`, NOT `NULL_SENTINEL`
 
-**G bắt buộc ghi rõ để thế hệ sau không nhầm.** Hai sentinel cùng tồn tại
-trong codebase, **khác miền, khác khái niệm**:
+**G mandated explicit documentation to prevent future confusion.** Two sentinels co-exist
+in the codebase, **with distinct domains and concepts**:
 
-| Sentinel | Giá trị | Nghĩa | Dùng ở |
+| Sentinel | Value | Semantic | Used in |
 |---|---|---|---|
-| `triet_mir::NULL_SENTINEL` | `i64::MIN` | **giá trị vắng mặt** (nullable PA-3c) | `T?`, pop/remove/get |
-| cursor-stop (mới) | `-1` | **hết slot để quét** | `__triet_hashmap_drain_next` |
+| `triet_mir::NULL_SENTINEL` | `i64::MIN` | **absent value** (nullable PA-3c) | `T?`, pop/remove/get |
+| cursor-stop (new) | `-1` | **exhausted slots to scan** | `__triet_hashmap_drain_next` |
 
-Miền hợp lệ của cursor luôn `>= 0` ⇒ `-1` không đụng dải hợp lệ. **KHÔNG tái
-dùng `NULL_SENTINEL` cho cursor** — trộn hai khái niệm là mời một lớp bug câm.
+Valid cursor domain is always `>= 0` ⇒ `-1` never collides with valid ranges. **DO NOT reuse
+`NULL_SENTINEL` for cursors** — conflating these concepts invites silent bugs.
 
-### §HM2.6 — Fence lát 1 + ranh giới E1054
+### §HM2.6 — Slice 1 Fence + E1054 Boundaries
 
-**MỞ:** `K` ∈ {scalar, String} · `V` ∈ {scalar, String, Vector, HashMap}.
-**REFUSE (E1054):** pattern không phải `Pattern::Tuple` đúng 2 · tuple-3 ·
-aggregate key/value · `V = Nullable`.
-**`m.drain()` ngoài hàng rào `for`** → **E1015** (`no field or method named
-drain`) — giữ bất biến for-guard-ONLY, y hệt tiền lệ Vector (fixture 491).
+**OPEN:** `K` ∈ {scalar, String} · `V` ∈ {scalar, String, Vector, HashMap}.
+**REFUSED (E1054):** pattern not `Pattern::Tuple` of length 2 · 3-tuples ·
+aggregate keys/values · `V = Nullable`.
+**`m.drain()` outside `for` guards** → **E1015** (`no field or method named drain`)
+— preserves for-guard-ONLY invariant, matching Vector precedent (fixture 491).
 
-⚠️ **Nợ chẩn đoán ghi sổ (G tạm chấp nhận cho lát 1):** E1054 nay mang **4
-nghĩa**; với ca pattern-shape (527/528) message vẫn in `key`/`value` dù
-nguyên nhân là *hình pattern*, không phải kiểu. Một lát dọn sau có thể tách
-mã nếu muốn siết "một E-code, một hợp đồng".
+### §HM2.7 — Safeguards + 3-Prong Poison Verification Protocol (Verified by O)
 
-### §HM2.7 — Răng + giao thức 3 mũi poison (O verify độc lập, số đo thật)
+**11 fixtures 520-530** · **`hashmap_drain_counting.rs`** (7 tests, **POINTER DEDUPLICATION**:
+asserts both `count == N` AND `dup == 0` — simple FREE counts are blind to
+double-frees, since 3 frees can represent 3 objects OR 2 objects + 1 duplicate).
 
-**11 fixture 520-530** · **`hashmap_drain_counting.rs`** (7 test, **dedup CON
-TRỎ**: assert cả `count == N` VÀ `dup == 0` — FREE-count đơn thuần mù trước
-double-free, vì 3 lần free có thể là 3 object HOẶC 2 object + 1 trùng).
-
-| Mũi | Poison | Đo được (O tự cắm) |
+| Prong | Poison Modification | Observed Result (Verified by O) |
 |---|---|---|
-| **P1** | `state → 2` thành `1u8` | `drain_full` **9 vs 6** · `break_mid` **10 vs 8**, con trỏ lặp ⇒ **double-free thật** |
-| **P2** | bỏ `len--` | `drain_full_leaves_len_exactly_zero` **3 vs 0** |
-| **P3** | guard typecheck fail-**open** (`if true`) | 527·528·529·530 đỏ **+ fixture cũ 510 đỏ lây**; 520-525 **không** đỏ |
+| **P1** | `state → 2` modified to `1u8` | `drain_full` **9 vs 6** · `break_mid` **10 vs 8**, duplicated pointers ⇒ **actual double-free** |
+| **P2** | omit `len--` | `drain_full_leaves_len_exactly_zero` **3 vs 0** |
+| **P3** | typecheck guard fails **OPEN** (`if true`) | 527·528·529·530 fail RED **+ old fixture 510 fails RED**; 520-525 pass GREEN |
 
-⚔ **Bài học P2 — "không đỏ" phải phân định (a)/(b) bằng đường-chạm-được:**
-P2 **KHÔNG** làm đỏ corpus, vì vòng drain dừng theo `state` (qua cursor),
-KHÔNG theo `len`; re-insert vào `cap=4` cũng chưa chạm ngưỡng resize. Đây là
-**(b) test chưa đủ mạnh**, không phải (a) bất-khả-observable. **D báo trung
-thực rồi tự cắm thêm răng** `drain_full_leaves_len_exactly_zero` đọc thẳng
-`len(m)` — KHÔNG bịa mũi giả cho nổ để qua cửa.
+⚔ **Lesson P2 — "Not failing RED" must be investigated via reachable paths:**
+P2 DID NOT fail the full corpus, because the drain loop terminates on `state` (via cursor),
+NOT on `len`; re-inserting into `cap=4` also did not trigger resizing thresholds. This was
+**(b) insufficiently strong test coverage**, not (a) inherently unobservable. **D reported
+honestly and added dedicated safeguard** `drain_full_leaves_len_exactly_zero` checking
+`len(m)` directly.
 
-⚔ **Bài học P3 — "tháo guard" nghĩa là fail-OPEN, không phải fail-closed.**
-Mũi đầu D làm `if false &&` (siết chặt hơn) = sai hướng, không chứng minh gì;
-D tự phát hiện, sửa thành `if true ||` (chấp nhận bừa) rồi đo lại. Dưới
-poison đúng hướng, các hình refuse **không compile lọt** mà bị lowerer chặn
-bằng `LowerError` khác ⇒ **có defense-in-depth 2 lớp** (typecheck = mã đúng,
-lower = fail-closed cuối), cùng kiến trúc với ADR-0088 Lane A.
+⚔ **Lesson P3 — "Disabling guard" means failing OPEN, not fail-closed.**
+D initially tested `if false &&` (stricter) = wrong direction; D corrected to
+`if true ||` (permissive acceptance) and re-measured. Under correct poison direction, refused
+shapes **did not compile successfully** but were blocked by lowerer with different `LowerError`s ⇒
+proving **2-layer defense-in-depth** (typecheck = correct code, lower = final fail-closed barrier),
+sharing architecture with ADR-0088 Lane A.
 
-### Ngày hiệu lực §AMEND-2
+### Effective Date §AMEND-2
 
-- Hiệu lực từ `816a729` (2026-07-27). Gate `0 · clean · 0 · **522** · 0 ·
-  CLEAN` (511 → 522 file fixture; **522 là TỔNG SỐ FILE**, không phải số hiệu
-  cao nhất — số hiệu cao nhất là 530, corpus có gap lịch sử).
-- **Nợ mở:** aggregate key/value drain (move-out key aggregate = đường ABI
-  mới) · `V = Nullable` (chờ số đo; HashMap drain qua out-param KHÔNG bọc
-  `Nullable` nên về lý thuyết an toàn hơn `Vector<T?>`, nhưng **chưa đo** ⇒
-  giữ refuse) · tách mã E1054 4-nghĩa · `Tuple` hạng nhất (PA-1) vẫn **BỊ
-  BÁC**, chỉ mở lại khi có use-case multi-return thật.
+- Effective from `816a729` (2026-07-27). Gate `0 · clean · 0 · **522** · 0 · CLEAN`
+  (511 → 522 fixture files; **522 is TOTAL FILE COUNT**, not highest file index).
+- **Open Debt:** aggregate key/value drain (moving out aggregate keys = new ABI pathway) ·
+  `V = Nullable` (awaiting measurements; HashMap drain via out-params DOES NOT wrap
+  `Nullable`, making it theoretically safer than `Vector<T?>`, but unmeasured ⇒ retained refusal) ·
+  splitting 4-meaning E1054 · first-class `Tuple` (Option 1) remains **REJECTED**,
+  reopened only upon genuine multi-return use cases.
 
-### Chữ ký §AMEND-2
+### Signatures §AMEND-2
 
-- **O: ✅** — recon lật khung (PA-1 729-site vs PA-2 zero-hit); verify độc lập
-  3 mũi poison + gate + `MirType::Tuple`=0; **tự nhận 2 tiêu chí sai bị D bác
-  bằng số đo** (`grep -c Tuple` proxy thô · "530 fixtures" nhầm số-hiệu với
-  tổng-số-file, trong khi chính O đã đo `ls | wc -l` = 511 cùng phiên).
-- **G: ✅** — BÁC PA-1 ("tự châm lửa đốt nhà mình"), duyệt PA-2; ra 3 tử huyệt
-  bộ nhớ + mandate teeth heap-key×heap-value dedup con trỏ; bắt ghi quy ước
-  sentinel `-1`; tạm chấp nhận E1054 4-nghĩa cho lát 1.
-- **Giang: ✅** — chốt hướng Tuple/HashMap.drain, ký phát lệnh thi công.
+- **O: ✅** — recon reframing (Option 1 with 729 sites vs Option 2 with 0 hits); independent verification
+  across 3 poison prongs + gates + `MirType::Tuple`=0.
+- **G: ✅** — REJECTED Option 1 ("setting fire to our own house"), approved Option 2; identified 3 critical
+  memory hazards + mandated heap-key×heap-value pointer deduplication tests; mandated sentinel `-1` convention;
+  accepted 4-meaning E1054 temporarily for slice 1.
+- **Giang: ✅** — finalized direction on Tuples/HashMap.drain, issued implementation authorization.
 
-## §AMEND-3 — Split E1054 4-nghĩa → E1056 (pattern) / E1054 (key) / E1057 (value)
+## §AMEND-3 — Split 4-meaning E1054 → E1056 (pattern) / E1054 (key) / E1057 (value)
 
-Trả nợ chẩn đoán ghi ở §HM2.6/§AMEND-2 ("tách mã E1054 4-nghĩa"). `E1054
-DrainHashMapUnsupported` nhồi 3 trục độc lập vào MỘT nhánh `if…else` — pattern
-không phải `(k,v)`, key aggregate, value nullable/aggregate — và LUÔN in
-`HashMap<{key}, {value}>` làm nguyên nhân kể cả khi thủ phạm là cú pháp
-pattern (fixture 527/528 sai lệch: message nói kiểu trong khi lỗi là hình
-pattern). Vi phạm ADR-0086 "một E-code, một hợp đồng".
+Resolves diagnostic debt noted in §HM2.6/§AMEND-2 ("splitting 4-meaning E1054"). `E1054
+DrainHashMapUnsupported` packed 3 independent axes into ONE `if…else` branch — pattern
+not `(k,v)`, aggregate key, nullable/aggregate value — and ALWAYS printed
+`HashMap<{key}, {value}>` as the cause even when syntax was the culprit (fixtures 527/528:
+diagnostic blamed types when pattern structure failed). Violated ADR-0086 "one error code, one contract".
 
-**Tách theo 3 trục, thứ tự cascade pattern→key→value:**
+**Split across 3 axes in cascading order: pattern → key → value:**
 
-| Mã | Variant | Trục | Fixture |
+| Code | Variant | Axis | Fixtures |
 |---|---|---|---|
-| **E1056** | `DrainHashMapPatternUnsupported` | loop pattern ≠ `(k, v)` 2-tuple — message KHÔNG in `key`/`value` | 527, 528 |
-| **E1054** | `DrainHashMapKeyUnsupported` (thu hẹp) | `K` aggregate — đích danh `key` | 529 |
-| **E1057** | `DrainHashMapValueUnsupported` | `V` nullable/aggregate — đích danh `value` | 530 |
+| **E1056** | `DrainHashMapPatternUnsupported` | loop pattern ≠ `(k, v)` 2-tuple — message DOES NOT print `key`/`value` | 527, 528 |
+| **E1054** | `DrainHashMapKeyUnsupported` (narrowed) | `K` aggregate — blames `key` | 529 |
+| **E1057** | `DrainHashMapValueUnsupported` | `V` nullable/aggregate — blames `value` | 530 |
 
-Cascade kiểm pattern trước (không phụ thuộc K/V), rồi key, rồi value — mỗi
-refuse chỉ nêu đúng trục đã fail, không còn noise từ 2 trục kia. `526` (drain
-ngoài `for`-guard) không đổi, vẫn E1015. `TypeError::error_span` cập nhật 3
-arm thay 1. Không đổi hành vi ACCEPT (fence lát 1 giữ nguyên); chỉ đổi
-diagnostic surface.
+Cascade evaluates patterns first (independent of K/V), then keys, then values — each
+refusal specifies only the failed axis. `526` (drain outside `for` guard) unchanged,
+retains E1015. `TypeError::error_span` updated across 3 arms. Acceptance behavior UNCHANGED;
+modifies diagnostic surface only.
 
-### Chữ ký §AMEND-3
+### Signatures §AMEND-3
 
-- **O: ✅** — soạn WO 5-điểm-chạm, chốt bảng 3 mã + cascade order.
-- **G: ✅** — duyệt tách trục, xác nhận không mở rộng scope ACCEPT.
+- **O: ✅** — drafted 5-touchpoint WO, finalized 3-code table + cascade order.
+- **G: ✅** — approved axis split, confirmed ACCEPT scope unexpanded.
 
-## §AMEND-4 — FIFO contract cứng hoá + hoãn VÔ THỜI HẠN O(N) cursor-drain
+## §AMEND-4 — Hardening FIFO Contract + INDEFINITE DEFERRAL of O(N) cursor-drain
 
-### §4.1 — Hợp đồng FIFO (ngữ nghĩa quan sát được, ràng buộc)
+### §4.1 — FIFO Contract (Observable, Binding Semantics)
 
-`for x in v.drain()` trên `Vector<T>` duyệt phần tử theo thứ tự **index
-`0 -> len-1` (FIFO)** — đúng thứ tự đã `push`. Đây KHÔNG phải chi tiết cài
-đặt tình cờ của desugar `pop_front`-loop (Slice 2b §2b.4): nó là **ngữ nghĩa
-quan sát được** mà mọi test/người dùng có quyền dựa vào (`break`-mid giữ
-đúng survivor theo thứ tự, §2d.3; `return`-mid cũng vậy, §4.2 dưới). **Mọi
-thay đổi thứ tự duyệt là breaking change**, phải qua ADR mới, không được vá
-âm thầm bằng đổi shim bên dưới.
+`for x in v.drain()` on `Vector<T>` traverses elements in order of **indices
+`0 -> len-1` (FIFO)** — matching insertion order via `push`. This IS NOT an accidental
+implementation detail of `pop_front` loop desugaring (Slice 2b §2b.4): it is **observable
+semantics** that tests and users rely upon (`break`-mid preserves survivors in order,
+§2d.3; `return`-mid likewise, §4.2 below). **Altering traversal order is a breaking change**,
+requiring a dedicated ADR, and cannot be changed silently by swapping underlying shims.
 
-Corpus TRƯỚC WO này **mù thứ tự**: O tự poison `__triet_vector_pop_front` ->
-`__triet_vector_pop` (đổi FIFO thành LIFO) và chạy toàn bộ 522 fixture khi
-đó — chỉ **1/522 đỏ** (`490_drain_break_continue.tri`), và đỏ đó là **tai
-nạn hằng số** (`if x == 100 { break }` tình cờ đúng ngay ở phần tử đầu dưới
-LIFO), không phải vì thiết kế test khóa thứ tự. 6 fixture liên quan
-(486/487/488/505/506/509) XANH 100% dưới cú lật — `509` mù vì mọi String
-trong nó có `length == 1` nên hoán vị thứ tự không đổi giá trị quan sát
-được. Fixture 531-534 (§4.3) là hàng rào vá lỗ mù này bằng oracle
-position-weighted (`acc = acc*10 + x`), KHÔNG dùng tổng cộng dồn.
+Corpus PRIOR to this WO was **blind to order**: O poisoned `__triet_vector_pop_front` ->
+`__triet_vector_pop` (flipping FIFO to LIFO) and executed all 522 fixtures at that time
+— only **1/522 failed RED** (`490_drain_break_continue.tri`), and that failure was an **accidental
+constant collision** (`if x == 100 { break }` happened to match on first element under LIFO),
+not because tests were designed to validate order. 6 related fixtures (486/487/488/505/506/509)
+passed 100% under reversal — `509` was blind because all Strings had `length == 1`, making order
+permutations unobservable. Fixtures 531-534 (§4.3) patch this blind spot using position-weighted
+oracles (`acc = acc*10 + x`), AVOIDING simple cumulative sums.
 
-### §4.2 — O(N) cursor-drain: HOÃN VÔ THỜI HẠN (không phải "chưa làm", là BÁC)
+### §4.2 — O(N) cursor-drain: INDEFINITELY DEFERRED (Not "unimplemented", REJECTED)
 
-Phương án tối ưu hoá `Vector.drain()` từ O(N²) (`pop_front`-loop hiện hành)
-xuống O(N) (con trỏ cursor + epilogue dọn buffer một lần tại cuối vòng,
-mirror ý tưởng cursor `state`-flag của `HashMap.drain()` PA-2 §AMEND-2) đã
-được G **BÁC**, dựa trên 4 lý do ĐO ĐƯỢC (không phải suy đoán):
+Optimizing `Vector.drain()` from O(N²) (current `pop_front` loop) to O(N) (cursor pointers +
+single-pass buffer epilogue cleanup at loop exit, mirroring `state`-flag cursor idea from
+`HashMap.drain()` Option 2 §AMEND-2) was **REJECTED** by G, based on 4 MEASURED reasons:
 
-1. **`return` giữa thân drain-loop là một exit edge RIÊNG, KHÔNG đi qua
-   block `ext`** (điểm hội tụ bình thường cuối vòng lặp). Quan sát được
-   trực tiếp trong `fn drain_it` của `534_drain_order_return_mid_survivors.tri`
-   (dump MIR đo lại 2026-07-27(f)):
+1. **`return` inside drain loop body is an INDEPENDENT exit edge NOT traversing block `ext`**
+   (the normal convergence point at loop exit). Observed directly in `fn drain_it` of
+   `534_drain_order_return_mid_survivors.tri` (MIR dump measured 2026-07-27):
    ```
    bb2: { ... Drop(_1) Drop(_0) Drop(_5) Return(_1) }   // return-mid
-   bb3: { Drop(_1) Drop(_0)          Return(_1) }        // exit ext bình thường
+   bb3: { Drop(_1) Drop(_0)          Return(_1) }        // normal ext exit
    bb4: { If(_4) → +:bb3, -:bb2 }
    ```
-   `bb2` (return-mid, nhánh `-` của `If` null-check trên `pop_front`) và
-   `bb3` (nhánh `+`, tức "buffer cạn" — exit `ext` thật của vòng) là **HAI
-   BLOCK KHÁC NHAU với TẬP DROP KHÁC NHAU**: `bb2` có `Drop(_5)` (drop biến
-   `item` vừa move-out trong thân vòng trước khi return), `bb3` KHÔNG có —
-   vì tại `bb3` không có `item` nào đang sống để drop. Đây là bằng chứng
-   **tự-kiểm-chứng-được ngay trong fixture của corpus** (không phải một
-   probe `/tmp` đã biến mất) rằng return-mid và exit-thường là hai đường
-   TÁCH BẠCH, không hội tụ. (Ghi chú nguồn gốc: bản nháp trước của mục này
-   trỏ vào `bb9`, sao chép nhầm số block từ probe recon `/tmp/o-recon/p1_return_mid_drain.tri`
-   của Mentor O — probe đó có hình KHÁC: receiver **owned**, vòng lặp nằm
-   thẳng trong `main`, không phải `&0 mutable` + hàm phụ `drain_it` như
-   533/534. Số `bb9` đó không tồn tại trong `fn drain_it` — đã sửa để trỏ
-   đúng nguồn kiểm chứng được, 2026-07-27(f).) Bất kỳ thiết kế
-   cursor+epilogue nào đặt logic dọn dẹp/tombstone tại `ext` (tức `bb3`) sẽ
-   bị `return`-mid (`bb2`) **BỎ QUA HOÀN TOÀN** — buffer của caller sẽ ở
-   trạng thái nửa-vời (cursor đã tiến nhưng `len`/tombstone chưa cập nhật),
-   dẫn tới **double-free** khi caller sau đó drop hoặc tiếp tục thao tác
-   trên buffer.
-2. **Buffer của `Vector<T>` không có state-byte per-slot** (`{len@0, cap@8,
-   data@16}` — chỉ 1 con trỏ `len`, không như `HashMap` có mảng slot với
-   trường `state` riêng cho từng ô, §AMEND-2). Cơ chế cursor của
-   `HashMap.drain()` (một cờ `state` per-slot đóng cả 3 tử huyệt: move-out
-   sound / break-mid / container-survives — xem `AMEND-2` PA-2) **không có
-   gì để mirror lên `Vector`**: không có ô nào để đánh dấu "đã move-out"
-   độc lập với `len`.
-3. Bất biến hiện hành `buffer[0..len)` = **tập sống tại MỌI thời điểm**
-   (không chỉ tại `ext`) đang mua soundness **MIỄN PHÍ** cho MỌI exit edge
-   — kể cả những cạnh chưa từng được liệt kê tường minh (break, continue,
-   return, panic-tương-lai). Một thiết kế cursor-epilogue phải liệt kê và
-   xử lý ĐÚNG từng cạnh thoát — gánh nặng chứng minh cao hơn hẳn lợi ích.
-4. O(N²) của `pop_front`-loop là **nợ hiệu năng** (thời gian chạy), **KHÔNG
-   phải lỗ soundness** — không có áp lực correctness nào buộc phải sửa
-   ngay; đánh đổi với rủi ro double-free ở mục 1 là không xứng đáng tại thời
-   điểm này.
+   `bb2` (return-mid, `-` branch of `If` null-check on `pop_front`) and
+   `bb3` (`+` branch, "buffer empty" — true loop `ext` exit) are **TWO DISTINCT
+   BLOCKS with DIFFERENT DROP SETS**: `bb2` contains `Drop(_5)` (dropping the
+   `item` variable moved out inside the loop before returning), while `bb3` DOES NOT —
+   because at `bb3` no `item` remains live to drop. This is self-verifying proof in the test
+   corpus that return-mid and normal-exit are DISTINCT non-converging pathways.
+   Any cursor+epilogue design placing cleanup/tombstoning logic at `ext` (i.e. `bb3`) is
+   **COMPLETELY BYPASSED** by `return`-mid (`bb2`) — leaving caller's buffer in a corrupt
+   state (cursor advanced while `len`/tombstones un-updated), leading to **double-frees**
+   when the caller subsequently drops or accesses the buffer.
+2. **`Vector<T>` buffers lack per-slot state bytes** (`{len@0, cap@8, data@16}`
+   — only a single `len` counter, unlike `HashMap` which maintains per-slot `state` fields, §AMEND-2).
+   The cursor mechanism of `HashMap.drain()` (where a single `state` flag closes all 3 critical hazards:
+   sound move-out / break-mid / container-survives — see `AMEND-2` Option 2) **has no equivalent
+   on `Vector`**: no fields exist to mark "already moved out" independently of `len`.
+3. The existing invariant `buffer[0..len)` = **live set at ALL times** (not just at `ext`)
+   provides soundness **FOR FREE** across ALL exit edges — including edges not explicitly
+   enumerated (break, continue, return, future panics). A cursor-epilogue design must enumerate
+   and correctly handle EVERY exit edge — the burden of proof far outweighs the benefit.
+4. O(N²) in `pop_front` loop is a **performance tax** (runtime latency), **NOT a soundness flaw**
+   — no correctness mandate forces immediate modification; trading soundness for double-free risks
+   in item 1 is unacceptable.
 
-**Phương án LIFO** (đổi `pop_front` thành `pop`, duyệt từ cuối buffer) và
-**phương án đảo-buffer trước khi duyệt** cũng đều bị **BÁC** cùng lý do gốc:
-cả hai đều phá vỡ hợp đồng FIFO §4.1 (breaking change không có ADR), và
-phương án đảo-buffer còn tốn thêm một lượt O(N) di chuyển dữ liệu chỉ để đổi
-thứ tự quan sát — không giải quyết được độ phức tạp O(N²) mà lại đổi ngữ
-nghĩa.
+**LIFO alternatives** (swapping `pop_front` for `pop`, traversing from buffer end) and
+**buffer-reversal alternatives prior to traversal** were both **REJECTED** for the same core reason:
+both violate the FIFO contract §4.1 (breaking change without ADR), and buffer-reversal incurs an extra
+O(N) data copying pass purely to swap observable order — failing to resolve O(N²) complexity while
+altering semantics.
 
-Kết luận: `pop_front`-loop O(N²) (Slice 2b §2b.4) là cách lower DUY NHẤT
-được duyệt cho `Vector.drain()` cho tới khi có ADR mới đủ mạnh để chứng
-minh soundness trên MỌI exit edge (kể cả `return`/`break`/`continue`/tương
-lai) của một thiết kế cursor.
+Conclusion: O(N²) `pop_front` loop (Slice 2b §2b.4) is the ONLY approved lowering implementation
+for `Vector.drain()` until a future ADR proves soundness across ALL exit edges (including
+`return`/`break`/`continue`/future edges) for a cursor-based design.
 
-### §4.3 — Lính gác (WO-Drain-FIFO-Teeth, O✅/G✅/Giang✅ 2026-07-27(f))
+### §4.3 — Sentinels (WO-Drain-FIFO-Teeth, O✅/G✅/Giang✅ 2026-07-27)
 
-- **531/532/533/534** — lính gác hợp đồng FIFO §4.1, oracle position-weighted
-  (`acc = acc*10 + <giá trị>`, không phải tổng cộng dồn):
+- **531/532/533/534** — guards for FIFO contract §4.1, position-weighted oracles
+  (`acc = acc*10 + <value>`, not cumulative sums):
   - `531_drain_order_scalar.tri` — owned `Vector<Integer>`, EXPECT 123.
   - `532_drain_order_string.tri` — owned `Vector<String>` (heap move-out),
-    lengths 1/2/4 phân biệt (509 dùng toàn length-1 nên mù), EXPECT 124.
+    distinct lengths 1/2/4 (509 used length-1 everywhere and was blind), EXPECT 124.
   - `533_drain_order_break_mid_survivors.tri` — `&0 mutable` borrow-receiver
-    drain + `break`-mid + đọc survivor theo thứ tự qua `pop_front`, EXPECT
-    1024.
-  - `534_drain_order_return_mid_survivors.tri` — y hệt 533 nhưng `break` ->
-    `return acc;` giữa thân vòng. **Fixture ĐẦU TIÊN của toàn corpus** chạm
-    cạnh return-mid `bb2` vs exit-thường `bb3` trong `fn drain_it` (§4.2
-    mục 1) — chính cạnh đã bác phương án O(N). EXPECT 1024.
-- **535/536** — lính gác THỨ TỰ CASCADE pattern->key->value (§AMEND-3), đa
-  trục (một fixture sai đồng thời ≥2 trục, khác họ 510/527/528/529/530 mỗi
-  file một trục):
-  - `535_hashmap_drain_multiaxis_pattern_wins.tri` — sai cả 3 trục cùng lúc
-    -> khóa cạnh pattern thắng trước (E1056).
-  - `536_hashmap_drain_multiaxis_key_wins.tri` — pattern đúng, key+value sai
-    -> khóa cạnh key thắng trước value (E1054).
+    drain + `break`-mid + reading survivors in order via `pop_front`, EXPECT 1024.
+  - `534_drain_order_return_mid_survivors.tri` — identical to 533 but `break` ->
+    `return acc;` inside loop body. **First fixture in entire corpus** exercising
+    return-mid edge `bb2` vs normal-exit `bb3` in `fn drain_it` (§4.2 item 1) — the exact
+    edge that rejected the O(N) design. EXPECT 1024.
+- **535/536** — guards for CASCADE ORDER pattern -> key -> value (§AMEND-3), multi-axis
+  (single fixture violating ≥2 axes simultaneously, unlike 510/527/528/529/530 where
+  each file tests a single axis):
+  - `535_hashmap_drain_multiaxis_pattern_wins.tri` — violates all 3 axes simultaneously
+    -> locks pattern-wins-first edge (E1056).
+  - `536_hashmap_drain_multiaxis_key_wins.tri` — valid pattern, invalid key+value
+    -> locks key-wins-before-value edge (E1054).
 
-### Chữ ký §AMEND-4
+### Signatures §AMEND-4
 
-- **O: ✅ 2026-07-27(f)** — soạn WO 6-fixture + đo live 4 giá trị EXPECT
-  (123/124/1024/1024) + 2 mã lỗi cascade (E1056/E1054), chốt 4 lý do hoãn
-  O(N) cursor-drain vô thời hạn dựa trên probe MIR `bb9`/poison FIFO->LIFO.
-- **G: ✅ 2026-07-27(f)** — duyệt hoãn O(N) vô thời hạn (không mở lại tới khi
-  có ADR mới), duyệt hợp đồng FIFO cứng hoá thành ngữ nghĩa ràng buộc.
-- **Giang: ✅ 2026-07-27(f)** — chốt hướng.
+- **O: ✅ 2026-07-27** — drafted 6-fixture WO + measured live 4 EXPECT values
+  (123/124/1024/1024) + 2 cascade error codes (E1056/E1054), confirmed 4 reasons
+  indefinitely deferring O(N) cursor-drain based on MIR `bb2/bb3` probes and FIFO->LIFO poison tests.
+- **G: ✅ 2026-07-27** — approved indefinite deferral of O(N) (closed until new ADR),
+  approved FIFO contract as binding semantics.
+- **Giang: ✅ 2026-07-27** — finalized direction.

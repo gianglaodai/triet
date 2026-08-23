@@ -1,211 +1,211 @@
 # ADR 0084 — Field projection through read-only reference (auto-deref member-access)
 
-> Status: **SIGNED (2026-07-26) — O ✅ G ✅.** O verify probe (CLI 2 lần) + thử máu poison-386-mới (E2450 biến mất + compile SẠCH = chase là sole-guard trên đường tới-runtime, không phải defense-in-depth). G nghiệm thu trọn ADR (Slice 1a + §AMEND 1b) + gate kim cương `0·clean·0·463·0`. Chiến dịch verify khép.
+> Status: **SIGNED (2026-07-26) — O ✅ G ✅.** O verified probe (CLI twice) + blood-verified new-poison-386 (E2450 vanishes + compiles CLEANLY = chase is sole-guard on path to runtime, not defense-in-depth). G accepted full ADR (Slice 1a + §AMEND 1b) + diamond gate `0·clean·0·463·0`. Verification campaign closed.
 
-> # 🩸 NGUYÊN LÝ CỐT LÕI (O author semantic)
-> # Member-access `e.f` khi `e : &0 T` (read-only reference tới UserStruct `T`)
-> # **auto-deref ĐÚNG 1 tầng** rồi project field `f` trên pointee. Kind của kết
-> # quả do **kiểu tĩnh của field quyết định** — KHÔNG nhập nhằng:
-> #  - `f` **scalar** (Trit/Tryte/Integer/Long/Trilean) → **giá trị scalar**
-> #    (Copy, đọc qua borrow). Terminal.
-> #  - `f` **aggregate** (Struct) HOẶC **heap-leaf** (String/Vector/HashMap) →
-> #    **`&0 F` sub-borrow** (zero-copy place projection, CÙNG loan gốc).
-> #    Chainable: `(&0 Ngoai).trong` : `&0 Trong` → `.x` auto-deref tiếp.
-> #  - **KHÔNG BAO GIỜ copy/move** aggregate hay heap value — chỉ scalar đọc
-> #    by-value. Copy heap qua borrow = alias con trỏ heap → double-free lúc drop
-> #    (đúng thứ ADR-0082/§AMEND-3 cấm).
-> #  - **1 tầng:** mỗi `.f` deref đúng 1 `&0` trước nó; chain hoạt động vì mỗi
-> #    bước re-borrow 1 tầng.
-> #  - **Read-only:** ghi qua `&0` (`e.f = v`, `*e = v`) GIỮ refuse. `&0 mutable`
-> #    có thể ăn theo cùng deref cho READ, nhưng ghi vẫn refuse độc lập.
+> # 🩸 CORE PRINCIPLE (Semantic author: O)
+> # Member-access `e.f` when `e : &0 T` (read-only reference to UserStruct `T`)
+> # **auto-dereferences EXACTLY 1 level** then projects field `f` on pointee. The kind of the
+> # result is **strictly determined by the field's static type** — UNAMBIGUOUS:
+> #  - `f` is **scalar** (Trit/Tryte/Integer/Long/Trilean) → **scalar value**
+> #    (Copy, read via borrow). Terminal.
+> #  - `f` is **aggregate** (Struct) OR **heap-leaf** (String/Vector/HashMap) →
+> #    **`&0 F` sub-borrow** (zero-copy place projection, SAME root loan).
+> #    Chainable: `(&0 Outer).inner` : `&0 Inner` → `.x` auto-dereferences further.
+> #  - **NEVER copy/move** aggregates or heap values — only scalars read
+> #    by-value. Copying heap via borrow = aliasing heap pointers → double-free on drop
+> #    (the exact hazard forbidden by ADR-0082/§AMEND-3).
+> #  - **1 level:** each `.f` dereferences exactly 1 preceding `&0`; chaining works because each
+> #    step re-borrows 1 level.
+> #  - **Read-only:** writes via `&0` (`e.f = v`, `*e = v`) REMAIN refused. `&0 mutable`
+> #    may follow the same dereference for READS, while writes remain independently refused.
 
 ## Scope
 
-- ✅ **IN (Slice 1a — bản này):** `e.f` với `e : &0 T` / `e : &0 mutable T`, `T`
-  = UserStruct, và `f` là **SCALAR** field. Auto-deref 1 tầng → đọc field by
-  value (Copy). Cả reference-PARAM (`function read(p: &0 Point)`) lẫn
-  reference-tới-LOCAL (`let r = &0 v`). Chain-đầu-scalar tầm thường
+- ✅ **IN (Slice 1a — this revision):** `e.f` with `e : &0 T` / `e : &0 mutable T`, `T`
+  = UserStruct, and `f` is a **SCALAR** field. Single-level auto-deref → read field by
+  value (Copy). Both reference-PARAMS (`function read(p: &0 Point)`) and
+  reference-to-LOCALS (`let r = &0 v`). Trivial leading-scalar chains
   (`(&0 v).x`).
-- 🔜 **Slice 1b (DEFERRED):** `f` là **aggregate/heap** field → `&0 F` sub-borrow
-  zero-copy (chainable). Cần cơ chế place-projection giữ loan qua lowerer/JIT
-  chưa dựng — mở riêng để tránh copy-lén heap. Semantic đã khóa ở §CỐT LÕI trên.
+- 🔜 **Slice 1b (DEFERRED):** `f` is an **aggregate/heap** field → `&0 F` zero-copy
+  sub-borrow (chainable). Requires place-projection mechanism preserving loans through lowerer/JIT
+  not yet built — opened separately to prevent covert heap copies. Semantics locked in CORE PRINCIPLE above.
 - ❌ **OUT:**
-  - `&0 Enum` field-access (`(&0 e).field`) → giữ **E1015 UnknownMember**. Enum
-    truy cập qua `match`, không `.field`.
-  - Ghi qua reference (`e.f = v`) → refuse (§WART: hiện parser E0007 đã chặn mọi
-    non-identifier assignment target, nên chưa có bề mặt ghi để test).
-  - `&+`/`&-`/`WeakObserver` field-access → ngoài phạm vi (chưa khảo).
+  - `&0 Enum` field-access (`(&0 e).field`) → retains **E1015 UnknownMember**. Enums
+    are accessed via `match`, not `.field`.
+  - Writes via reference (`e.f = v`) → refused (§WART: currently parser E0007 blocks all
+    non-identifier assignment targets, so no write surface exists to test).
+  - `&+`/`&-`/`WeakObserver` field-access → out of scope (uninvestigated).
 
-## Sites (đã wire — Slice 1a)
+## Sites (Wired — Slice 1a)
 
 1. **Typecheck** `crates/triet-typecheck/src/check/exprs.rs` `check_field_access`
-   (~1608): đầu hàm, nếu `object_ty = Type::Reference(BorrowReadOnly |
-   BorrowExclusiveMutable, UserStruct{fields})` và field tồn tại và
-   `field_ty.is_scalar()` → trả `field_ty.clone()`. Aggregate/heap field KHÔNG
-   khớp `is_scalar()` → rơi về `UnknownMember` như cũ (Slice 1b sẽ mở).
+   (~1608): at function entry, if `object_ty = Type::Reference(BorrowReadOnly |
+   BorrowExclusiveMutable, UserStruct{fields})` and field exists and
+   `field_ty.is_scalar()` → return `field_ty.clone()`. Aggregate/heap fields DO NOT
+   match `is_scalar()` → fall back to `UnknownMember` as before (unlocked in Slice 1b).
 2. **Lowerer** `crates/triet-lower/src/lib.rs`:
-   - `place_result_type` (~1699): thêm arm `Projection::Deref` → unwrap
+   - `place_result_type` (~1699): add arm `Projection::Deref` → unwrap
      `MirType::Reference{inner}`.
-   - `lower_place` `Expr::FieldAccess` arm (~1682): nếu base resolve ra
-     `MirType::Reference{..}` → chèn `Projection::Deref` TRƯỚC `Field`. Chain lồng
-     chỉ sinh 1 Deref ở đầu (field struct thường không tự lưu dưới dạng pointer).
+   - `lower_place` `Expr::FieldAccess` arm (~1682): if base resolves to
+     `MirType::Reference{..}` → insert `Projection::Deref` BEFORE `Field`. Nested chains
+     emit only 1 Deref at the root (standard struct fields do not store themselves as pointers).
 3. **JIT** `crates/triet-jit/src/mir_lower.rs`:
-   - `walk_projections` (~349): thêm arm `Projection::Deref` → unwrap
-     `Reference{inner}`, offset KHÔNG đổi (deref không dịch địa chỉ; nhánh
-     "pointer-based fallback" trong `load_place`/`store_place` @~1295 vốn cộng
-     `total_offset` vào giá trị pointer trong var của `place.local`).
-   - **Blocker B (§WART-B)** `Statement::Borrow` (~3110): mở rộng — lấy
-     `stack_addr` cho MỌI local slot-backed (`struct_slots`/`enum_slots`), không
-     chỉ String. String cũng cư trú `struct_slots` (name == "String") nên nhánh
-     mới SUBSUME special-case cũ.
-4. **Borrowck** — KHÔNG chạm. Sub-borrow (Slice 1b) sẽ là projection của loan
-   `&0` sẵn có, không sinh loan mới; đọc qua `&0` = read-use, không xung đột.
+   - `walk_projections` (~349): add arm `Projection::Deref` → unwrap
+     `Reference{inner}`, offset UNCHANGED (dereferencing does not shift address;
+     the "pointer-based fallback" branch in `load_place`/`store_place` @~1295 already adds
+     `total_offset` to the pointer value in `place.local`'s variable).
+   - **Blocker B (§WART-B)** `Statement::Borrow` (~3110): extended — extracts
+     `stack_addr` for ALL slot-backed locals (`struct_slots`/`enum_slots`), not
+     just String. String also resides in `struct_slots` (name == "String"), so the new
+     branch SUBSUMES the legacy special case.
+4. **Borrowck** — UNTOUCHED. Sub-borrows (Slice 1b) will be projections of existing
+   `&0` loans, generating no new loans; reads via `&0` = read-use, non-conflicting.
 
-## ⚠️ WART — borrowck LEXICAL (không NLL) — G lệnh ghi rõ
+## ⚠️ WART — Lexical Borrowck (non-NLL) — Explicitly Recorded per G's Order
 
-Borrow checker hiện là **lexical**: loan chết ở cuối scope, KHÔNG có NLL
-last-use narrowing. Hệ quả với auto-deref: một borrow LOCAL (`let r = &0 v`) còn
-sống tới điểm **return của owner** sẽ dính **E2450 DropWhileBorrowed giả**
-(ADR-0046 Case-D conservative — fixtures 21/24 khóa hành vi này). Đây **KHÔNG
-phải unsound** — chỉ cồng kềnh. Để dùng auto-deref trên borrow local, ép borrow
-chết TRƯỚC return bằng:
+The borrow checker is currently **lexical**: loans expire at the end of scope, WITHOUT NLL
+last-use narrowing. Consequence for auto-deref: a LOCAL borrow (`let r = &0 v`) surviving
+until the **owner's return point** triggers a **false E2450 DropWhileBorrowed**
+(ADR-0046 Case-D conservative — fixtures 21/24 lock this behavior). This is **NOT
+unsound** — merely cumbersome. To use auto-deref on local borrows, force the borrow
+to expire BEFORE return via:
 
-- **block-scope lồng:** `let n = { let r = &0 v; r.x + r.y }; return n;`
-  (`pop_scope` sort reference-trước → borrow drop ở cuối block, trước return).
-- **reference-PARAM:** `function read(p: &0 Point) -> Integer { return p.x + p.y }`
-  gọi `read(&0 pt)` (borrow chỉ sống qua call).
+- **nested block scopes:** `let n = { let r = &0 v; r.x + r.y }; return n;`
+  (`pop_scope` drops references first → borrow drops at block exit, before return).
+- **reference-PARAMS:** `function read(p: &0 Point) -> Integer { return p.x + p.y }`
+  invoking `read(&0 pt)` (borrow lives only across call).
 
-**NLL = hố đen, defer VÔ THỜI HẠN.** KHÔNG đụng `flush_all_for_return` /
-ADR-0046 để "chữa" wart này.
+**NLL = bottomless pit, deferred INDEFINITELY.** DO NOT touch `flush_all_for_return` /
+ADR-0046 to "remedy" this wart.
 
-### §WART-B — `Statement::Borrow` slot-address (Blocker B, đã vá)
+### §WART-B — `Statement::Borrow` slot-address (Blocker B, patched)
 
-Trước ADR này, `Statement::Borrow` codegen chỉ special-case String để lấy slot
-address; mọi struct/enum local khác dùng `use_var(var(source.local))`. Nhưng
-local aggregate được dựng bằng field-level `stack_store` — Cranelift Variable
-của nó KHÔNG bao giờ `def_var` → `use_var` trả giá trị **undefined** → borrow
-trỏ vào rác → **SIGSEGV** khi field-read đầu tiên qua reference. Chưa lộ vì
-KHÔNG fixture nào từng borrow một local struct trực tiếp (chỉ scalar / String /
-container-handle / param). Vá: lấy `stack_addr` cho mọi slot-backed local.
+Prior to this ADR, `Statement::Borrow` codegen only special-cased String to obtain slot
+addresses; all other struct/enum locals used `use_var(var(source.local))`. However,
+aggregate locals are constructed via field-level `stack_store` — their Cranelift Variables
+are NEVER `def_var`'d → `use_var` returned **undefined** values → borrow
+pointed to garbage → **SIGSEGV** on the first field-read through the reference. Undetected previously
+because NO fixture had borrowed a local struct directly (only scalars / String /
+container-handles / params). Fix: obtain `stack_addr` for all slot-backed locals.
 
 ## Rationale
 
-- **Zero-copy = triết lý G:** đọc qua borrow không copy; aggregate/heap field
-  (Slice 1b) là sub-borrow, không nhân bản.
-- **Unambiguous static kind:** kind kết quả (value vs sub-borrow) do kiểu field
-  quyết định tĩnh — không cần suy luận runtime.
-- **Không copy heap → giữ soundness ADR-0082:** copy heap value qua borrow sẽ
-  alias con trỏ → double-free. Slice 1a chỉ đọc scalar (Copy) nên an toàn tuyệt
-  đối; heap/aggregate defer sang 1b với cơ chế sub-borrow.
-- **Read-only → không dính Cụm D / ADR-0081 (mutable-borrow FROZEN):** Slice 1a
-  chỉ READ; write-path chưa tồn tại (parser gate).
+- **Zero-copy = G's philosophy:** reading via borrow does not copy; aggregate/heap fields
+  (Slice 1b) are sub-borrows, never duplicated.
+- **Unambiguous static kind:** result kind (value vs sub-borrow) is statically determined by field type
+  — requiring no runtime inference.
+- **No heap copies → preserves ADR-0082 soundness:** copying heap values through borrows creates
+  pointer aliases → double-free. Slice 1a reads scalars only (Copy), ensuring absolute
+  safety; heap/aggregate deferred to 1b with sub-borrow mechanics.
+- **Read-only → avoids Cluster D / ADR-0081 (mutable-borrow FROZEN):** Slice 1a
+  is READ-only; write-paths do not exist (parser gate).
 
-## Định lý phân tầng guard (G ký 2026-07-26)
+## Guard Layering Theorem (Signed by G 2026-07-26)
 
-Hai tầng guard KHÔNG thay thế nhau — mỗi tầng có miền sole-guard riêng:
-- **Typecheck E2400** (BorrowLifetimeInferenceFailed) = guard sơ cấp cho **UNBOUND
-  return-escape** (return `&0` không tie được input). Chặn tại typecheck, không tới borrowck.
-- **Borrowck reborrow-chase** = **SOLE-GUARD** cho:
-  (a) **move-while-borrowed** (387 / E2440) — typecheck đứng im, chỉ borrowck bắt;
-  (b) **BOUND return-escape** (386 mới / E2450) — có param-tie né E2400, chỉ chase bắt
-  dangling sub-borrow của local.
-Tháo chase = UB thật (dangling ptr xuống JIT) cho CẢ (a) lẫn (b), KHÔNG chỉ bóng ma.
+The two guard layers DO NOT replace each other — each possesses its own exclusive domain:
+- **Typecheck E2400** (BorrowLifetimeInferenceFailed) = primary guard for **UNBOUND
+  return-escapes** (returning `&0` un-tied to inputs). Blocked at typecheck, never reaching borrowck.
+- **Borrowck reborrow-chase** = **SOLE-GUARD** for:
+  (a) **move-while-borrowed** (387 / E2440) — typecheck remains silent, caught exclusively by borrowck;
+  (b) **BOUND return-escapes** (new 386 / E2450) — parameter-tied escape bypassing E2400, chase exclusively catches
+  dangling local sub-borrows.
+Removing chase yields actual UB (dangling pointers reaching JIT) for BOTH (a) and (b), NOT mere phantom errors.
 
-## Teeth (Slice 1a)
+## Safeguards (Slice 1a)
 
-- **381** (`381_ref_field_scalar_param.tri`, EXPECT 30) — scalar field qua `&0
-  Point` PARAM; caller `read(&0 pt)` borrow local struct → exercise Blocker-B
-  fix. Poison-2-tầng: gỡ auto-deref typecheck → E1015; revert Blocker-B →
+- **381** (`381_ref_field_scalar_param.tri`, EXPECT 30) — scalar field via `&0
+  Point` PARAM; caller `read(&0 pt)` borrows local struct → exercises Blocker-B
+  fix. 2-tier poison: remove auto-deref in typecheck → E1015; revert Blocker-B →
   SIGSEGV 139.
-- **382** (`382_ref_field_scalar_block_local.tri`, EXPECT 30) — scalar field qua
-  `&0` tới LOCAL struct, borrow confined trong block lồng (né §WART E2450).
-- **T3 nested (xác nhận thuộc 1b, KHÔNG viết ở 1a):** mọi truy cập nested
-  (`o.trong.x` với `trong : Trong` aggregate) cần sub-borrow ở bước `.trong` →
-  Slice 1b. KHÔNG có tooth nested-scalar hợp lệ trong 1a.
-- **Không teeth âm mutation:** parser E0007 (`InvalidAssignmentTarget`) đã chặn
-  mọi non-identifier assignment target ở tầng parse — vacuous với auto-deref.
+- **382** (`382_ref_field_scalar_block_local.tri`, EXPECT 30) — scalar field via
+  `&0` to LOCAL struct, borrow confined inside nested block (bypassing §WART E2450).
+- **T3 nested (confirmed belonging to 1b, NOT written in 1a):** all nested accesses
+  (`o.inner.x` with `inner : Inner` aggregate) require sub-borrowing at `.inner` step →
+  Slice 1b. NO valid nested-scalar safeguards in 1a.
+- **No negative mutation safeguards:** parser E0007 (`InvalidAssignmentTarget`) already blocks
+  all non-identifier assignment targets at parse time — vacuous for auto-deref.
 
 ## §AMEND — Slice 1b landed (SIGNED — O ✅ G ✅)
 
-> Status phần này: **SIGNED (2026-07-26) — O ✅ G ✅.** Cùng gói verify với top-level.
+> Status for this section: **SIGNED (2026-07-26) — O ✅ G ✅.** Verified alongside top-level package.
 
-Slice 1b thi công đúng phần DEFERRED của §CỐT LÕI (aggregate/heap field qua `&0`
-→ `&0 F` sub-borrow zero-copy). KHÔNG semantic mới. 4 tầng:
+Slice 1b implements the exact DEFERRED portion of CORE PRINCIPLE (aggregate/heap fields via `&0`
+→ `&0 F` zero-copy sub-borrow). NO new semantics. 4 layers:
 
-1. **Typecheck** `check_field_access` (exprs.rs ~1620): nhánh auto-deref mở rộng —
-   sau khi khớp `Reference(BorrowReadOnly|BorrowExclusiveMutable, UserStruct)` và
-   field tồn tại: `is_scalar()` → value (1a giữ nguyên); `UserStruct{..}` HOẶC
-   `is_heap()` (String/Vector/HashMap) → trả
-   `Type::Reference(BorrowReadOnly, field_ty)` (sub-borrow LUÔN read-only, kể cả
-   base `&0 mutable`). Field kind khác (Enum, Nullable-aggregate) vẫn rơi
+1. **Typecheck** `check_field_access` (exprs.rs ~1620): expanded auto-deref branch —
+   after matching `Reference(BorrowReadOnly|BorrowExclusiveMutable, UserStruct)` and
+   verifying field existence: `is_scalar()` → value (1a preserved); `UserStruct{..}` OR
+   `is_heap()` (String/Vector/HashMap) → return
+   `Type::Reference(BorrowReadOnly, field_ty)` (sub-borrows are ALWAYS read-only, even on
+   base `&0 mutable`). Other field kinds (Enum, Nullable-aggregate) fall back to
    `UnknownMember` (§OUT).
-2. **Lowerer** `Expr::FieldAccess` rvalue (lib.rs ~3313): nếu `source` (do
-   `lower_place` sinh) chứa `Projection::Deref` VÀ `place_result_type` là
+2. **Lowerer** `Expr::FieldAccess` rvalue (lib.rs ~3313): if `source` (generated by
+   `lower_place`) contains `Projection::Deref` AND `place_result_type` is
    `Struct`/heap → emit `Statement::Borrow{form:BorrowReadOnly, source:[Deref,
-   Field]}` (dùng dest kiểu `Reference`), thay vì `Assign` value-copy. Scalar
-   terminal (1a) và owned-base move-out (WO-0074/0075, KHÔNG có Deref) đều rơi
-   xuống `Assign` cũ — không đổi.
-3. **JIT** `Statement::Borrow` codegen (mir_lower.rs ~3127): `source` nay có thể
-   projected. Nhánh mới — `walk_projections` (Deref cộng 0 offset, chỉ unwrap
-   type; Field cộng field offset) trả `total_offset`, rồi cộng vào CÙNG base
-   (slot address hoặc pointer-value) mà nhánh bare-local đã dùng. Số học địa chỉ
-   thuần, KHÔNG load/copy bytes.
+   Field]}` (targeting `Reference`-typed destination), rather than `Assign` value-copy. Scalar
+   terminals (1a) and owned-base move-outs (WO-0074/0075, LACKING Deref) fall through to
+   legacy `Assign` — unchanged.
+3. **JIT** `Statement::Borrow` codegen (mir_lower.rs ~3127): `source` may now be
+   projected. New branch — `walk_projections` (Deref adds 0 offset, unwrapping
+   type only; Field adds field offset) returns `total_offset`, then adds it to the SAME base
+   (slot address or pointer value) used by bare-local branches. Pure address arithmetic,
+   NO loading or copying bytes.
 4. **Borrowck** `Statement::Borrow` (checker.rs ~646): **WHOLE-OBJECT FALLBACK**
-   (refuse-over-guess, G lệnh) — nếu `source.projection` chứa `Deref` thì loan
-   KHÔNG fine-grain field; anchor lên whole object. **REBORROW CHASE:** combo
-   form `(&0 h).name` lower thành HAI Borrow (`tmp = &0 h` rồi sub-borrow
-   `tmp.name`); `tmp` là temp chết ngay → nếu chỉ strip về
-   `Place::local(source.local)` thì loan anchor lên `tmp`, `Drop(h)` không thấy
-   loan → dangling lọt câm. Fix: nếu `source.local` LÀ `dest` của một active loan
-   (vừa được borrow ra) → kế thừa `source` của loan đó (chase về `h`); nếu là
-   PARAM `&0 T` (không có loan tạo nó) → dùng `Place::local(source.local)`.
+   (refuse-over-guess, ordered by G) — if `source.projection` contains `Deref`, loan
+   DOES NOT fine-grain by field; anchors onto whole object. **REBORROW CHASE:** compound
+   form `(&0 h).name` lowers into TWO Borrows (`tmp = &0 h` followed by sub-borrow
+   `tmp.name`); `tmp` is an immediate temporary → stripping back to
+   `Place::local(source.local)` would anchor loan to `tmp`, allowing `Drop(h)` to miss
+   the active loan → silent dangling pointer escape. Fix: if `source.local` IS the `dest`
+   of an active loan (newly borrowed) → inherit the `source` of that loan (chasing back to `h`);
+   if it is a PARAM `&0 T` (no originating loan) → use `Place::local(source.local)`.
 
-### Teeth (Slice 1b) — 383–387, gate `0·0·381·0`
+### Safeguards (Slice 1b) — 383–387, gate `0·0·381·0`
 
 - **383** (`383_ref_field_heap_leaf_sub_borrow.tri`, EXPECT 5) — heap-leaf
-  `h.name` (`String`) qua `&0 Holder` PARAM → sub-borrow `&0 String` → `length`.
-  Đường E1049 hứa. **Leading `tag: Integer`** đẩy `name` sang offset≠0 (né mask
-  offset-0-coincidence). Poison JIT (revert projected-addr) → silent-wrong (đọc
-  `tag` bit-pattern làm `{ptr,len,cap}` → 383 trả 140155117966008).
+  `h.name` (`String`) via `&0 Holder` PARAM → sub-borrow `&0 String` → `length`.
+  Path promised by E1049. **Leading `tag: Integer`** shifts `name` to offset≠0 (preventing
+  accidental offset-0 masking). Poison JIT (reverting projected-addr) → silent error (reads
+  `tag` bit-pattern as `{ptr,len,cap}` → 383 returns 140155117966008).
 - **384** (`384_ref_field_nested_scalar_sub_borrow.tri`, EXPECT 7) — chain
-  `o.trong.x`: `.trong` sub-borrow `&0 Trong`, `.x` scalar terminal. Leading
-  `pad` trên CẢ HAI struct → cả hai offset≠0. (Đi qua Assign scalar-read, KHÔNG
-  qua Statement::Borrow → poison-JIT không đụng — đây là tooth chain-typecheck +
+  `o.inner.x`: `.inner` sub-borrows `&0 Inner`, `.x` is scalar terminal. Leading
+  `pad` on BOTH structs → both offsets≠0. (Operates via Assign scalar-read, NOT
+  via Statement::Borrow → poison-JIT does not touch — exercises chain-typecheck +
   offset-accumulation.)
-- **385** (`385_ref_field_nested_heap_sub_borrow.tri`, EXPECT 4) — chain 2 tầng
-  tới heap: `o.trong.name` → `&0 String`. Poison JIT → 385 trả 2 (sai).
-- **386** (`386_ref_field_sub_borrow_dangling.tri`, ERROR E2450) — **răng
-  load-bearing user-visible** (thay máu bản cũ vacuous, xem §b). `bad(dummy: &0
-  String) -> &0 String` — param `dummy` cho typecheck TIE return-borrow vào input
-  → NÉ E2400. Pipeline chạy tới borrowck; `Drop(h)` khi sub-borrow `(&0 h).name`
-  còn sống + được return → **E2450 (CLI thật, exit 3, không lỗi khác — đo 2 lần,
-  O verify độc lập)**. Poison reborrow-chase (checker.rs) → E2450 **biến mất VÀ
-  compile SẠCH** → dangling `&0 String` xuống JIT = UAF thật. Chase là **sole-guard
-  trên đường tới-runtime**, KHÔNG phải defense-in-depth sau lưng typecheck.
+- **385** (`385_ref_field_nested_heap_sub_borrow.tri`, EXPECT 4) — 2-level chain
+  to heap: `o.inner.name` → `&0 String`. Poison JIT → 385 returns 2 (incorrect).
+- **386** (`386_ref_field_sub_borrow_dangling.tri`, ERROR E2450) — **load-bearing
+  user-visible safeguard** (rebuilt from legacy vacuous test, see §b). `bad(dummy: &0
+  String) -> &0 String` — param `dummy` allows typecheck to TIE return-borrow to input
+  → BYPASSES E2400. Pipeline executes through borrowck; `Drop(h)` while sub-borrow `(&0 h).name`
+  remains live and returned → **E2450 (real CLI, exit 3, no other errors — measured twice,
+  verified by O independently)**. Poisoning reborrow-chase (checker.rs) → E2450 **disappears AND
+  compilation SUCCEEDS** → dangling `&0 String` reaches JIT = real UAF. Chase is **sole-guard
+  on path to runtime**, NOT defense-in-depth behind typecheck.
 - **387** (`387_ref_field_sub_borrow_move_while_borrowed.tri`, ERROR E2440) —
-  POISON move-while-borrowed: `let s=(&0 h).name; let h2=h; length(s)` → move `h`
-  khi `s` sub-borrow → E2440 (dùng move thay mutate vì `h.x=` không parse E0007).
-  Poison borrowck (bỏ chase) → E2440 biến mất, compile pass → dangling `s`.
+  POISON move-while-borrowed: `let s=(&0 h).name; let h2=h; length(s)` → moves `h`
+  while `s` sub-borrow active → E2440 (uses move instead of mutate since `h.x=` blocked by E0007).
+  Poisoning borrowck (removing chase) → E2440 vanishes, compilation passes → dangling `s`.
 
-### Nghi ngờ / giả định (D báo trung thực)
+### Inquiries / Hypotheses (Reported honestly by D)
 
-- **(a) Whole-object false-conflict:** hai sub-borrow field KHÁC nhau qua CÙNG
-  reference (`h.name` và `h.other`) sẽ false-conflict (whole-object loan). Đây là
-  GIÁ refuse-over-guess G chấp nhận. KHÔNG có fixture hợp lệ nào trong corpus
-  hiện tại đụng ca này (chưa có surface đọc-2-field-đồng-thời qua `&0`).
-- **(b) [RESOLVED 2026-07-26, G ký] 386 cũ VACUOUS — đã thay máu:** bản 386 cũ
-  (`bad() -> &0 String` KHÔNG param) nổ **E2400 typecheck** (BorrowLifetimeInferenceFailed,
-  typecheck/check.rs:532) — FATAL, CLI dừng trước borrowck (main.rs:58-64), user KHÔNG
-  BAO GIỜ thấy E2450. E2450 chỉ hiện qua harness gộp-đa-pha (integration_tests.rs:64
-  cố ý chạy tiếp sau typecheck-fatal) = **răng vacuous**: chứng minh chase *sinh* E2450
-  nhưng E2400 đã chặn dangling độc lập ⇒ chase không phải sole-guard cho ca đó. **Fix:**
-  thêm `dummy: &0 String` param → typecheck tie return vào dummy → né E2400 → E2450 thành
-  chốt chặn DUY NHẤT user-visible. §b cũ đóng.
-- **(c) Vector/HashMap-field stride:** đã xác nhận cả String-field (fat 24B inline
-  → addr của `{ptr,len,cap}` tại field-offset) LẪN Vector/HashMap-field (thin 8B
-  handle → addr của handle tại field-offset) đều trả đúng địa chỉ: JIT dùng CHUNG
-  `walk_projections` offset + base-addr, không phân biệt stride (chỉ trả ADDRESS,
-  không load). Fixture 383/385 test String-field; Vector/HashMap-field cùng đường
-  addr nhưng KHÔNG có fixture riêng (thu hẹp: chỉ String field được test end-to-end
-  với `length`; Vector/HashMap-field-sub-borrow chưa có builtin đọc để exercise —
-  báo O nếu cần fixture bổ sung).
+- **(a) Whole-object false-conflict:** two sub-borrows of DIFFERENT fields via the SAME
+  reference (`h.name` and `h.other`) will false-conflict (whole-object loan). This is the
+  COST of refuse-over-guess accepted by G. NO valid fixture in existing corpus
+  hits this case (no surface exists reading 2 fields concurrently via `&0`).
+- **(b) [RESOLVED 2026-07-26, signed by G] Legacy 386 was VACUOUS — replaced:** old 386
+  (`bad() -> &0 String` WITHOUT params) failed with **typecheck E2400** (BorrowLifetimeInferenceFailed,
+  typecheck/check.rs:532) — FATAL, CLI halted before borrowck (main.rs:58-64), users NEVER
+  observed E2450. E2450 only appeared in multi-phase harness (integration_tests.rs:64
+  intentionally continuing past fatal typecheck) = **vacuous safeguard**: proved chase *generated* E2450
+  even though E2400 independently blocked the dangling pointer ⇒ chase was not sole-guard for that case. **Fix:**
+  add `dummy: &0 String` param → typecheck ties return to dummy → bypasses E2400 → E2450 becomes
+  the SOLE user-visible safeguard. Legacy §b closed.
+- **(c) Vector/HashMap-field stride:** confirmed that both String-fields (fat 24B inline
+  → addr of `{ptr,len,cap}` at field offset) AND Vector/HashMap-fields (thin 8B
+  handle → addr of handle at field offset) yield correct addresses: JIT SHARES
+  `walk_projections` offset + base-addr, independent of stride (returning ADDRESS only,
+  without loading). Fixtures 383/385 test String-fields; Vector/HashMap-field share identical
+  address pathways without standalone fixtures (narrowed: only String fields tested end-to-end
+  with `length`; Vector/HashMap-field sub-borrows lack builtin readers to exercise —
+  report to O if supplementary fixtures required).

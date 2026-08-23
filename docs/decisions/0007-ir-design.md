@@ -1,24 +1,24 @@
 # ADR 0007 — IR design: register-based SSA, multi-backend substrate
 
-**Trạng thái:** Quyết định. Áp dụng cho v0.3+ và mọi backend sau (v0.9 JIT, v2.0 AOT, v∞ trytecode). Là biên giới ngôn ngữ ↔ phần cứng theo [VISION §4](../../VISION.md).
+**Status:** Decided. Applicable to v0.3+ and all subsequent backends (v0.9 JIT, v2.0 AOT, v∞ trytecode). Represents the language $\leftrightarrow$ hardware boundary as per [VISION §4](../../VISION.md).
 
-**Issue:** Triết v0.2 là tree-walking interpreter chạy thẳng AST. Mô hình này không scale lên các trụ cột phía sau:
-- **CAS packaging (v0.5)** cần content hash deterministic — AST node IDs thay đổi mỗi commit, không hash được.
-- **Stable ABI (v0.4)** cần signature hash trên IR ổn định, không phải AST.
-- **Self-hosting compiler (v0.7)** cần một format IR để Triết-compiler-viết-bằng-Triết emit ra.
-- **JIT (v0.9, Cranelift)** compile bytecode → machine code; phải có bytecode để bắt đầu.
-- **AOT native (v2.0, LLVM)** map từ Triết IR → LLVM IR; mapping càng trực tiếp càng ít công sức.
-- **Trytecode native (v∞, ternary hardware)** map từ Triết IR → instructions cho CPU tam phân thật.
+**Issue:** The v0.2 philosophy is a tree-walking interpreter running directly on the AST. This model does not scale to the following pillars:
+- **CAS packaging (v0.5)** requires deterministic content hashing — AST node IDs change with every commit, making them unhashable.
+- **Stable ABI (v0.4)** requires a stable signature hash on the IR, not the AST.
+- **Self-hosting compiler (v0.7)** requires an IR format for the Triet-compiler (written in Triet) to emit.
+- **JIT (v0.9, Cranelift)** compiles bytecode $\rightarrow$ machine code; a bytecode representation is required as a starting point.
+- **AOT native (v2.0, LLVM)** maps Triet IR $\rightarrow$ LLVM IR; the more direct the mapping, the lower the engineering effort.
+- **Trytecode native (v∞, ternary hardware)** maps Triet IR $\rightarrow$ instructions for actual ternary CPUs.
 
-Quyết định IR shape *bây giờ* affect toàn bộ chuỗi v0.3 → v∞. Sai ở đây = đập đi viết lại nhiều phase. ADR này lock IR shape cho mọi backend.
+Deciding the IR shape *now* affects the entire pipeline from v0.3 $\rightarrow$ v∞. An error here would necessitate massive rewrites in multiple subsequent phases. This ADR locks the IR shape for all backends.
 
-## Quyết định
+## Decision
 
-Triết IR là **register-based, SSA form, virtual register count vô hạn, type-tagged per register**. Wire format `.triv` (ADR-0008, sẽ viết khi v0.3.8 bắt đầu) sẽ serialize cùng shape — không tách wire vs in-memory ở v0.3.
+Triet IR is **register-based, in SSA form, with infinite virtual registers and type-tagged per register**. The `.triv` wire format (ADR-0008, to be written when v0.3.8 begins) will serialize the same shape — there will be no separation between wire and in-memory formats in v0.3.
 
-### Hình thức cụ thể
+### Specific Form
 
-3-address SSA instructions với type tag mỗi register:
+3-address SSA instructions with a type tag for each register:
 
 ```
 function @factorial(%n : Integer) -> Integer {
@@ -37,92 +37,92 @@ recursive_case:
 }
 ```
 
-**Đặc trưng:**
-- Mỗi virtual register `%name` được gán **đúng một lần** (SSA invariant).
-- Mỗi register mang type tag: `Trit`, `Tryte`, `Integer`, `Long`, `Trilean`, `String`, `Unit`, `T?`, hoặc user-defined struct/enum/closure.
-- Function chia thành **basic blocks**, mỗi block kết thúc bằng terminator (`ret`, `br`, `br_if`, `match`, `unreachable`).
-- **Phi nodes** ở entry của block hợp nhất giá trị từ nhiều predecessor: `%v = phi [%a from L1], [%b from L2]`.
-- **Constants** không tốn register — `const Integer 42_integer` là operand inline.
-- Số register virtual không giới hạn; backend (Cranelift, LLVM) tự lo register allocation.
+**Characteristics:**
+- Each virtual register `%name` is assigned **exactly once** (SSA invariant).
+- Each register carries a type tag: `Trit`, `Tryte`, `Integer`, `Long`, `Trilean`, `String`, `Unit`, `T?`, or user-defined struct/enum/closure.
+- Functions are divided into **basic blocks**, each ending with a terminator (`ret`, `br`, `br_if`, `match`, `unreachable`).
+- **Phi nodes** at the entry of a block merge values from multiple predecessors: `%v = phi [%a from L1], [%b from L2]`.
+- **Constants** do not consume registers — `const Integer 42_integer` is an inline operand.
+- The number of virtual registers is unlimited; the backend (Cranelift, LLVM) handles register allocation.
 
-### Phân nhóm instruction (high-level, không exhaustive)
+### Instruction Grouping (high-level, non-exhaustive)
 
-ADR này không liệt kê đầy đủ instruction set — chi tiết sẽ landed ở v0.3.1 (scaffold `triet-ir` crate). Nhóm phân loại:
+This ADR does not list the full instruction set — details will land in v0.3.1 (within the `triet-ir` crate scaffold). Categorization:
 
-| Nhóm | Ví dụ opcodes |
+| Group | Example opcodes |
 |---|---|
-| **Constants** | `const Integer 42_integer`, `const String "hello"`, `const Trilean unknown` |
-| **Arithmetic** | `add`, `sub`, `mul`, `div`, `mod`, `pow`, `neg` (cho Tryte/Integer/Long) |
+| **Constants** | `const Integer 4le_integer`, `const String "hello"`, `const Trilean unknown` |
+| **Arithmetic** | `add`, `sub`, `mul`, `div`, `mod`, `pow`, `neg` (for Tryte/Integer/Long) |
 | **Trit/Trilean logic Ł3** | `trit_not`, `trit_and`, `trit_or`, `luk_implies`, `luk_xor`, `luk_iff` |
 | **Trit/Trilean logic K3** | `kleene_implies`, `kleene_xor`, `kleene_iff` |
-| **Comparison** | `eq`, `ne`, `lt`, `le`, `gt`, `ge` (kết quả Trilean nhưng không bao giờ unknown — value equality theo SPEC §4.5) |
+| **Comparison** | `eq`, `ne`, `lt`, `le`, `gt`, `ge` (result is Trilean but never unknown — value equality per SPEC §4.5) |
 | **Conversion** | `to_integer`, `to_tryte`, `to_long`, `to_trit`, `to_trilean` (+ saturating/truncating variants) |
 | **Control flow** | `br <label>`, `br_if <cond>, <true_label>, <false_label>`, `match <scrutinee>, [arms]`, `ret`, `unreachable` |
-| **Function** | `call @func(%args)`, cross-module qua `AbsolutePath` từ `triet-modules` |
+| **Function** | `call @func(%args)`, cross-module via `AbsolutePath` from `triet-modules` |
 | **Aggregate** | `struct_new`, `field_get`, `field_set`, `enum_new`, `enum_tag`, `enum_payload` |
-| **Nullable** | `null_wrap` (T → T?), `null_unwrap` (T? → T, panic), `null_check` (T? → Trit) |
+| **Nullable** | `null_wrap` (T $\rightarrow$ T?), `null_unwrap` (T? $\rightarrow$ T, panic), `null_check` (T? $\rightarrow$ Trit) |
 | **Closure** | `closure_new @lambda, [captures]`, `closure_call %c, [args]` |
-| **Builtin** | `builtin "<name>", args` (cho `println`, `assert`, ...) |
+| **Builtin** | `builtin "<name>", args` (for `println`, `assert`, ...) |
 | **Outcome** *(v0.7.4.3-error+, [ADR-0020](0020-outcome-error-handling.md))* | `outcome_new_positive` (Trit::Positive arm), `outcome_new_negative` (Trit::Negative arm), `outcome_new_null` (Trit::Zero arm, T?~E only), `outcome_discriminant` (extract trit), `outcome_unwrap_value` (panic if not Positive), `outcome_unwrap_error` (panic if not Negative). Wire opcodes 0xC1–0xC6. Cross-references nullable `T?` via shared `Constant::Null` for compile-time null literals (per [ADR-0010 Addendum](0010-ternary-native-ir.md#addendum--v0743-error-null-literal-unification)). |
 
-**Capability annotation:** Cross-module call mang theo namespace tag từ `AbsolutePath` (e.g., `call @sys.print %s` là gọi vào `sys.*`). v0.6 capability check sẽ đọc tag này — không cần thay đổi IR shape khi enforce capability.
+**Capability annotation:** Cross-module calls carry a namespace tag from `AbsolutePath` (e.g., `call @sys.print %s` calls into `sys.*`). The v0.6 capability check will read this tag — no IR shape change is required to enforce capabilities.
 
 ### Wire format (defer to ADR-0008)
 
-- v0.3.0–v0.3.7: in-memory IR == wire format. Serialization là Rust `bincode` hoặc tương đương cho nhanh — KHÔNG phải binary format chính thức.
-- v0.3.8 (ADR-0008): design `.triv` format chính thức — magic bytes, version field, sections (header / constant pool / function table / code), varint encoding.
-- Stable cho v1.0 freeze. Sau v1.0: additive-only, mọi backend phải đọc được IR cũ.
+- v0.3.0–v0.3.7: in-memory IR == wire format. Serialization uses Rust `bincode` or equivalent for speed — NOT an official binary format.
+- v0.3.8 (ADR-0008): design the official `.triv` format — magic bytes, version field, sections (header / constant pool / function table / code), varint encoding.
+- Stable for v1.0 freeze. Post-v1.0: additive-only; all backends must be able to read legacy IR.
 
-## Lý do
+## Rationale
 
-### Mapped to nguyên tắc thiết kế của SPEC
+### Mapped to SPEC design principles
 
-| SPEC § | Nguyên tắc | Áp dụng cho register SSA |
+| SPEC § | Principle | Application to register SSA |
 |---|---|---|
-| §0.3.1 | **AI-first** — explicit > implicit, low ambiguity > terseness | SSA register IR human-readable: `%result = mul %n, %recurse` rõ data flow. Stack IR ngầm data flow qua stack position — LLM phải simulate stack trong đầu khi đọc. LLM training data dày trên LLVM IR / Rust MIR (cùng kiến trúc) — sinh code đúng ngay. |
-| §0.3.4 | **Stability over speed** — ADR-driven, không "ship đại rồi sửa" | SSA register là kiến trúc dominant trong compiler hiện đại sau 2010 (LLVM, Rust MIR, Swift SIL, Cranelift IR, GCC GIMPLE). Conservative choice với prior art mạnh. Stack VM là di sản từ thời "ngôn ngữ chỉ chạy trên VM mãi mãi" (JVM 1995, Wasm 2017) — không áp dụng cho Triết AOT-native. |
-| §0.3.5 | **Refuse over guess** — error rõ ràng, không suy luận im lặng | SSA invariant ("each register defined exactly once") là static check mạnh, verifier đơn giản. Bug compiler bắt sớm, không lan xuống backend. |
-| §0.3.6 | **Explicit > implicit** — export, capability, dependency tường minh | Register IR explicit operand names. Stack IR implicit data flow qua stack position — sai stack effect bug khó debug. |
-| §0.2 | **Tam phân first-class** — Trit/Tryte/Integer/Long là primitive fixed-size | Type tag per register cho phép `%t1 : Trit`, `%t2 : Trilean`, `%t3 : Long` mang theo type info từ AST → IR → backend. Stack IR cào về "stack slot" generic — type info phải lưu metadata phụ, dễ drift. |
+| §0.3.1 | **AI-first** — explicit > implicit, low ambiguity > terseness | SSA register IR is human-readable: `%result = mul %n, %recurse` clearly shows data flow. Stack IR hides data flow via stack position — LLMs must simulate the stack in their "mind" when reading. LLM training data is dense with LLVM IR / Rust MIR (similar architectures) — enabling correct code generation immediately. |
+| §0.3.4 | **Stability over speed** — ADR-driven, no "ship now, fix later" | SSA registers are the dominant architecture in modern compilers post-2010 (LLVM, Rust MIR, Swift SIL, Cranelift IR, GCC GIMPLE). A conservative choice with strong prior art. Stack VMs are legacies from the "languages only run on VMs forever" era (JVM 1995, Wasm 2017) — not applicable to Triet AOT-native. |
+| §0.3.5 | **Refuse over guess** — clear errors, no silent inference | The SSA invariant ("each register defined exactly once") is a powerful static check with a simple verifier. Compiler bugs are caught early and do not propagate to the backend. |
+| §0.3.6 | **Explicit > implicit** — explicit export, capability, and dependency | Register IR uses explicit operand names. Stack IR has implicit data flow via stack position — stack effect bugs are difficult to debug. |
+/n| §0.2 | **Ternary first-class** — Trit/Tryte/Integer/Long are primitive fixed-size types | Type tags per register allow `%t1 : Trit`, `%t2 : Trilean`, `%t3 : Long` to carry type info from AST $\rightarrow$ IR $\rightarrow$ backend. Stack IR reduces everything to generic "stack slots" — type info must be stored in auxiliary metadata, which is prone to drift. |
 
-### Trajectory multi-backend (VISION §4)
+### Multi-backend trajectory (VISION §4)
 
-Đây là lý do then chốt. Triết là **AOT native language với multi-backend strategy**, không phải VM-based language. IR phải ổn định và map tốt sang **mọi backend**, không chỉ VM v0.3.
+This is the pivotal reason. Triet is an **AOT-native language with a multi-backend strategy**, not a VM-based language. The IR must be stable and map well to **all backends**, not just the v0.3 VM.
 
-| Backend | Phase | IR target | Mapping từ SSA register |
+| Backend | Phase | IR target | Mapping from SSA register |
 |---|---|---|---|
-| Bytecode VM | v0.3 | (Triết IR thẳng) | Trivial — VM interpret IR trực tiếp |
-| JIT Cranelift | v0.9 | Cranelift IR (SSA register) | Map 1:1 — cùng paradigm |
-| AOT LLVM | v2.0 | LLVM IR (SSA register) | Map 1:1 — cùng paradigm |
-| Trytecode native | v∞ | Ternary CPU instructions (register-based) | Map gần 1:1 — CPU vật lý cũng register-based |
+| Bytecode VM | v0.3 | (Direct Triet IR) | Trivial — VM interprets IR directly |
+| JIT Cranelift | v0.9 | Cranelift IR (SSA register) | 1:1 mapping — same paradigm |
+| AOT LLVM | v2.0 | LLVM IR (SSA register) | 1:1 mapping — same paradigm |
+| Trytecode native | v∞ | Ternary CPU instructions (register-based) | Near 1:1 mapping — physical CPU is also register-based |
 
-Nếu Triết IR là stack-based, **mỗi backend phải viết stack-to-SSA lifting pass riêng** — công sức 3 lần (Cranelift, LLVM, trytecode). Đây là chi phí permanent kéo dài qua v0.9/v2.0/v∞, không phải tiết kiệm một lần ở v0.3.
+If Triet IR were stack-based, **every backend would need to implement its own stack-to-SSA lifting pass** — a 3x engineering effort (Cranelift, LLVM, trytecode) that would persist through v0.9/v2.0/v∞, rather than a one-time investment in v0.3.
 
-### Triết-specific considerations
+### Triet-specific considerations
 
-**Trilean ops phải là first-class opcode**, không phải function call. Ł3 và K3 là ngôn ngữ primitive theo SPEC §4 — interpreter v0.2 dispatch trực tiếp, không qua function. IR phải giữ nguyên semantics: `luk_implies` ≠ `kleene_implies`, dispatched ở IR level. Capability check (v0.6) đọc opcode để biết user intentionally chọn Ł3 hay K3.
+**Trilean ops must be first-class opcodes**, not function calls. Ł3 and K3 are primitive languages per SPEC §4 — the v0.2 interpreter dispatches them directly without function overhead. The IR must preserve these semantics: `luk_implies` $\neq$ `kleene_implies`, dispatched at the IR level. Capability checks (v0.6) read the opcode to determine if the user intentionally chose Ł3 or K3.
 
-**Long arithmetic backend-specific.** Long là 81-trit big-int, không fit trong native register CPU thông thường (>128 bit). Backend lowering:
-- VM v0.3: heap-allocated big-int (tương tự `bnum::I256` v0.2 đang dùng).
-- AOT LLVM v2.0: i256 hoặc runtime call vào libgmp.
-- Trytecode v∞: native 81 trit register (vì hardware tam phân fit).
+**Long arithmetic is backend-specific.** A `Long` is an 81-trit big-int, which does not fit in standard native CPU registers (>128 bit). Backend lowering:
+- VM v0.3: heap-allocated big-int (similar to the `bnum::I256` used in v0.2).
+- AOT LLVM v2.0: `i256` or runtime calls to `libgmp`.
+- Trytecode v∞: native 8/1-trit register (as ternary hardware supports it).
 
-IR opcode `add` cho Long emit cùng instruction; backend tự lo lowering. Đây là pattern LLVM IR đã chứng minh: high-level ops + backend-specific lowering.
+The IR opcode `add` for `Long` emits the same instruction; the backend handles the lowering. This follows the proven LLVM IR pattern: high-level ops + backend-specific lowering.
 
-**Capability namespace preserved.** Function call cross-module mang `AbsolutePath` từ `triet-modules`. IR encode `call @std.io.println %s`, KHÔNG strip thành `call @println %s`. Lý do:
-- v0.6 capability check phải biết namespace để enforce (`usr.*` không gọi được `dev.*` không capability).
-- v0.5 CAS hash phải bao gồm namespace để identity ổn định khi rename intra-module.
-- Debug output rõ ràng cho LLM/dev.
+**Capability namespaces are preserved.** Cross-module function calls carry the `AbsolutePath` from `triet-modules`. The IR encodes `call @std.io.println %s`, NOT stripped to `call @println %s`. Reasons:
+- v0.6 capability checks must know the namespace to enforce rules (`usr.*` cannot call `dev.*` without capability).
+- v0.5 CAS hashing must include the namespace to ensure stable identity during intra-module renaming.
+- Debug output remains clear for both LLMs and developers.
 
-**Nullable `T?` discriminator preserved.** SPEC §2.5 + ADR-0001: `T?` là 1-trit discriminator + T payload. IR ops `null_wrap`/`null_unwrap`/`null_check` explicit, không implicit unwrap. Match nullable pattern lower thành `null_check` + `br_if` + `null_unwrap`.
+**Nullable `T?` discriminator is preserved.** Per SPEC §2.5 + ADR-0001: `T?` is a 1-trit discriminator + a `T` payload. IR ops `null_wrap`/`null_unwrap`/`null_check` are explicit, not implicit. Matching a nullable pattern lowers to `null_check` + `br_if` + `null_unwrap`.
 
-**Pattern matching exhaustive enforced ở IR verifier.** SPEC §7.3 yêu cầu match exhaustive. Lowerer kiểm tra exhaustiveness và emit `match` opcode với danh sách arm đầy đủ; verifier check lại invariant. Lower xuống cascade `br_if` ở backend.
+**Pattern matching exhaustiveness is enforced at the IR verifier.** SPEC §7.3 requires exhaustive matching. The lowerer checks for exhaustiveness and emits a `match` opcode with a complete list of arms; the verifier re-validates this invariant. Lowering results in a cascade of `br_if` instructions in the backend.
 
-**Memory model deferred to v0.3 implementation.** SPEC §10 nói memory model nailed-down ở v0.4 (ABI). v0.3 IR sẽ giả định Mojo-style ARC như v0.2 đang làm. ADR riêng (sẽ là ADR-0009 hoặc tương đương ở v0.4) sẽ refine: ARC opcodes (`retain`, `release`), borrow check ở IR level. v0.3 IR có thể thêm opcodes này additive sau.
+**Memory model is deferred to the v0.3 implementation.** SPEC §10 states the memory model will be finalized in v0.4 (ABI). The v0.3 IR will assume Mojo-style ARC, as used in v0.2. A separate ADR (likely ADR-0009 or equivalent in v0.4) will refine this: ARC opcodes (`retain`, `release`) and borrow checking at the IR level. v0.3 IR can add these opcodes additively later.
 
 ### Error code namespace
 
-Mở rộng namespace theo CLAUDE.md:
+Namespace expansion per CLAUDE.md:
 
 | Range | Component |
 |---|---|
@@ -131,132 +131,132 @@ Mở rộng namespace theo CLAUDE.md:
 | `E10XX` | Typecheck |
 | `E20XX` | Interpreter (tree-walking, v0.2) |
 | `E21XX` | Modules (loader/resolver) |
-| **`E22XX`** | **VM runtime (v0.3)** — out of bounds, stack overflow, type tag mismatch, unwrap of null, etc. |
-| `E23XX` | (reserved cho IR verifier khi v0.3.1 scaffold xong) |
+| **`E22XX`** | **VM runtime (v0.3)** — out of bounds, stack overflow, type tag mismatch, null unwrap, etc. |
+| `E23XX` | (reserved for IR verifier once v0.3.1 scaffold is complete) |
 
-## Alternatives considered
+## Alternatives Considered
 
 ### A1. Stack-based bytecode (JVM, Wasm, CPython 3.x, .NET CIL)
 
 **Reject.**
 
-Pro:
-- Implementation đơn giản hơn cho VM v0.3 (~30% ít code).
-- Wire format compact hơn (mỗi opcode không cần explicit operand).
-- Prior art khổng lồ (JVM 30 năm, Wasm là standard hiện đại).
+Pros:
+- Simpler implementation for VM v0.3 (~30% less code).
+- More compact wire format (opcodes do not require explicit operands).
+- Massive prior art (JVM for 30 years, Wasm as a modern standard).
 
-Con (chí mạng):
-- **Implicit data flow** vi phạm AI-first §0.3.1 — LLM/dev phải simulate stack trong đầu để đọc IR.
-- **Type info bị cào** về "stack slot" — vi phạm Tam phân first-class §0.2.
-- **Mọi backend AOT/JIT phải lifting stack → SSA** — công sức permanent qua v0.9/v2.0/v∞.
-- **Stack effect verification yếu hơn SSA invariant** — bug khó bắt sớm.
-- **Wasm precedent không áp dụng** — Wasm chọn stack vì web sandbox + small wire size cho download. Triết không có constraint đó.
-- **JVM precedent không áp dụng** — JVM chọn stack vì 1995 hardware có ít register; modern hardware register-rich.
+Cons (Fatal):
+- **Implicit data flow** violates AI-first §0.3.1 — LLMs/devs must simulate the stack mentally to read the IR.
+- **Type info is stripped** down to generic "stack slots" — violates Ternary first-class §0.2.
+- **Every AOT/JIT backend must perform stack $\rightarrow$ SSA lifting** — a permanent cost through v0.9/v2.0/v∞.
+- **Stack effect verification is weaker than the SSA invariant** — bugs are harder to catch early.
+- **Wasm precedent does not apply** — Wasm chose a stack for web sandboxing + small wire size for downloads. Triet has no such constraints.
+- **JVM precedent does not apply** — JVM chose a stack because 1995 hardware had few registers; modern hardware is register-rich.
 
-Quan trọng nhất: Triết end-game là AOT native (v2.0 LLVM) + trytecode native (v∞). VM chỉ là dev tier. Tối ưu IR cho VM = đầu tư sai chỗ.
+Most importantly: Triet's end-game is AOT native (v2.0 LLVM) + trytecode native (v∞). Optimizing the IR for the VM is a misallocation of resources.
 
 ### A2. Tree-IR / direct AST execution
 
-**Reject.** Đó là v0.2 hiện tại. Không scale lên CAS, ABI, JIT, AOT vì AST không stable, không hash được, không lower được sang machine code.
+**Reject.** This is the current v0.2. It does not scale to CAS, ABI, JIT, or AOT because the AST is unstable, unhashable, and cannot be lowered to machine code.
 
 ### A3. CPS (Continuation-Passing Style) IR
 
-**Defer.** Hợp lý cho concurrency model (v0.8 actor) — first-class continuation map tự nhiên xuống green threads. Nhưng:
-- Phức tạp impl + LLM khó học.
-- Triết v0.3 không có concurrency yet.
-- Có thể bổ sung pass CPS-conversion *trên* SSA IR khi v0.8 actor model định hình.
+**Defer.** This is appropriate for the concurrency model (v0.8 actor) — first-class continuations map naturally to green threads. However:
+- Implementation is complex + difficult for LLMs to learn.
+- Triet v0.3 does not have concurrency yet.
+- A CPS-conversion pass could be added *on top* of the SSA IR once the v0.8 actor model is defined.
 
-Không reject vĩnh viễn — chỉ chưa đến lúc.
+Not rejected permanently — just not the right time.
 
 ### A4. MLIR-style multi-level IR (multiple dialects)
 
-**Defer.** Lợi ích cho compiler có nhiều domain-specific dialect (Tensor + scalar + GPU). Triết drop SIMD/Tensor (SPEC §10.5 đã loại) → không cần multi-dialect. Có thể adopt ở v2.0+ nếu LLVM backend cần custom optimization passes.
+**Defer.** This is beneficial for compilers with many domain-specific dialects (Tensor + scalar + GPU). Triet drops SIMD/Tensor (removed in SPEC §10.5) $\rightarrow$ no need for multi-dialects. This could be adopted in v2.0+ if the LLVM backend requires custom optimization passes.
 
-### A5. Direct lowering AST → LLVM IR (skip Triết IR)
+### A5. Direct lowering AST $\rightarrow$ LLVM IR (skipping Triet IR)
 
 **Reject.**
 
-- LLVM lock-in. Trytecode backend (v∞) bị chặn.
-- Self-hosting (v0.7) không khả thi — Triết-compiler-viết-bằng-Triết phải emit cái gì đó simpler than LLVM IR.
-- JIT (v0.9 Cranelift) cũng phải duplicate lowering — không cùng pipeline với AOT.
-- LLVM build dependency khổng lồ — vi phạm "incremental progress, validate IR sớm" của Stability over speed.
+- LLVM lock-in. The Trytecode backend (v∞) would be blocked.
+- Self-hosting (v0.7) would be unfeasible — the Triet-compiler (written in Triet) must be able to emit something simpler than LLVM IR.
+- JIT (v0.9 Cranelift) would also require duplicate lowering — it wouldn't share a pipeline with AOT.
+- LLVM build dependency is massive — violates the "incremental progress, validate IR early" principle of Stability over speed.
 
-Triết IR là **buffer giữa Triết source và mọi backend** — bắt buộc tách layer.
+Triet IR acts as the **buffer between Triet source and all backends** — this separation of layers is mandatory.
 
-### A6. Continuation-with-block-args (CFG IR không phi nodes, kiểu Cranelift sớm)
+### A6. Continuation-with-block-args (CFG IR without phi nodes, similar to early Cranelift)
 
-**Consider.** Cranelift IR ban đầu dùng block arguments thay phi nodes — lý thuyết tương đương SSA, đôi khi đơn giản hơn impl. Triết có thể adopt nếu trong v0.3.1 thấy phi node phức tạp không cần thiết.
+**Consider.** Cranelift IR originally used block arguments instead of phi nodes — theoretically equivalent to SSA, sometimes simpler to implement. Triet may adopt this if, during v0.3.1, phi nodes are found to be unnecessarily complex.
 
-**Quyết định ở v0.3.1**, không lock-in ngay ADR-0007. ADR sẽ update nếu chọn block arguments.
+**Decision to be made in v0.3.1**, not locked in by ADR-0007. The ADR will be updated if block arguments are chosen.
 
-## Hậu quả
+## Consequences
 
-**Tích cực:**
-- Multi-backend trajectory (VM → JIT → AOT → trytecode) mỗi backend chỉ cần lowerer riêng — không re-design IR.
-- IR human-readable cho debug + LLM-readable cho AI assistance (cùng kiến trúc training data).
-- SSA invariant catch IR bugs early ở verifier.
-- Map 1:1 sang LLVM IR (v2.0) — minimal lowering effort.
-- Type tag per register giữ Tam phân first-class suốt pipeline.
-- Capability namespace preserved → v0.6 enforce không cần đổi IR.
+**Positive:**
+- Multi-backend trajectory (VM $\rightarrow$ JIT $\rightarrow$ AOT $\rightarrow$ trytecode) means each backend only needs its own lowerer — no IR redesign.
+- IR is human-readable for debugging + LLM-readable for AI assistance (sharing the same training data architecture).
+- SSA invariant catches IR bugs early in the verifier.
+- 1:1 mapping to LLVM IR (v2.0) — minimal lowering effort.
+- Type tag per register preserves Ternary first-class status throughout the pipeline.
+- Capability namespace is preserved $\rightarrow$ v0.6 enforcement does not require IR changes.
 
-**Tiêu cực:**
-- Implementation effort v0.3 cao hơn ~30% so với stack VM. Accept tradeoff vì mọi phase sau hời hơn nhiều.
-- Wire format có thể phình hơn stack bytecode (operand explicit). Mitigation: ADR-0008 sẽ design varint encoding cho compact storage.
-- Cần register allocator ở backend mã hóa (v0.9 JIT, v2.0 AOT). Cranelift/LLVM tự lo, Triết KHÔNG phải implement register allocation. v0.3 VM không cần register allocation (virtual register vô hạn, dispatch trực tiếp).
+**Negative:**
+- v0.3 implementation effort is ~30% higher than a stack VM. This tradeoff is accepted because all subsequent phases will be significantly more efficient.
+- The wire format may be larger than stack bytecode (operands are explicit). Mitigation: ADR-0008 will design varint encoding for compact storage.
+- Requires a register allocator in the target backends (v0.9 JIT, v2.0 AOT). Cranelift/LLVM will handle this; Triet does NOT need to implement register allocation. The v0.3 VM does not require register allocation (infinite virtual registers, direct dispatch).
 
 **Migration strategy:**
-- v0.2 baseline: tree-walking interpreter. Giữ nguyên cho differential test ở v0.3.7.
-- v0.3.1–v0.3.7: scaffold IR + lowerer + VM. Tree-walker là oracle, VM phải match byte-by-byte.
-- v0.3.8+: bytecode binary format `.triv`. CLI thêm `dao build` subcommand.
-- v0.4+: ABI metadata + CAS hash đọc từ IR/`.triv`.
-- v0.7: self-hosting compiler emit cùng IR shape.
-- v0.9: Cranelift backend cho JIT — mới, không thay IR.
-- v2.0: LLVM backend cho AOT — mới, không thay IR.
-- v∞: Trytecode backend — mới, không thay IR. Chỉ thêm opcode lowering rules cho ternary CPU.
+- v0.2 baseline: tree-walking interpreter. Retained for differential testing in v0.3.7.
+- v0.3.1–v0.3.7: IR scaffold + lowerer + VM. The tree-walker acts as the oracle; the VM must match it byte-by-byte.
+- v0.3.8+: `.triv` bytecode binary format. CLI adds `dao build` subcommand.
+- v0.4+: ABI metadata + CAS hashes read from IR/`.triv`.
+- v0.7: Self-hosting compiler emits the same IR shape.
+- v0.9: Cranelift backend for JIT — new, but does not change IR.
+- v2.0: LLVM backend for AOT — new, but does not change IR.
+- v∞: Trytecode backend — new, but does not change IR. Only adds opcode lowering rules for the ternary CPU.
 
-**Breaking change ở IR cần ADR riêng** (theo precedent ADR-0005). Sau v1.0: chỉ additive, không phá ngữ nghĩa cũ.
+**Breaking changes to the IR require a separate ADR** (per the precedent of ADR-0005). Post-v1.0: changes will be additive only, preserving backward compatibility.
 
-## Implementation roadmap (v0.3.0 → v0.3.7)
+## Implementation roadmap (v0.3.0 $\rightarrow$ v0.3.7)
 
-Chi tiết sub-tasks ở [TODO.md § v0.3](../../TODO.md). Outline:
+Detailed sub-tasks are in [TODO.md § v0.3](../../TODO.md). Outline:
 
 1. **v0.3.0 — ADR-0007** (this) ✓ — IR shape decided.
 2. **v0.3.1 — Scaffold `triet-ir` crate** — concrete instruction set, constant pool, basic block + function + module types, display formatting, IR verifier.
-3. **v0.3.2 — Lowerer AST → IR (core)** — literals, arithmetic, logic Ł3/K3, comparison, control flow.
-4. **v0.3.3 — Lowerer items + functions + modules** — function definitions, generics monomorphization, cross-module calls với `AbsolutePath`.
+3. **v0.3.2 — Lowerer AST $\rightarrow$ IR (core)** — literals, arithmetic, Ł3/K3 logic, comparison, control flow.
+4. **v0.3.3 — Lowerer items + functions + modules** — function definitions, generics monomorphization, cross-module calls with `AbsolutePath`.
 5. **v0.3.4 — Lowerer aggregates + match + closures** — struct/enum/closure/builtins/nullable.
-6. **v0.3.5 — VM execution** — interpret IR theo opcode dispatch; cùng output với tree-walker.
-7. **v0.3.6 — Snapshot tests** — IR output cho mọi `examples/*.tri`.
-8. **v0.3.7 — Differential tests** — VM ≡ tree-walker byte-by-byte cho mọi example.
+6. **v0.3.5 — VM execution** — interpret IR via opcode dispatch; must produce the same output as the tree-walker.
+7. **v0.3.6 — Snapshot tests** — IR output for all `examples/*.tri`.
+8. **v0.3.7 — Differential tests** — VM $\equiv$ tree-walker byte-by-byte for all examples.
 
-Sau đó:
-- **v0.3.8 — ADR-0008** (sẽ viết) — bytecode binary format `.triv`.
-- **v0.3.9 — Serializer/deserializer** — round-trip IR ↔ `.triv`.
+Thereafter:
+- **v0.3.8 — ADR-0008** (to be written) — `.triv` bytecode binary format.
+- **v0.3.9 — Serializer/desertializer** — round-trip IR $\leftrightarrow$ `.triv`.
 - **v0.3.10 — CLI rewire** — `dao build` + `.triv` execution.
-- **v0.3.11 — Benchmark + gate verification** — bench ≥3× tree-walker.
+- **v0.3.11 — Benchmark + gate verification** — benchmark $\ge$ 3$\times$ tree-walker speed.
 
 ## References
 
-- [LLVM IR Reference](https://llvm.org/docs/LangRef.html) — SSA register design, prior art chính.
-- [Rust MIR Documentation](https://rustc-dev-guide.rust-lang.org/mir/index.html) — high-level IR cho Rust, prior art gần Triết nhất (similar source language complexity).
-- [Swift SIL](https://github.com/apple/swift/blob/main/docs/SIL.rst) — generics + ABI considerations ở IR level (prior art cho v0.4 ABI).
-- [Cranelift IR Reference](https://github.com/bytecodealliance/wasmtime/blob/main/cranelift/docs/ir.md) — JIT-friendly SSA IR, target backend cho v0.9.
-- ["A Look at the Lua 5 Implementation"](https://www.lua.org/doc/jucs05.pdf) — register VM với fixed register count, tham khảo cho VM dispatch.
-- [WebAssembly Specification](https://webassembly.github.io/spec/) — stack-based wire format (alternative đã reject).
-- [SSA Book — Static Single Assignment Book](http://ssabook.gforge.inria.fr/latest/book.pdf) — lý thuyết SSA, phi nodes, dominance.
-- [GHC Cmm](https://gitlab.haskell.org/ghc/ghc/-/wikis/commentary/compiler/cmm-type) — alternative C-- style IR cho functional language (defer reference).
+- [LLVM IR Reference](https://llvm.org/docs/LangRef.html) — SSA register design, primary prior art.
+- [Rust MIR Documentation](https://rustc-dev-guide.rust-lang.org/mir/index.html) — high-level IR for Rust, the closest prior art to Triet (similar source language complexity).
+- [Swift SIL](https://github.com/apple/swift/blob/main/docs/SIL.rst) — generics + ABI considerations at the IR level (prior art for v0.4 ABI).
+- [Cranelift IR Reference](https://github.com/bytecodealliance/wasmtime/blob/main/cranelift/docs/ir.md) — JIT-friendly SSA IR, target backend for v0.9.
+- ["A Look at the Lua 5 Implementation"](https://www.lua.org/doc/jucs05.pdf) — register VM with fixed register count, reference for VM dispatch.
+- [WebAssembly Specification](https://webassembly.github.io/spec/) — stack-based wire format (the rejected alternative).
+- [SSA Book — Static Single Assignment Book](http://ssabook.gforge.inria.fr/latest/book.pdf) — SSA theory, phi nodes, dominance.
+- [GHC Cmm](https://gitlab.haskell.org/ghc/ghc/-/wikis/commentary/compiler/cmm-type) — alternative C-- style IR for functional languages (deferred reference).
 
-## Liên quan
+## Related
 
-- [ADR-0005](0005-module-system.md) — Module system: `AbsolutePath` là input cho IR cross-module call.
-- ADR-0008 (sẽ viết, v0.3.8): Bytecode binary format `.triv`.
-- ADR-0009 (sẽ viết, v0.4): ABI metadata format — đọc từ IR.
-- ADR-0012 (sẽ viết, v0.5): CAS hash scheme — `iface_hash` trên IR signature, `impl_hash` trên IR body.
-- ADR-0014 (sẽ viết, v0.6): Capability type system — đọc capability tag từ IR.
-- [VISION §4](../../VISION.md) — Mô hình thực thi multi-backend.
-- [SPEC §0.3](../../SPEC.md) — Nguyên tắc thiết kế (AI-first, Stability over speed, Tam phân first-class).
+- [ADR-0005](0005-module-system.md) — Module system: `AbsolutePath` is the input for IR cross-module calls.
+- ADR-0008 (to be written, v0.3.8): Bytecode binary format `.triv`.
+- ADR-0009 (to be written, v0.4): ABI metadata format — read from IR.
+- ADR-0012 (to be written, v0.5): CAS hashing scheme — `iface_hash` on IR signature, `impl_hash` on IR body.
+- ADR-0014 (to be written, v0.6): Capability type system — reads capability tags from IR.
+- [VISION §4](../../VISION.md) — Multi-backend execution model.
+- [SPEC §0.3](../../SPEC.md) — Design principles (AI-first, Stability over speed, Ternary first-class).
 - [ROADMAP § v0.3](../../ROADMAP.md) — Phase deliverables + gates.
 
 ---
 
-*Quyết định này đóng băng IR shape cho Triết. Breaking change ở IR cần ADR riêng. Wire format binary detail (`.triv`) defer to ADR-0008 khi v0.3.8 bắt đầu.*
+*This decision freezes the IR shape for Triet. Breaking changes to the IR require a separate ADR (per ADR-0005). Binary wire format details (`.triv`) are deferred to ADR-0008 when v0.3.8 begins.*

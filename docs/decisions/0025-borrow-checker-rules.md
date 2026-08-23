@@ -1,43 +1,43 @@
-# ADR 0025 — Borrow Checker Rules (Luật Kiểm tra Mượn-Sở-Hữu)
+# ADR 0025 — Borrow Checker Rules
 
-**Trạng thái:** **Locked** (promoted via v0.8.x.review 2026-05-28). Sibling của [ADR-0022](0022-trit-balanced-ownership.md) + [ADR-0026](0026-actor-boundary-send-rules.md). v0.8 đã ship skeleton diagnostics (E2400/E2402-E2403/E2410-E2411/E2420-E2422/E2430/E2440) per v0.8.10; full NLL enforcement defer v0.9 (cần real-world Triết corpus). Locks compile-time enforcement algorithm cho 5 reference forms từ ADR-0022 §2. Định nghĩa namespace error code mới **E24XX** cho borrow-related diagnostics.
+**Status:** **Locked** (promoted via v0.8.x.review 2026-05-28). Sibling to [ADR-0022](0022-trit-balanced-ownership.md) + [ADR-0026](0026-actor-boundary-send-rules.md). v0.8 shipped skeleton diagnostics (E2400/E2402-E2403/E2410-E2411/E2420-E2422/E2430/E2440) per v0.8.10; full NLL enforcement deferred to v0.9 (requires real-world Triet corpus). Locks the compile-time enforcement algorithm for 5 reference forms from ADR-0022 §2. Defines new error code namespace **E24XX** for borrow-related diagnostics.
 
-**Issue:** [ADR-0022](0022-trit-balanced-ownership.md) lock conceptual model — 5 reference forms, mutability default, linear `&+`, capability-as-unsafe, định lý vô-chu-trình. Còn lại các quyết định *thuật toán*:
+**Issue:** [ADR-0022](0022-trit-balanced-ownership.md) locks the conceptual model — 5 reference forms, mutability default, linear `&+`, capability-as-unsafe, no-cycle theorem. The remaining *algorithmic* decisions:
 
-- **D4** — Borrow exclusivity dùng NLL (Non-Lexical Lifetime) hay basic lexical?
-- **D5** — Khi lifetime inference fail, cho phép explicit annotation `<'a>` không?
-- Use-after-move detect thế nào (E2420, E2421).
-- Constructibility termination check ra sao (E2422 từ ADR-0022 §6.4).
-- Mutability violation enforcement (E2410, E2411 từ ADR-0022 §3.4).
+- **D4** — Borrow exclusivity using NLL (Non-Lexical Lifetime) or basic lexical?
+- **D5** — When lifetime inference fails, allow explicit annotation `<'a>`?
+- How to detect use-after-move (E2420, E2421).
+- How to perform constructibility termination checks (E2422 from ADR-0022 §6.4).
+- Mutability violation enforcement (E2410, E2411 from ADR-0022 §3.4).
 - Drop order + custom destructor.
-- Default inference algorithm trong `usr::` vs `sys::/dev::`.
+- Default inference algorithm in `usr::` vs `sys::/dev::`.
 
-Author 2026-05-26 chốt D4 = NLL (smart enough to accept code rejected by Rust 2015), D5 = **không có syntax `<'a>`** (compile error với refactor suggest, worst case dùng capability post-v1.0).
+Author 2026-05-26 finalized D4 = NLL (smart enough to accept code rejected by Rust 2015), D5 = **no `<'a>` syntax** (compile error with refactor suggestion, worst case use capability post-v1.0).
 
-ADR này lock algorithm cho từng error category + implementation phasing. Mỗi sub-decision có error code dedicated trong namespace E24XX (E2400-E2499 reserved for borrow checker).
+This ADR locks the algorithm for each error category + implementation phasing. Each sub-decision has a dedicated error code in the E24XX namespace (E2400–E2499 reserved for borrow checker).
 
 ---
 
-## §1 — Goals & non-goals
+## §1 — Goals & Non-goals
 
 ### 1.1 — Goals
 
-1. **Compile-time only** — borrow checker không emit runtime check nào.
-2. **Zero-cost** — không thay đổi memory layout, không insert guard code.
-3. **90% common patterns work** không cần explicit annotation.
-4. **10% edge cases** → compile error với 2-3 concrete refactor suggestions.
-5. **Error messages** dùng pattern E2400 với "Suggested fix" block (style đã chốt qua [ADR-0021 §10](0021-trilean-refinement.md)).
+1. **Compile-time only** — the borrow checker emits no runtime checks.
+2. **Zero-cost** — no changes to memory layout, no insertion of guard code.
+3. **90% common patterns work** without explicit annotation.
+4. **10% edge cases** $\rightarrow$ compile error with 2-3 concrete refactor suggestions.
+5. **Error messages** use the E2400 pattern with a "Suggested fix" block (style finalized via [ADR-0021 §10](0021-trilean-refinement.md)).
 
 ### 1.2 — Non-goals (defer post-v1.0)
 
-- **Polonius-level permissive analysis** — Rust's next-gen borrow checker. Triết v1.0 stop ở NLL.
-- **Two-phase borrows** — Rust feature cho phép certain mutable+immutable trùng. Defer cho đến khi có evidence cần.
-- **Generic lifetime variance** — vì không có annotation syntax, không có variance.
-- **Self-referential async future** — defer cho đến khi async/await design lock (post-v0.8).
+- **Polonius-level permissive analysis** — Rust's next-gen borrow checker. Triet v1.0 stops at NLL.
+- **Two-phase borrows** — a Rust feature allowing certain mutable+immutable overlaps. Deferred until evidence of necessity arises.
+- **Generic lifetime variance** — since there is no annotation syntax, there is no variance.
+- **Self-referential async future** — deferred until the async/await design is locked (post-v0.8).
 
 ### 1.3 — Error code namespace E24XX
 
-Reserved range **E2400–E2499** cho borrow checker. Phân bổ:
+Reserved range **E2400–E2499** for the borrow checker. Allocation:
 
 | Range | Category |
 |---|---|
@@ -47,39 +47,39 @@ Reserved range **E2400–E2499** cho borrow checker. Phân bổ:
 | E2430–E2439 | Namespace inference violations |
 | E2440–E2449 | Borrow exclusivity (NLL) |
 | E2450–E2459 | Reserved (drop order, custom drop) |
-| E2460–E2499 | Reserved future expansion |
+| E2460–E2499 | Reserved for future expansion |
 
-Module path: `triet::borrow::E24XX`. CLAUDE.md cập nhật khi ADR land.
+Module path: `triet::borrow::E24XX`. CLAUDE.md to be updated when this ADR lands.
 
 ### 1.4 — Error message format
 
-Tất cả diagnostic trong E24XX namespace (§2-§10) follow canonical format đã chốt ở [ADR-0027 — Diagnostic Format Standard](0027-diagnostic-format-standard.md). Format này áp dụng language-wide, không riêng E24XX.
+All diagnostics in the E24XX namespace (§2-§10) follow the canonical format finalized in [ADR-0027 — Diagnostic Format Standard](0027-diagnostic-format-standard.md). This format applies language-wide, not just to E24XX.
 
-Tóm tắt: header `EXXXX ErrorName` + body 1-3 câu + optional span block (`--> file:line:col` + caret) + optional `[Fix N]` numbered fix blocks với imperative `Change/Wrap/Use/Add/Replace/Move X to Y`. Pure ASCII, không diff `-/+`. Chi tiết spec + rationale: ADR-0027 §2.
+Summary: header `EXXXX ErrorName` + body (1-3 sentences) + optional span block (`--> file:line:col` + caret) + optional `[Fix N]` numbered fix blocks using imperative `Change/Wrap/Use/Add/Replace/Move X to Y`. Pure ASCII, no `-/+` diffs. Detailed spec + rationale: ADR-0027 §2.
 
 ---
 
-## §2 — Borrow Exclusivity với NLL (D4)
+## §2 — Borrow Exclusivity with NLL (D4)
 
-**Lock:** Tại bất kỳ program point nào, với cùng 1 đối tượng (place), borrow phải thỏa **1 trong 2 trạng thái**:
+**Decision:** At any program point, for the same object (place), a borrow must satisfy **one of two states**:
 
-- **Trạng thái A:** Có đúng 1 `&0 mutable T` active. Không có `&0 T` nào active đồng thời.
-- **Trạng thái B:** Có N ≥ 0 `&0 T` active. Không có `&0 mutable T` nào.
+- **State A:** Exactly 1 `&0 mutable T` is active. No `&0 T` is active simultaneously.
+- **State B:** N $\ge$ 0 `&0 T` are active. No `&0 mutable T` exists.
 
-Cấm: 2 `&0 mutable` cùng đối tượng; hoặc `&0 mutable` + `&0` cùng đối tượng.
+Prohibited: 2 `&0 mutable` for the same object; or `&0 mutable` + `&0` for the same object.
 
-### 2.1 — "Active" theo NLL không phải lexical
+### 2.1 — "Active" per NLL is not lexical
 
-NLL: borrow chỉ "active" từ điểm tạo đến **lần cuối được dùng**, không phải đến cuối block. Cho phép nhiều pattern Rust 2015 từ chối:
+NLL: a borrow is only "active" from its creation point to its **last use**, not until the end of the block. This allows many patterns rejected by Rust 2015:
 
 ```triet
 let mutable v = Vector { 1, 2, 3 }
 let r1: &0 Vector = &0 v        // borrow start
 print(r1.length)                  // last use of r1
-v.push(4)                         // OK với NLL — r1 đã hết active từ dòng trên
+v.push(4)                         // OK with NLL — r1 is no longer active from the line above
 ```
 
-Rust 2015 lexical sẽ reject vì `r1` "still in scope". NLL accept vì last-use đã qua.
+Rust 2015 lexical would reject this because `r1` is "still in scope." NLL accepts it because the last use has passed.
 
 ### 2.2 — E2440 BorrowExclusivityViolation
 
@@ -109,51 +109,51 @@ E2440 BorrowExclusivityViolation
     Wrap the mutation behind a method on the owner struct that controls borrow scope internally
 ```
 
-### 2.3 — Algorithm: live-range analysis trên CFG
+### 2.3 — Algorithm: live-range analysis on CFG
 
-Compiler build control-flow graph (CFG), gán cho mỗi borrow 1 "live range" từ creation point đến last-use point. Hai borrow conflict khi live range giao nhau **và** vi phạm exclusivity. Algorithm có complexity O(N·M) với N = borrow count, M = CFG size — practical cho codebase realistic.
+The compiler builds a control-flow graph (CFG) and assigns each borrow a "live range" from its creation point to its last-use point. Two borrows conflict when their live ranges intersect **and** violate exclusivity. The algorithm has a complexity of O(N·M) where N = borrow count and M = CFG size — practical for realistic codebases.
 
-Implementation phase v0.10 (chi tiết §12).
+Implementation phase v0.10 (details in §12).
 
 ---
 
-## §3 — Lifetime Elision (3 quy tắc)
+## §3 — Lifetime Elision (3 rules)
 
-**Lock:** Compiler suy ra borrow scope tự động qua 3 quy tắc tuần tự. Nếu cả 3 không apply → E2400.
+**Decision:** The compiler infers borrow scope automatically via 3 sequential rules. If all 3 fail $\rightarrow$ E2400.
 
-### 3.1 — Quy tắc 1: 1 input borrow → output ties to input
+### 3.1 — Rule 1: 1 input borrow $\rightarrow$ output ties to input
 
 ```triet
 function first_word(s: &0 String) -> &0 String {
-    // Compiler tự suy: return scope = `s` scope
+    // Compiler automatically infers: return scope = `s` scope
 }
 ```
 
-Function có **đúng 1** borrow input (`&0`, `&0 mutable`, hoặc `&-`) và trả về borrow. Output borrow scope = input borrow scope.
+The function has **exactly 1** borrow input (`&0`, `&0 mutable`, or `&-`) and returns a borrow. Output borrow scope = input borrow scope.
 
-### 3.2 — Quy tắc 2: Method với self → output ties to self
+### 3.2 — Rule 2: Method with self $\rightarrow$ output ties to self
 
 ```triet
 public struct Cache {
     public function get(self: &0 Cache, key: String) -> &0 Entry {
-        // Compiler tự suy: return scope = self scope
+        // Compiler automatically infers: return scope = self scope
     }
 }
 ```
 
-Method với receiver `&0 self` hoặc `&0 mutable self` (bất kể có thêm borrow inputs khác hay không). Output borrow scope = self scope.
+A method with receiver `&0 self` or `&0 mutable self` (regardless of other borrow inputs). Output borrow scope = self scope.
 
-### 3.3 — Quy tắc 3: Owned return (no inference needed)
+### 3.3 — Rule 3: Owned return (no inference needed)
 
 ```triet
 function parse(s: &0 String) -> &+ ParsedDoc {
-    // Return owned — không có lifetime relationship cần suy ra
+    // Return owned — no lifetime relationship needs to be inferred
 }
 ```
 
-Output là `&+ T` (owned). Không có lifetime relationship — function transfer ownership ra. Không cần elision.
+The output is `&+ T` (owned). There is no lifetime relationship — the function transfers ownership out. No elision required.
 
-### 3.4 — Khi cả 3 quy tắc fail → E2400
+### 3 $\rightarrow$ 3.4 — When all 3 rules fail $\rightarrow$ E2400
 
 ```triet
 function pick_longer(a: &0 String, b: &0 String) -> &0 String {
@@ -161,7 +161,7 @@ function pick_longer(a: &0 String, b: &0 String) -> &0 String {
 }
 ```
 
-Function có 2 borrow inputs, không phải method, trả về borrow. Compiler không biết output tie tới `a` hay `b`.
+The function has 2 borrow inputs, is not a method, and returns a borrow. The compiler does not know if the output ties to `a` or `b`.
 
 ```text
 E2400 BorrowLifetimeInferenceFailed
@@ -189,28 +189,28 @@ E2400 BorrowLifetimeInferenceFailed
 
 ## §4 — No Annotation Policy (D5)
 
-**Lock:** Triết **không có** cú pháp `<'a>` hay tương đương. Khi elision fail → compiler dứt khoát refuse. Tác giả refactor theo 1 trong 3 suggestion ở E2400.
+**Decision:** Triet **does not have** `<'a>` syntax or its equivalent. When elision fails, the compiler decisively refuses. The author must refactor according to one of the 3 suggestions in E2400.
 
-### 4.1 — Lý do refuse annotation
+### 4.1 — Reasons for refusing annotation
 
-1. **Brand fit:** annotation viral là lý do số 1 dev rời Rust theo các survey. Triết tham vọng "Rust rigor + ergonomics tốt hơn".
-2. **AI-friendly:** annotation cần global reasoning về lifetimes — khó cho LLM generate đúng. Refuse-with-refactor cho LLM 1 mục tiêu rõ ràng hơn.
-3. **Long-term simplicity:** mỗi feature compiler không có là 1 feature ngôn ngữ không cần học, document, version.
+1. **Brand fit:** Annotation virality is the number one reason developers leave Rust according to surveys. Triet aims for "Rust rigor + better ergonomics."
+2. **AI-friendly:** Annotations require global reasoning about lifetimes — difficult for LLMs to generate correctly. Refuse-with-refactor provides a clearer goal for LLMs.
+3. **Long-term simplicity:** Every feature the compiler lacks is a language feature that does not need to be learned, documented, or versioned.
 
-### 4.2 — Trường hợp 5% không refactor được
+### 4.2 — The 5% case where refactoring is impossible
 
-Một số API design thực sự cần multi-input borrow tied to different lifetimes (rare in practice). Triết policy:
+Some API designs truly require multi-input borrows tied to different lifetimes (rare in practice). Triet policy:
 
-- **v0.8–v1.0:** Hoàn toàn refuse — author refactor.
-- **post-v1.0:** Đánh giá lại. Nếu có concrete evidence từ self-hosting compiler hoặc kernel work, mở capability `dev::explicit_region` cho pattern này. Capability gate giữ audit-friendly.
+- **v0.8–v1.0:** Complete refusal — the author must refactor.
+- **post-v1.0:** Re-evaluate. If concrete evidence arises from a self-hosting compiler or kernel work, open the `dev::explicit_region` capability for this pattern. The capability gate keeps it audit-friendly.
 
-Author 2026-05-26 chốt: ưu tiên **clean brand** ngay v1.0. Worst case: 1-2% codebase phải refactor — chấp nhận được.
+Author 2026-05-26 finalized: prioritize a **clean brand** for v1.0. Worst case: 1-2% of the codebase must refactor — this is acceptable.
 
 ---
 
 ## §5 — Use-After-Move (E2420, E2421)
 
-**Lock:** Move semantics theo ADR-0022 §4.1. Compiler track mỗi `&+` binding qua dataflow analysis. Truy cập sau move → E2420. Cố tạo self-ownership → E2421.
+**Decision:** Move semantics per ADR-0022 §4.1. The compiler tracks each `&+` binding via dataflow analysis. Access after a move $\rightarrow$ E2420. Attempting self-ownership $\rightarrow$ E2421.
 
 ### 5.1 — E2420 UseAfterMove
 
@@ -229,7 +229,7 @@ E2420 UseAfterMove
        |
     4  |     take(alice)
        |          ----- ownership moved here
-    5  |     print(alice.name)
+    5  |     print(alloc_name)
        |           ^^^^^ used after move
     
     Suggested fixes:
@@ -246,14 +246,14 @@ E2420 UseAfterMove
 
 ### 5.2 — E2421 SelfOwnershipParadox
 
-Đặc biệt cho trường hợp cố move biến vào field của chính nó (xem chứng minh ADR-0022 §6.2):
+Specifically for cases attempting to move a variable into a field of itself (see proof in ADR-0022 §6.2):
 
 ```triet
 a.b_field.a_field = a       // E2421
 ```
 
 ```text
-E2421 SelfOwnershipParadox
+E2421 SelfOwnershipParadance
     Cannot move `a` into a field reachable from `a` itself.
     Linear ownership requires the source and destination to be distinct.
     This is one of the patterns prevented by the no-cycle theorem (ADR-0022 §6).
@@ -274,35 +274,35 @@ E2421 SelfOwnershipParadox
 
 ### 5.3 — Algorithm: move-state tracking
 
-Compiler maintain mỗi `&+` binding 1 trạng thái 3-state:
+The compiler maintains a 3-state for each `&+` binding:
 
-- **Owned** — binding hợp lệ, có quyền truy cập.
-- **Moved** — đã chuyển ownership đi, truy cập → E2420.
-- **Conditionally moved** — moved trên 1 nhánh, owned trên nhánh khác (sau if/match) → merge logic.
+- **Owned** — binding is valid, access is permitted.
+- **Moved** — ownership has been transferred; access $\rightarrow$ E2420.
+- **Conditionally moved** — moved on one branch, owned on another (after if/match) $\rightarrow$ merge logic.
 
-Conditional move thường được resolve bằng cách compiler insert "drop flags" hoặc force re-assignment trước use point. Chi tiết defer implementation phase.
+Conditional moves are typically resolved by the compiler inserting "drop flags" or forcing re-assignment before the use point. Detailed implementation deferred to the implementation phase.
 
 ---
 
 ## §6 — Constructibility Termination (E2422)
 
-**Lock:** Theo ADR-0022 §6.4, mỗi struct có recursive `&+ T` reference (T = Self trực tiếp hoặc qua chain) phải có **base case** để constructor terminate. Compiler check local, không cần SCC global.
+**Decision:** Per ADR-0022 §6.4, every struct with a recursive `&+ T` reference (T = Self directly or via a chain) must have a **base case** for the constructor to terminate. The compiler checks locally; no global SCC is required.
 
 ### 6.1 — Algorithm
 
-Cho struct `S` có field `f: F`:
+For a struct `S` with field `f: F`:
 
-1. Compute *reaches-self* set: tập kiểu T mà từ F có thể "reach" tới S thông qua `&+` ownership chain.
-2. Nếu S ∈ reaches-self(F) → S là self-recursive qua F.
-3. Self-recursive thì F phải là **terminable type**: `(&+ T)?`, hoặc `Vector<&+ T>` / `Map<K, &+ T>` / collection có empty state, hoặc `&- T` (weak, không count).
-4. Nếu không → E2422.
+1. Compute the *reaches-self* set: the set of types T that can "reach" S from F through an `&+` ownership chain.
+2. If S $\in$ reaches-self(F) $\rightarrow$ S is self-recursive via F.
+3. If self-recursive, F must be a **terminable type**: `(&+ T)?`, or `Vector<&+ T>` / `Map<K, &+ T>` / a collection with an empty state, or `&- T` (weak, non-counting).
+4. Otherwise $\rightarrow$ E2422.
 
 ### 6.2 — E2422 NonTerminatingConstruction
 
 ```triet
 public struct Node {
     value: Integer,
-    next: &+ Node               // E2422 — không terminable
+    next: &+ Node               // E2422 — not terminable
 }
 ```
 
@@ -329,17 +329,17 @@ E2422 NonTerminatingConstruction
     Change `next: &+ Node` to `next: &- Node`
 ```
 
-### 6.3 — Không phải cycle check
+### 6.3 — Not a cycle check
 
-E2422 là **local property check** (1 field, 1 struct definition tại 1 thời điểm). Không build type graph, không SCC. O(N) trên số field, không O(N²) như cycle detection.
+E2422 is a **local property check** (one field, one struct definition at a time). It does not build a type graph or use SCC. It is O(N) relative to the number of fields, not O(N²) like cycle detection.
 
-Đây là điểm Triết khác Rust: Rust check size finiteness qua trait `Sized` + bounds. Triết check **constructibility** trực tiếp.
+This is where Triet differs from Rust: Rust checks size finiteness via the `Sized` trait + bounds. Triet checks **constructibility** directly.
 
 ---
 
-## §7 — Mutability Enforcement (E2410, E2411)
+ $\text{7. Mutability Enforcement (E2410, E2411)}$
 
-**Lock:** ADR-0022 §3.4 declares "frozen owner không promote được". Compiler enforce qua 2 error codes.
+**Decision:** ADR-0022 §3.4 declares "frozen owners cannot be promoted." The compiler enforces this via 2 error codes.
 
 ### 7.1 — E2410 CannotMutateFrozenOwner
 
@@ -357,7 +357,7 @@ E2410 CannotMutateFrozenOwner
        |
     1  |     let owner: &+ User = create_user("Alice")
        |                ------- frozen owner declared here
-    2  |     owner.name = "Bob"
+    2  |     owner.name = " $\text{Bob}$"
        |     ^^^^^^^^^^^^^^^^^^ mutation through frozen reference
     
     Suggested fixes:
@@ -402,24 +402,24 @@ E2411 CannotPromoteFrozenToMutable
 
 ```triet
 public struct User {
-    id: UserId,                  // immutable field (set 1 lần)
+    id: UserId,                  // immutable field (set once)
     mutable display_name: String  // mutable field
 }
 
-let mutable u: &+ mutable User = User { id: ..., display_name: "Alice" }
+let mutable u: &+ mutable User = User { id: ..., display $\text{name}$: "Alice" }
 u.display_name = "Bob"            // OK — field is mutable, owner is mutable
 u.id = NewId                      // E2410 — field is immutable regardless of owner
 ```
 
-Mutability của field **độc lập** với mutability của owner. Owner mutable cho phép tổng quát mutate; field cần thêm `mutable` keyword nếu muốn cho sửa.
+Field mutability is **independent** of owner mutability. A mutable owner allows general mutation; a field requires the `mutable` keyword if it is to be modifiable.
 
 ---
 
 ## §8 — `&-` Upgrade & Scope Rules
 
-**Lock:** ADR-0022 §9 declares `.upgrade()` trả `T?`. Compile-time invariant: `&-` chỉ tồn tại khi tracer back tới ≥ 1 `&+` còn live. Vi phạm → E2403.
+**Decision:** ADR-0022 §9 declares `.upgrade()` returns `T?`. Compile-time invariant: `&-` only exists when tracing back to $\ge$ 1 live `&+`. Violation $\rightarrow$ E2403.
 
-### 8.1 — E2402 BorrowInStructField (từ ADR-0022 §7.1)
+### 8.1 — E2402 BorrowInStructField (from ADR-0022 §7.1)
 
 ```triet
 public struct BadIdea {
@@ -446,9 +446,9 @@ E2402 BorrowInStructField
     Change `cursor: &0 Tryte` to `cursor: &+ Tryte`
     
     [Fix 2] Use a weak reference (observer pattern, ownership stays elsewhere):
-    Change `cursor: &0 Tryte` to `cursor: &- Tryte`
+    Change `cursor: &0 Tryte` to `cursor: &- Tryint`
     
-    [Fix 3] Use offset-based pattern under `dev::self_ref` capability (ADR-0022 §7.2):
+    [Fix 3] Use an offset-based pattern under `dev::self_ref` capability (ADR-0022 §7.2):
     Change `cursor: &0 Tryte` to `cursor_offset: Integer` and declare `dev::self_ref: grant` in dao.package
 ```
 
@@ -478,7 +478,7 @@ E2403 WeakRefOutlivesOwner
     [Fix 1] Return the owner instead so the caller decides lifetime:
     Change `return &- p` to `return p` and change return type to `&+ Process`
     
-    [Fix 2] Accept a long-lived owner from the caller:
+ $\text{Fix 2]}$ Accept a long-lived owner from the caller:
     Refactor function signature: add a parameter `owner: &0 Process` and derive `&- owner` inside the body
     
     [Fix 3] Restructure to store the weak ref in a long-lived struct owned by the caller:
@@ -487,7 +487,7 @@ E2403 WeakRefOutlivesOwner
 
 ### 8.3 — Algorithm: trace weak to owner
 
-Compiler maintain mỗi `&-` 1 "owner trail" — chain ngược tới gốc `&+`. Khi `&-` được assign, store, hoặc return, compiler check owner trail còn valid trong destination scope không. Implementation phase v0.10.
+The compiler maintains an "owner trail" for each `&-` — a chain tracing back to the root `&+`. When a `&-` is assigned, stored, or returned, the compiler checks if the owner trail remains valid in the destination scope. Implementation phase v0.10.
 
 ### 8.4 — Upgrade pattern
 
@@ -501,33 +501,33 @@ match result {
 }
 ```
 
-`.upgrade()` là method built-in của type `&- T`. Trả `T?` per ADR-0022 §9. Force match — không có silent deref tới `T` trực tiếp.
+`.upgrade()` is a built-in method of the type `&- T`. It returns `T?` per ADR-0022 §9. It forces a `match` — there is no silent dereference to `T` directly.
 
 ---
 
 ## §9 — Default Inference per Namespace
 
-**Lock:** ADR-0022 §5 declares quy tắc infer khác nhau giữa `usr::` và `sys::/dev::`. Algorithm chi tiết:
+**Decision:** ADR-0022 §5 declares different inference rules between `usr::` and `sys::/dev::`. Detailed algorithm:
 
 ### 9.1 — Algorithm
 
-Cho mỗi vị trí có thể ngầm reference type (struct field, function param, return), compiler:
+For every location where a reference type can be implicitly declared (struct field, function param, return), the compiler:
 
-1. Check namespace của module containing declaration.
-2. Nếu `usr::` → apply default inference (xem 9.2).
-3. Nếu `sys::*` hoặc `dev::*` → require explicit `&+`/`&0`/`&-` ngay. Không infer.
-4. Nếu vi phạm namespace rule → E2430.
+1. Checks the namespace of the module containing the declaration.
+2. If `usr::` $\rightarrow$ apply default inference (see 9.2).
+3. If `tsys::*` or `dev::*` $\rightarrow$ requires explicit `&+`/`&0`/`&-` immediately. No inference.
+4. If the namespace rule is violated $\rightarrow$ E2430.
 
 ### 9.2 — Default inference table (usr::)
 
-| Vị trí | Type declared | Inferred reference |
+| Location | Type declared | Inferred reference |
 |---|---|---|
-| Struct field | `field: T` (T là heap type) | `&+ T` (owned, immutable) |
-| Struct field | `field: T` (T là value type — primitive, tuple) | `T` (no ref) |
-| Function param | `param: T` (T là heap type) | `&0 T` (borrow, read-only) |
-| Function param | `param: T` (T là value type) | `T` (no ref) |
-| Function return | inferred từ body | Owned `&+ T` nếu body construct, borrow nếu body return input |
-| `let x = expr` | inferred từ expr | Match expr type |
+| Struct field | `field: T` (T is a heap type) | `&+ T` (owned, immutable) |
+| Struct field | `field: T` (T is a value type — primitive, tuple) | `T` (no ref) |
+| Function param | `param: T` (T is a heap type) | `&0 T` (borrow, read-only) |
+| Function param | `param: T` (T is a value type) | `T` (no ref) |
+| Function return | inferred from body | Owned `&+ T` if body constructs, borrow if body returns input |
+| `let x = expr` | inferred from expr | Matches expr type |
 
 ### 9.3 — E2430 ImplicitRefInSystemNamespace
 
@@ -535,7 +535,7 @@ Cho mỗi vị trí có thể ngầm reference type (struct field, function para
 module sys.kernel.scheduler
 
 public struct Process {
-    state: ProcessState,           // E2430 — ngầm &+ trong sys:: namespace
+    state: ProcessState,           // E2430 — implicit &+ in sys:: namespace
 }
 ```
 
@@ -548,7 +548,7 @@ E2430 ImplicitRefInSystemNamespace
     --> src/sys/kernel/scheduler.tri:4:5
        |
     3  | public struct Process {
-    4  |     state: ProcessState
+    4  |     state: Process $\text{ProcessState}$
        |     ^^^^^^^^^^^^^^^^^^^ missing explicit reference form
     5  | }
     
@@ -566,15 +566,15 @@ E2430 ImplicitRefInSystemNamespace
 
 ### 9.4 — Sys/dev namespace inference exception
 
-Capability `dev::ergonomic_inference` (TBD post-v1.0) có thể restore inference cho `dev::` namespace nếu dev contributor cần. Default off.
+The `dev::ergonomic_inference` capability (TBD post-v1.0) may restore inference for the `dev::` namespace if a developer contributor requires it. Default is OFF.
 
 ---
 
 ## §10 — Drop Order & Custom Drop
 
-**Lock:** Field drop theo **reverse declaration order**. Custom destructor logic require capability `dev::custom_drop`.
+**Decision:** Fields drop in **reverse declaration order**. Custom destructor logic requires the `dev::custom_drop` capability.
 
-### 10.1 — Default drop order
+### 1 $\rightarrow$ 10.1 — Default drop order
 
 ```triet
 public struct Connection {
@@ -584,7 +584,7 @@ public struct Connection {
 }
 ```
 
-Lý do reverse: thường resource dependent later trên resource earlier (socket depends on buffer setup, log_handle independent). Drop in dependency order minimizes "drop A while A's resource depends on B that already dropped".
+Reason for reverse order: resources are often dependent on earlier resources (socket depends on buffer setup, log_handle is independent). Dropping in dependency order minimizes "dropping A while A's resource depends on B that has already dropped."
 
 ### 10.2 — Capability `dev::custom_drop`
 
@@ -606,21 +606,21 @@ public struct PciDevice {
 ```
 
 Restrictions on custom drop:
-- Cannot access fields đã được dropped by default order.
-- Cannot move self.
-- Cannot panic / return error (use Outcome ADR-0020 internal, log at boundary).
+- Cannot access fields already dropped by the default order.
+- Cannot move `self`.
+- Cannot panic / return an error (use Outcome ADR-0020 internally, log at the boundary).
 
-Chi tiết E2450 + E2451 (custom drop violations) defer implementation phase.
+Detailed E2450 + E2451 (custom drop violations) deferred to the implementation phase.
 
-### 10.3 — Interaction với move
+### 10.3 — Interaction with move
 
 ```triet
 let conn: &+ Connection = open_connection()
 take(conn)                       // moved; on_drop runs INSIDE take() when conn goes out of scope there
-print(conn.socket)               // E2420 — not E2410 — chỉ ra "moved" không phải "frozen"
+print(conn.socket)               // E2420 — not E2410 — indicates "moved" not "frozen"
 ```
 
-Move transfers drop responsibility với value. Custom drop chạy ở scope cuối cùng owns the value.
+A move transfers drop responsibility along with the value. Custom drop runs in the final scope that owns the value.
 
 ---
 
@@ -630,7 +630,7 @@ Move transfers drop responsibility với value. Custom drop chạy ở scope cu�
 
 ```triet
 function uppercase_first(s: &0 String) -> &0 String {
-    return s.to_uppercase().first_word()   // Compiler suy ra return tie to `s`
+    return s.to_uppercase().first_word()   // Compiler infers return ties to `s`
 }
 ```
 
@@ -644,21 +644,21 @@ public struct Lexer {
     cursor: Integer,
     
     public function peek(self: &0 Lexer) -> &0 Token {
-        // Return tie to self
+        // Return ties to self
     }
 }
 ```
 
 ✅ Works. Elision rule 2.
 
-### 11.3 — Edge case (5%): multi-input → E2400
+### 11.3 — Edge case (5%): multi-input $\rightarrow$ E2400
 
 ```triet
 function pick_longer(a: &0 String, b: &0 String) -> &0 String { /* ... */ }
 // E2400 — refactor needed
 ```
 
-Tác giả refactor theo suggestion (a) return owned, hoặc (b) wrap inputs.
+The author refactors using suggestion (a) to return owned, or (b) to wrap inputs.
 
 ### 11.4 — NLL accepts what Rust 2015 rejected
 
@@ -666,29 +666,29 @@ Tác giả refactor theo suggestion (a) return owned, hoặc (b) wrap inputs.
 let mutable v = make_vector()
 let r = &0 v
 let len = r.length          // last use of r
-v.push(x)                    // OK với NLL
+v.push(x)                    // OK with NLL
 ```
 
-✅ NLL accept. Lexical reject. Triết = NLL.
+✅ NLL accepts. Lexical rejects. Triet = NLL.
 
-### 11.5 — Borrow exclusivity violation → E2440
+### 11.5 — Borrow exclusivity violation $\rightarrow$ E2440
 
 ```triet
 let mutable v = make_vector()
 let r1 = &0 v
-let r2 = &0 mutable v        // E2440 — conflict với r1 still active
+let r2 = &0 mutable v        // E2440 — conflicts with r1 still being active
 print(r1.length)
 ```
 
-### 11.6 — Move semantics → E2420
+### 11.6 — Move semantics $\rightarrow$ E2420
 
 ```triet
 let alice: &+ User = create_user("Alice")
 take(alice)                  // moved
-alice.name                   // E2420
+alice.name                   // E $\text{2420}$
 ```
 
-### 11.7 — Cycle attempt → E2421
+### 11.7 — Cycle attempt $\rightarrow$ E2421
 
 ```triet
 let a: &+ A = ...
@@ -698,7 +698,7 @@ b.a_field = a                // E2420 — b is moved
 // Or: a.b_field.a_field = a // E2421 — self-ownership paradox
 ```
 
-### 11.8 — Constructibility termination → E2422
+### 11.8 — Constructibility termination $\rightarrow$ E2422
 
 ```triet
 public struct Node {
@@ -706,7 +706,7 @@ public struct Node {
 }
 ```
 
-### 11.9 — Mutability violation → E2410
+### 11.9 — Mutability violation $\rightarrow$ E2410
 
 ```triet
 let owner: &+ User = create_user("Alice")
@@ -725,7 +725,7 @@ public struct NetworkPacket {
 }
 ```
 
-✅ Capability gate documents intent. Pattern is offset-based, no actual `&0` stored.
+✅ Capability gate documents intent. The pattern is offset-based, with no actual `&0` stored.
 
 ---
 
@@ -733,38 +733,38 @@ public struct NetworkPacket {
 
 | Version | Scope |
 |---|---|
-| **v0.8** | Parser tokens `&+`, `&0`, `&-`, `mutable`. AST nodes. No enforcement. Examples typecheck với type system relaxed. |
+| **v0.8** | Parser tokens `&+`, `&0`, `&-`, `mutable`. AST nodes. No enforcement. Examples typecheck with a relaxed type system. |
 | **v0.9** | Simple enforcement: E2420 use-after-move (linear `&+` tracking). E2422 constructibility termination. E2410/E2411 mutability frozen. E2430 namespace inference. |
 | **v0.10** | NLL borrow exclusivity (E2440). Lifetime elision 3 rules (E2400). E2402 borrow in struct field. |
 | **v0.11** | `&-` upgrade tracking (E2403). Default inference per namespace fully working. Drop order. |
 | **v1.0** | Capability `dev::custom_drop` (E2450, E2451). All E2400–E2459 stable. Self-hosting compiler uses borrow check. |
 | **post-v1.0** | Evaluate `dev::explicit_region` need. Evaluate Polonius adoption. |
 
-Self-hosting compiler bootstrap chain (v0.7) hiện chưa expose references trong stdlib — so các sub-task v0.8+ port lexer/parser/typecheck sang Triết-in-Triết sẽ là **first real client** của borrow checker. Bootstrap loop là gate functional cho từng version.
+The self-hosting compiler bootstrap chain (v0.7) does not yet expose references in the stdlib — therefore, the sub-tasks for v0.8+ to port the lexer/parser/typecheck to "Triet-in-Triet" will be the **first real clients** of the borrow checker. The bootstrap loop acts as the functional gate for each version.
 
 ---
 
-## §13 — Out of scope
+ $\text{13. Out of Scope}$
 
-- **Polonius adoption** — post-v1.0, evaluate evidence-based.
-- **Two-phase borrows** — defer until concrete pattern surfaces.
-- **Generic lifetime variance** — không có annotation → không có variance.
-- **Async/await self-borrow** — defer cho concurrency runtime ADR (post-v0.8).
-- **Trait object lifetimes** — defer cho dynamic dispatch ADR.
-- **Closure capture rules** — defer cho closure ADR (planned post-v0.8).
-- **FFI memory ownership** — defer cho FFI ADR.
-- **Reborrow patterns** (`&0 mutable T` → `&0 T` temporary downgrade) — implementation detail, decide khi build §2.3 live-range analysis.
+- **Polonius adoption** — post-v1.0, evaluate based on evidence.
+- **Two-phase borrows** — defer until concrete patterns surface.
+- **Generic lifetime variance** — no annotation $\rightarrow$ no variance.
+- **Async/await self-borrow** — defer to the concurrency runtime ADR (post-v0.8).
+- **Trait object lifetimes** — defer to the dynamic dispatch ADR.
+- **Closure capture rules** — defer to the closure ADR (planned post-v0.8).
+- **FFI memory ownership** — defer to the FFI ADR.
+- **Reborrow patterns** (`&0 mutable T` $\rightarrow$ `&0 T` temporary downgrade) — implementation detail, to be decided when building §2.3 live-range analysis.
 
 ---
 
-## §14 — Tham chiếu
+## §14 — References
 
 - [ADR-0022 — Trit-Balanced Ownership](0022-trit-balanced-ownership.md) (parent — locks 5 reference forms, this ADR enforces them)
 - [ADR-0026 — Actor Boundary & Send Rules](0026-actor-boundary-send-rules.md) (sibling, TODO — Send derivation depends on §7 frozen invariant)
-- [ADR-0001 — Nullable memory layout](0001-nullable-memory-layout.md) (`T?` reuse cho `.upgrade()` return)
+- [ADR-0001 — Nullable memory layout](0001-nullable-memory-layout.md) (`T?` reuse for `.upgrade()` return)
 - [ADR-0018 — Capability loader semantics](0018-capability-loader-semantics.md) (capability declaration model)
 - [ADR-0020 — Outcome error handling](0020-outcome-error-handling.md) (`T?` 3-state semantic)
-- [ADR-0021 — Trilean refinement](0021-trilean-refinement.md) (error message + refactor suggest pattern reuse cho E2400 series)
-- [SPEC §10 — Memory model](../../SPEC.md) (sẽ rewrite đồng bộ khi ADR-0022 + ADR-0025 + ADR-0026 cùng land)
-- [ROADMAP §v0.8](../../ROADMAP.md) (concurrency phase — depends on this ADR land first)
-- [CLAUDE.md — Error code namespace](../../CLAUDE.md) (cập nhật E24XX `triet::borrow::*` khi ADR land)
+- [ADR-0021 — Trilean refinement](0021-trilean-refinement.md) (error message + refactor suggestion pattern reuse for E2400 series)
+- [SPEC §10 — Memory model](../../SPEC.md) (will be rewritten in sync when ADR-0022 + ADR-0025 + ADR-0026 all land)
+- [ROADMAP §v0.8](../../ROADMAP.md) (concurrency phase — depends on this ADR landing first)
+- [CLAUDE.md — Error code namespace](../../CLAUDE.md) (update E24XX `triet::borrow::*` when ADR lands)

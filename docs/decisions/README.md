@@ -1,18 +1,18 @@
 # ADR Index — chronological
 
-Architectural Decision Records for Triết. All decisions authored and approved
-by the Language Creator & Architect **Giang Hoàng** ([@gianglaodai](https://github.com/gianglaodai)).
+Architectural Decision Records for Triet. All decisions authored and approved
+by the Language Creator & Architect **Giang Hoang** ([@gianglaodai](https://github.com/gianglaodai)).
 Each ADR captures one significant choice — *why* this design over alternatives —
 so future readers (including AI assistants) can reconstruct the reasoning
 without spelunking through git history.
 
-ADRs are immutable once "Quyết định" status is reached. To change a
+ADRs are immutable once "Decision" status is reached. To change a
 prior decision, write a new ADR that supersedes it.
 
-> **Looking for a rule on X?** Use [`by-topic.md`](by-topic.md) — same
-> 36 ADRs grouped by topic (language surface, type system, ownership,
+> **Looking for a rule on X?** Use [`by-topic.md`](by-topic.md) — ADRs
+> grouped by topic (language surface, type system, ownership,
 > module/package, IR/wire format, capability, compiler internals,
-> cross-cutting). This file ordered chronologically by phase.
+> cross-cutting). This file is ordered chronologically by phase.
 
 ## By phase
 
@@ -63,7 +63,7 @@ prior decision, write a new ADR that supersedes it.
 
 | ADR | Title | Status |
 |---|---|---|
-| [0014](0014-hash-scheme-refinement.md) | Hash scheme refinement (3-cấp hash tree: term + module + package, `abi_version` 1 → 2) | Locked |
+| [0014](0014-hash-scheme-refinement.md) | Hash scheme refinement (3-level hash tree: term + module + package, `abi_version` 1 → 2) | Locked |
 | [0015](0015-package-store-layout.md) | Package store layout (`~/.triet/store/`, atomic install, mark-and-sweep GC) — *+ v0.5.x.review Addendum: resolver origin 3-state + GC conservative-on-corruption* | Locked |
 
 ### v0.6 — Capability System
@@ -82,25 +82,25 @@ prior decision, write a new ADR that supersedes it.
 | [0020](0020-outcome-error-handling.md) | Outcome error handling (`T~E` 2-state / `T?~E` 3-state — trit-encoded fallibility, `~+`/`~0`/`~-` constructors, `~?` propagate + `~:` default operators, verbose `.unwrap_value(message)` / `.unwrap_error(message)` methods, `.triv` v4 → v5 patch bump, Trit::Zero reserved for v0.8 async pending, std.result coexistence) | Locked |
 | [0021](0021-trilean-refinement.md) | Compile-time `Trilean!` refinement for strict `if` (typecheck-only single-bit refinement on `Type::Trilean`, E1033 `PossiblyUnknownCondition` for plain `if` on possibly-Unknown cond, E1034 `TrileanReturnNotRefined`, `.assume_known(message)` returns `Trilean!`, no IR / wire-format / VM changes — refinement erased at lowering, aligns implementation with SPEC §7.1.1) | Locked |
 | [0023](0023-lowerer-ssa-struct-tracking.md) | Lowerer SSA struct-tracking — unified `ValueKind` enum (Struct / Outcome / Nullable / Other) replaces 4 ad-hoc HashMap tracking patterns + ~13 per-construct propagation rules with a single `value_kinds: HashMap<ValueId, ValueKind>` + one recursive `type_expr_to_value_kind` helper. Lowerer crate only — no wire format / VM / typecheck / SPEC impact. Closes v0.7 review finding "patch-stack pattern violating VISION §6 *Refuse over guess*". | Locked |
-| [0024](0024-khi-dao-identity-naming.md) | Khí + Đạo identity naming (Đạo Đức Kinh §28 phác tán tắc vi khí + §42 tam sinh vạn vật) — rename 5 Rust-inherited user-facing surface terms: path keyword `crate` → `khi`, compiled artifact `.khi` → `.khi`, CLI binary `triet` → `dao`, manifest `dao.package` → `dao.package`, lockfile `dao.lock` → `dao.lock`. Source `.tri` + IR `.triv` + language name "Triết" giữ. Hard cutover, 5-stage commit series ship trước v0.7.10 mở. Justify Vietnamese-rooted philosophical depth + direct ternary tie via Đạo §42. | Locked |
+| [0024](0024-khi-dao-identity-naming.md) | Khi + Dao identity naming (Dao De Jing §28 simplicity scattered becomes vessels + §42 the Way generates One, One generates Two, Two generates Three, Three generates the myriad things) — rename 5 Rust-inherited user-facing surface terms: path keyword `crate` → `khi`, compiled artifact `.khi` → `.khi`, CLI binary `triet` → `dao`, manifest `dao.package` → `dao.package`, lockfile `dao.lock` → `dao.lock`. Source `.tri` + IR `.triv` + language name "Triet" retained. Hard cutover, 5-stage commit series shipped before v0.7.10. Justifies Vietnamese-rooted philosophical depth + direct ternary tie via Dao §42. | Locked |
 
 ### v0.8 — Ownership Foundation + Concurrency Primitives (BYOS)
 
 | ADR | Title | Status |
 |---|---|---|
-| [0022](0022-trit-balanced-ownership.md) | Trit-balanced ownership — S6 5-form reference (`&+` strong owner / `&0` neutral borrow / `&-` weak observer / bare `&` / `owned` transfer), cycle-balance acyclic invariant, capability-as-unsafe for `dev.self_ref` / `dev.custom_drop`. Foundation cho v0.8 Concurrency Model | Locked |
-| [0025](0025-borrow-checker-rules.md) | Borrow checker rules — compile-time enforcement algorithm cho 5 reference forms từ ADR-0022 §2; NLL + 3-rule lifetime elision + no-annotation policy; **E24XX** namespace (E2400 lifetime inference / E2410 mutability / E2420 move + use-after-move / E2430 namespace inference / E2440 NLL exclusivity); v0.8 ships skeleton diagnostics, full NLL enforcement defer v0.9 | Locked |
-| [0026](0026-actor-boundary-send-rules.md) | Concurrency Primitives & Send Rules — **BYOS (Bring Your Own Scheduler)** per 2026-05-26 v1→v2 pivot. Triết core provides Send derivation (13 type categories) + Atomic primitives + capability gates; scheduler stdlib (v0.10) or external (kernel-mode). **Refuses** `actor`/`spawn`/`receive`/`send`/`async`/`await` as keywords. **E25XX** namespace (`triet::actor::E2500/E2510/E2520`). *+ 2026-05-29 Addendum: §4 placeholder refined by ADR-0028* | Locked v2 |
-| [0027](0027-diagnostic-format-standard.md) | Diagnostic format standard (AI-first) — language-wide canonical format cho mọi compiler/runtime diagnostic. Header `EXXXX ErrorName` + body + optional span block + `[Fix N]` numbered fix blocks với imperative verbs (Change/Wrap/Use/Add/Replace/Move X to Y). Pure ASCII, no diff `-/+`. Retroactive scope: ADR-0020 + ADR-0025 already comply | Locked |
+| [0022](0022-trit-balanced-ownership.md) | Trit-balanced ownership — S6 5-form reference family (`&+` strong owner / `&0` neutral borrow / `&-` weak observer / bare `&` / `owned` transfer), cycle-balance acyclic invariant, capability-as-unsafe for `dev.self_ref` / `dev.custom_drop`. Foundation for v0.8 Concurrency Model | Locked |
+| [0025](0025-borrow-checker-rules.md) | Borrow checker rules — compile-time enforcement algorithm for 5 reference forms from ADR-0022 §2; NLL + 3-rule lifetime elision + no-annotation policy; **E24XX** namespace (E2400 lifetime inference / E2410 mutability / E2420 move + use-after-move / E2430 namespace inference / E2440 NLL exclusivity); v0.8 ships skeleton diagnostics, full NLL enforcement deferred to v0.9 | Locked |
+| [0026](0026-actor-boundary-send-rules.md) | Concurrency Primitives & Send Rules — **BYOS (Bring Your Own Scheduler)** per 2026-05-26 v1→v2 pivot. Triet core provides Send derivation (13 type categories) + Atomic primitives + capability gates; scheduler in stdlib (v0.10) or external (kernel-mode). **Refuses** `actor`/`spawn`/`receive`/`send`/`async`/`await` as keywords. **E25XX** namespace (`triet::actor::E2500/E2510/E2520`). *+ 2026-05-29 Addendum: §4 placeholder refined by ADR-0028* | Locked v2 |
+| [0027](0027-diagnostic-format-standard.md) | Diagnostic format standard (AI-first) — language-wide canonical format for all compiler/runtime diagnostics. Header `EXXXX ErrorName` + body + optional span block + `[Fix N]` numbered fix blocks with imperative verbs (Change/Wrap/Use/Add/Replace/Move X to Y). Pure ASCII, no diff `-/+`. Retroactive scope: ADR-0020 + ADR-0025 already comply | Locked |
 
 ### v0.9 — Wide-phased: JIT + Borrow Enforcement + Atomic + Self-host policy
 
 | ADR | Title | Status |
 |---|---|---|
-| [0028](0028-atomic-primitive.md) | Atomic primitive design — refines ADR-0026 v2 §4 placeholder. Locks: Rust-shim builtin pattern (IDs 27-39, `.triv` v5→v6), AtomicValue marker trait, 3-level Ordering enum (Relaxed/Synchronized/Strict) mapped vào Trit polarity, full API (load/store/swap/compare_exchange + fetch_add/sub for Tryte/Integer + bitwise ops for Integer), interior mutability via `&+ Atomic<T>` (fixes ADR-0026 v2 §4.3 `&+ mutable` contradiction), conservative E2530 fire conditions. v0.9.x.atomic implementation depends on this lock. *+ 2026-05-29 Addendum: fetch_and/or/xor renamed → fetch_bitwise_and/or/xor (explicit binary-semantic signal)* | Locked |
+| [0028](0028-atomic-primitive.md) | Atomic primitive design — refines ADR-0026 v2 §4 placeholder. Locks: Rust-shim builtin pattern (IDs 27-39, `.triv` v5→v6), AtomicValue marker trait, 3-level Ordering enum (Relaxed/Synchronized/Strict) mapped to Trit polarity, full API (load/store/swap/compare_exchange + fetch_add/sub for Tryte/Integer + bitwise ops for Integer), interior mutability via `&+ Atomic<T>` (fixes ADR-0026 v2 §4.3 `&+ mutable` contradiction), conservative E2530 fire conditions. v0.9.x.atomic implementation depends on this lock. *+ 2026-05-29 Addendum: fetch_and/or/xor renamed → fetch_bitwise_and/or/xor (explicit binary-semantic signal)* | Locked |
 | [0029](0029-self-host-port-policy.md) | Self-host port policy — codifies v0.8 retrospective lesson (port lag recurring pattern). Locks: 3-layer scope (Layer A language surface MANDATORY lockstep, Layer B internal impl defer-OK, Layer C runtime independent), mandatory same-phase port (no discretion), 3-layer detection (smoke tests + release-check.sh count-based + TODO checklist), ADR template addition (Self-host port plan field), Stage 2/3 byte-identical gate lift chained to JIT (ADR-0030) | Locked |
-| [0030](0030-jit-cranelift-integration.md) | JIT integration (Cranelift backend) — refines ROADMAP §v0.9 deliverables. Locks: 3-tier model (Interpreter→VM→JIT, VM persists for cold/warmup/debug), call-count ≥ 100 trigger threshold (Hotspot JVM convention), Cranelift backend với register-SSA 1:1 mapping, BrTrilean → 2 cmp + 2 brnz per ADR-0010 backend, AOT cache `~/.triet/store/jit/{target_triple}/{impl_hash}/`, synchronous JIT v0.9 (background defer v1.0+), Stage 2 ≡ Stage 3 byte-identical lift chained to perf gate. Self-host port plan: Layer C runtime, no same-phase port required. *+ 2026-05-29 Addendum: dev.jit_codegen capability (ambient default usr.*, deny-fallback to VM-only for kernel) + Backend N tier naming realign với VISION §4.2 + `--no-jit` flag + real-time disclaimer* | Locked |
-| [0031](0031-borrow-expression-syntax.md) | Borrow expression syntax — closes SPEC §10 v0.7 warning ("runtime chưa expose references") + unblocks ADR-0028 §6 example. Locks: prefix `&FORM operand` syntax (5 forms total `&+`/`&+ mutable`/`&0`/`&0 mutable`/`&-` — no bare `&` form), operand grammar IDENT + field-access only (index/compound expressions defer per §10.3 backlog — `vec[i]` index syntax doesn't exist in Triết yet), prefix unary precedence tier (right-binding, higher than binary ops, lower than postfix `.`/`()`), Type::Reference(form, T) typecheck emission, lowerer passthrough (refs erase at runtime per ADR-0026 v2 §7). **Borrow check enforcement split (Phương án A 2026-05-30 author "chậm mà chắc"):** E2420 UseAfterMove SHIPS v0.9 (.7d sub-task — minimum to prevent demo from teaching wrong semantics); E2440 NLL + E2400 lifetime elision + E2403 `&-` upgrade defer v0.10 per §10.1 backlog. Self-host port plan: Layer A lockstep mandatory per ADR-0029 §3 — `compiler/parser/parser.tri` mirrors Rust impl same-phase. §10 captures full v0.10 backlog (6 items: borrow enforcement, multi-thread atomic completion, operand scope expansion, Pointer E2530, CLAUDE.md drift, self-host typecheck port). Implementation sub-phase plan §9 (.7a ADR / .7b Rust impl / .7c self-host port / .7d E2420 enforcement / .7e demo single-call + e2e). | Locked |
+| [0030](0030-jit-cranelift-integration.md) | JIT integration (Cranelift backend) — refines ROADMAP §v0.9 deliverables. Locks: 3-tier model (Interpreter→VM→JIT, VM persists for cold/warmup/debug), call-count ≥ 100 trigger threshold (Hotspot JVM convention), Cranelift backend with register-SSA 1:1 mapping, BrTrilean → 2 cmp + 2 brnz per ADR-0010 backend, AOT cache `~/.triet/store/jit/{target_triple}/{impl_hash}/`, synchronous JIT v0.9 (background deferred to v1.0+), Stage 2 ≡ Stage 3 byte-identical lift chained to perf gate. Self-host port plan: Layer C runtime, no same-phase port required. *+ 2026-05-29 Addendum: dev.jit_codegen capability (ambient default usr.*, deny-fallback to VM-only for kernel) + Backend N tier naming realign with VISION §4.2 + `--no-jit` flag + real-time disclaimer* | Locked |
+| [0031](0031-borrow-expression-syntax.md) | Borrow expression syntax — closes SPEC §10 v0.7 warning ("runtime not yet exposing references") + unblocks ADR-0028 §6 example. Locks: prefix `&FORM operand` syntax (5 forms total `&+`/`&+ mutable`/`&0`/`&0 mutable`/`&-` — no bare `&` form), operand grammar IDENT + field-access only (index/compound expressions deferred per §10.3 backlog — `vec[i]` index syntax doesn't exist in Triet yet), prefix unary precedence tier (right-binding, higher than binary ops, lower than postfix `.`/`()`), Type::Reference(form, T) typecheck emission, lowerer passthrough (refs erase at runtime per ADR-0026 v2 §7). **Borrow check enforcement split (Option A 2026-05-30 author "slow and steady"):** E2420 UseAfterMove SHIPS v0.9 (.7d sub-task — minimum to prevent demo from teaching wrong semantics); E2440 NLL + E2400 lifetime elision + E2403 `&-` upgrade deferred to v0.10 per §10.1 backlog. Self-host port plan: Layer A lockstep mandatory per ADR-0029 §3 — `compiler/parser/parser.tri` mirrors Rust impl same-phase. §10 captures full v0.10 backlog (6 items: borrow enforcement, multi-thread atomic completion, operand scope expansion, Pointer E2530, CLAUDE.md drift, self-host typecheck port). Implementation sub-phase plan §9 (.7a ADR / .7b Rust impl / .7c self-host port / .7d E2420 enforcement / .7e demo single-call + e2e). | Locked |
 
 ### v0.10 — Full builtin shim + AOT cache + NLL enforcement + multi-thread Atomic
 
@@ -108,45 +108,45 @@ prior decision, write a new ADR that supersedes it.
 |---|---|---|
 | [0032](0032-builtin-shim-abi.md) | Builtin shim ABI — locks 5 design constraints from ADR-0030 §12.2 so v0.10.x.jit.1 (framework) + .2 (43 impls) ship against settled design. §1 Hybrid `RuntimeValue` ABI (primitives unboxed via Cranelift native `i8`/`i16`/`i64`/`i128`; composites Rc-boxed reusing `Rc<RuntimeValue>` shape from ADR-0028 §3). §2 `Rc::into_raw` on box-out + `__triet_drop_arc` shim at SSA last-use (lowerer consults ValueKind per ADR-0023). §3 Capability gate compile-time hoist via frozen `CapabilitySet` snapshot — refuse-to-emit on denied namespace; inherits ADR-0017 program-load resolution invariant. §4 `extern "C-unwind"` ABI + thread-local `CURRENT_VM_ERROR` slot + dispatcher `catch_unwind`. §5 `unsafe_code = "deny"` override scope is `triet-jit` crate ONLY (workspace `forbid` preserved elsewhere; mandatory `// SAFETY:` per block). §6 Static `SHIM_TABLE` registry + `__triet_*` symbol prefix discipline + `JITBuilder::symbol()` wiring. §7 3-layer test gates (framework smoke + 43-builtin parity + ABI proptest). §8 Self-host port: Layer C runtime, no same-phase port. First v0.10 ADR. | Locked |
 | [0033](0033-aot-cache-cranelift-object.md) | AOT cache via `cranelift-object` — locks 5 design constraints from ADR-0030 §13.4 + backend-hybrid shape so v0.10.x.jit.3 ships against settled design. §1 Backend hybrid: keep `cranelift-jit` for Path B fresh compile, add `cranelift-object` for Path A persistence emission (one IR translator, two output paths). §2 Version pinning via `AotCacheManifest { cranelift_version, shim_abi_version, target_triple }` — mismatch silent-fallback to Path B + overwrite. §3 Direct `SHIM_TABLE`/`LIBCALL_TABLE` symbol resolution at load (NOT `libloading`/`dlsym`) — reuses ADR-0032 §6 registry. §4 GC integration: `jit/{triple}/{impl_hash}/` swept against `live_mods` set; new `GcReport.swept_jit_dirs`; conservative-on-corruption rule extended. §5 Per-`target_triple` path separation (no cross-arch loading attempted). §6 Determinism preserved — cache state is runtime-state, not IR-contract; bootstrap byte-identical gate uses `.khi` cmp not machine code. §7 Synchronous write on Path B success + atomic-install (ADR-0015 §3 pattern). §8 Silent-fallback recovery on any load failure. §9 4 test categories (round-trip + version mismatch + GC sweep + cross-arch isolation). Unblocks v0.10.x.jit.3 + chained gate-lift v0.10.x.jit.4 (Stage 2 ≡ Stage 3 byte-identical). | Locked |
-| [0034](0034-jit-aggregate-coverage.md) | JIT aggregate coverage via delegate-to-VM shims — closes the JIT-coverage debt a v0.11.x.jit.4 audit surfaced (`compiler/main.tri`: only 3.7% of functions JIT; 96.3% tier down on struct/enum/Outcome/Nullable/String). Author "Hướng A: stop deferring." §1 Aggregate IR opcodes (FieldGet/FieldSet/EnumNew/EnumTag/EnumPayload/Outcome*/Null*) lower to `__triet_*` shims delegating to extracted `pub` VM helpers (generalizes ADR-0032 §6 — divergence-free by construction). §2 `StructNew` variadic → array-ptr+len ABI (also unblocks deferred f-string varargs). §3 String/Null constants → data section + `R_X86_64_64` loader relocation (extends ADR-0033 loader + `SUPPORTED_RELOC_TYPES`, same constraint-4 regimen). §4 Phi → Cranelift block params. §5 lift single-block shim restriction (ADR-0032 jit.2b-i). §6 fix 10 translator panics → clean tier-down. §7 delegate-to-VM for *coverage* now, native aggregate codegen deferred post-v0.11. §8 gate lift needs coverage+warm-cache (compile-cost); ≥10× bench targets JIT-friendly workload (execution). §9 iterative re-measured sub-task sequence (audit = burndown metric). Unblocks the bootstrap byte-identical gate lift. | Locked |
-| [0035](0035-jit-boxed-refcount-discipline.md) | JIT boxed-value refcount discipline — closes a latent-double-free class surfaced by agg.cross-call (a `Ret` returning a borrowed box handed the borrowed `Rc` ptr to the caller as owned → caller + owner both drop). One rule: *a `Ret` transfers exactly one owned ref; clone any borrowed return to mint it.* §1 clone-on-return both modes (`__triet_clone_arc` +1; boxed DONE `b90dfed`, unboxed TODO — `TypeTag`-guided so only composite returns clone). §2 cross-mode composite result cloned in the boxed caller (local uniform rule, bounded leak vs per-callee ownership tracking). §3 explicit bounded leak tolerance (one box per occurrence, cold/proportional paths; oracle tier, not production — never trade a leak for a double-free; leak sites must be countable). §4 records the `TypeTag::Unit` ambiguity (AST nodes = structs = `Unit`) that caps cross-mode coverage until an IR-shape change (out of scope). Rejects per-callee escape analysis + GC for v0.11. Extends ADR-0032 §2 lifetime rule; governs ADR-0034 Bậc A boxed values. | Locked |
+| [0034](0034-jit-aggregate-coverage.md) | JIT aggregate coverage via delegate-to-VM shims — closes the JIT-coverage debt a v0.11.x.jit.4 audit surfaced (`compiler/main.tri`: only 3.7% of functions JIT; 96.3% tier down on struct/enum/Outcome/Nullable/String). Author "Direction A: stop deferring." §1 Aggregate IR opcodes (FieldGet/FieldSet/EnumNew/EnumTag/EnumPayload/Outcome*/Null*) lower to `__triet_*` shims delegating to extracted `pub` VM helpers (generalizes ADR-0032 §6 — divergence-free by construction). §2 `StructNew` variadic → array-ptr+len ABI (also unblocks deferred f-string varargs). §3 String/Null constants → data section + `R_X86_64_64` loader relocation (extends ADR-0033 loader + `SUPPORTED_RELOC_TYPES`, same constraint-4 regimen). §4 Phi → Cranelift block params. §5 lift single-block shim restriction (ADR-0032 jit.2b-i). §6 fix 10 translator panics → clean tier-down. §7 delegate-to-VM for *coverage* now, native aggregate codegen deferred post-v0.11. §8 gate lift needs coverage+warm-cache (compile-cost); ≥10× bench targets JIT-friendly workload (execution). §9 iterative re-measured sub-task sequence (audit = burndown metric). Unblocks the bootstrap byte-identical gate lift. | Locked |
+| [0035](0035-jit-boxed-refcount-discipline.md) | JIT boxed-value refcount discipline — closes a latent-double-free class surfaced by agg.cross-call (a `Ret` returning a borrowed box handed the borrowed `Rc` ptr to the caller as owned → caller + owner both drop). One rule: *a `Ret` transfers exactly one owned ref; clone any borrowed return to mint it.* §1 clone-on-return both modes (`__triet_clone_arc` +1; boxed DONE `b90dfed`, unboxed TODO — `TypeTag`-guided so only composite returns clone). §2 cross-mode composite result cloned in the boxed caller (local uniform rule, bounded leak vs per-callee ownership tracking). §3 explicit bounded leak tolerance (one box per occurrence, cold/proportional paths; oracle tier, not production — never trade a leak for a double-free; leak sites must be countable). §4 records the `TypeTag::Unit` ambiguity (AST nodes = structs = `Unit`) that caps cross-mode coverage until an IR-shape change (out of scope). Rejects per-callee escape analysis + GC for v0.11. Extends ADR-0032 §2 lifetime rule; governs ADR-0034 Tier A boxed values. | Locked |
 
-### v0.11 — JIT aggregate coverage → bootstrap gate lift (Hướng A)
+### v0.11 — JIT aggregate coverage → bootstrap gate lift (Direction A)
 
 | ADR | Title | Status |
 |---|---|---|
 | [0036](0036-typetag-opaque-aggregate.md) | `TypeTag::Opaque` — disambiguating user-defined aggregates from true `Unit` (disc 12, .triv version 7 → 8, self-host lockstep, resolves Unit ambiguity to unblock 410 cross-mode tier-downs) | Locked |
 
-### Rewrite backend (2026-06-04+ — compiler MỚI; mọi ADR hai-chữ-ký Mentor O + Mentor G)
+### Rewrite backend (2026-06-04+ — NEW compiler; all ADRs dual-signed by Mentor O + Mentor G)
 
-> Mốc: backend v0.2-v0.10 bị xóa 2026-06-04, dựng lại từ MIR+NLL+Cranelift.
-> ADR 0001-0036 ở trên thuộc compiler cũ (xem `docs/ARCHIVE.md` §2 cho tag
-> LIVE/HISTORICAL từng cái). Từ 0037 trở đi là quyết định của compiler hiện hành.
+> Milestone: v0.2-v0.10 backend deleted 2026-06-04, rebuilt from scratch with MIR+NLL+Cranelift.
+> ADRs 0001-0036 above belong to legacy compiler (see `docs/ARCHIVE.md` §2 for
+> LIVE/HISTORICAL tags for each). From 0037 onward are decisions of the current compiler.
 
 | ADR | Title | Status |
 |---|---|---|
-| [0037](0037-enum-tagged-union-layout.md) | Enum tagged-union layout — discriminant + payload StackSlot (Bậc A) | Locked |
-| [0038](0038-comparable-trait-deferred.md) | Comparable trait — `compare() -> Trit`, defer chờ Trait system | Deferred-locked |
-| [0039](0039-nullable-operator-family.md) | Nullable operator family — `?+>`/`?0>`/`?->`, defer implementation | Locked |
+| [0037](0037-enum-layout.md) | Enum tagged-union layout — discriminant + payload StackSlot (Tier A) | Locked |
+| [0038](0038-comparable-trait-deferred.md) | Comparable trait — `compare() -> Trit`, deferred pending Trait system | Deferred-locked |
+| [0039](0039-nullable-operator-family.md) | Nullable operator family — `?+>`/`?0>`/`?->`, deferred implementation | Locked |
 | [0040](0040-heap-aggregate-layout.md) | Heap aggregate layout — String/Vector shims, M1-M4 zeroing-on-move | Locked |
-| [0041](0041-nullable-representation-bac-a.md) | Nullable `T?` Bậc A — PA-3c `i64::MIN`, trap-on-0; §12 match 2-arm | Locked |
-| [0042](0042-ownership-across-boundary.md) | B7-lift — move-only qua user-fn, `Deinit` tombstone, M3+ | Locked |
+| [0041](0041-nullable-representation-bac-a.md) | Nullable `T?` Tier A — Option 3c `i64::MIN`, trap-on-0; §12 match 2-arm | Locked |
+| [0042](0042-ownership-across-boundary.md) | B7-lift — move-only across user-fn, `Deinit` tombstone, M3+ | Locked |
 | [0043](0043-hashmap-representation.md) | HashMap — open addressing 24B slot, insert-or-update, D2 | Locked |
-| [0044](0044-arithmetic-range-enforcement.md) | Arithmetic range enforcement — trap-on-overflow 2 họ signal, smulhi, E1036 | Locked |
+| [0044](0044-arithmetic-range-enforcement.md) | Arithmetic range enforcement — trap-on-overflow 2 signal families, smulhi, E1036 | Locked |
 
 ## How to read an ADR
 
 Every ADR follows the same shape:
 
-1. **Trạng thái** — Locked / Informational / Superseded.
+1. **Status** — Locked / Informational / Superseded.
 2. **Issue** — what problem forced the decision now.
-3. **Quyết định** — the actual choice, in compact form.
-4. **Hệ quả** — what becomes possible / constrained / costly.
-5. **Không làm** — alternatives explicitly rejected and why.
+3. **Decision** — the actual choice, in compact form.
+4. **Consequences** — what becomes possible / constrained / costly.
+5. **Alternatives Considered** — alternatives explicitly rejected and why.
 6. **Prior art** — what we copied vs. invented.
-7. **Tham chiếu** — links to SPEC sections, sibling ADRs, external papers.
+7. **References** — links to SPEC sections, sibling ADRs, external papers.
 
-Search tip: `grep -rn "Quyết định" docs/decisions/` lists every
+Search tip: `grep -rn "## Decision" docs/decisions/` lists every
 decision summary in <100 lines total.
 
 ## How to write a new ADR
@@ -154,7 +154,7 @@ decision summary in <100 lines total.
 1. Pick the next number (`ls docs/decisions/ | tail -3`).
 2. Copy the structure from a recent locked ADR (e.g. ADR-0011).
 3. State the issue as a question; let the decision be the answer.
-4. List alternatives in "Không làm" — silent rejection is worse
+4. List alternatives in "Alternatives Considered" — silent rejection is worse
    than explicit rejection because it leaves no record.
 5. Commit with `docs(<phase>): ADR-NNNN — <title>` to keep the git
    log scannable.

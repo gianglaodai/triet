@@ -1,81 +1,81 @@
-# ADR-0063 — Borrowck: point-level loan liveness at Drop (UAF qua block-merge)
+# ADR-0063 — Borrowck: Point-Level Loan Liveness at Drop (UAF Across Block-Merge)
 
-- **Status:** 🔒 LOCKED — G ký duyệt 2026-06-19. Khởi thảo Mentor O 2026-06-19, recon empirical (3 phương án implement-thử-đo-revert).
+- **Status:** 🔒 LOCKED — G sign-off 2026-06-19. Drafted by Mentor O 2026-06-19, empirical recon (3 candidate implementations measured and reverted).
 - **Date:** 2026-06-19
-- **Khởi thảo:** Mentor O (deep-recon Bug A heap-nullable → đào ra UAF pre-existing ở Expr::If/match reference-arm).
-- **Liên quan:** [ADR-0046](0046-propagated-loan-liveness.md) (PropagatedLoan return-borrow bounded by dest liveness — ADR này TINH CHỈNH cái Drop-check của nó) · ADR-0045 (Reference = Copy) · CFG-tail Lát 1 (`159fd68`, Bug A block-tail drop escape).
+- **Author:** Mentor O (deep-recon of Bug A heap-nullable → unearthed pre-existing UAF in `Expr::If`/match reference-arms).
+- **Related:** [ADR-0046](0046-propagated-loan-liveness.md) (PropagatedLoan return-borrow bounded by dest liveness — this ADR REFINES its Drop-check) · ADR-0045 (Reference = Copy) · CFG-tail Slice 1 (`159fd68`, Bug A block-tail drop escape).
 
 ---
 
-## 1. Context — UAF qua block-merge, borrowck câm
+## 1. Context — UAF Across Block-Merge, Silent Borrowck
 
-`let r = if c { let inner = "hello"; id(&0 inner) } else { … }; length(r)` → **trả 5, KHÔNG E2450** = use-after-free chạy êm. Borrowck bỏ sót. Fixture 102 (cùng pattern, plain block) bắt E2450; bản if-wrapped lọt.
+`let r = if c { let inner = "hello"; id(&0 inner) } else { … }; length(r)` → **returns 5, NO E2450** = silent use-after-free execution. Borrowck missed it. Fixture 102 (same pattern, plain block) catches E2450; the if-wrapped variant slipped through.
 
 **MIR (then-arm + merge):**
 ```
 Call id(_2) → [_3]      ; PropagatedLoan source=_1(inner) dest=_3
-Drop(_1)                ; block-pop drop inner
+Drop(_1)                ; block-pop drops inner
 _4 = move _3            ; If-merge: result _4 = then_val _3
-… length(_4) …          ; dùng _4 sau khi _1 chết → UAF
+… length(_4) …          ; uses _4 after _1 has died → UAF
 ```
 
-**Rễ (checker.rs:780-784, ADR-0046 Drop-check):**
+**Root Cause (`checker.rs:780-784`, ADR-0046 Drop-check):**
 ```rust
 loan.source.local == *l && (!loan.is_propagated
     || liveness.blocks[block.0].live_out.contains(&loan.dest))
 ```
-Drop-check dùng **block-level `live_out`**. `_3` (loan dest) bị `_4 = move _3` tiêu thụ NGAY trong block → KHÔNG ∈ `live_out` → check trượt. Borrow vẫn sống qua `_4` (live_out) nhưng loan trỏ `_3` → miss.
+The Drop-check used **block-level `live_out`**. `_3` (loan dest) was consumed by `_4 = move _3` IMMEDIATELY within the block → NOT in `live_out` → check missed. The borrow remained live through `_4` (live_out) while the loan pointed to `_3` → missed.
 
-**Vì sao Block (fixture 102) bắt được:** Lát 1 cho reference-tail **direct-return** (không Assign-to-merge); `_3` LÀ block result, dùng `length(_3)` ngoài block → `_3 ∈ live_out` → E2450. If/match **merge BẮT BUỘC Assign** `_4 = move _3` (CFG hội tụ 2 nhánh) → `_3` chết trong block → miss.
+**Why Block (fixture 102) caught it:** Slice 1 provided a **direct-return** for reference-tails (no Assign-to-merge); `_3` WAS the block result, used via `length(_3)` outside the block → `_3 ∈ live_out` → E2450. In If/match, **merge MANDATES an Assign** `_4 = move _3` (CFG converging two branches) → `_3` died within the block → missed.
 
-## 2. Phương án bị loại (recon empirical — KHÔNG đoán)
+## 2. Alternatives Considered (Empirical Recon — NOT Guessed)
 
-> Framing ban đầu (G): "loan-follow qua reference Assign — Duplicate loan (vì Reference Copy) không Retarget". **Recon BÁC cả hai** bằng thực nghiệm.
+> Initial framing (G): "loan-follow through reference Assign — Duplicate loan (since Reference is Copy), not Retarget". **Recon DISPROVED both** experimentally.
 
-- **(a) Duplicate loan ở Assign handler** (dest==source → copy loan với dest mới): **FAIL empirical** — headline vẫn 5. Lý do timing: `Drop(_1)` đứng TRƯỚC `_4 = move _3` trong dataflow order; lúc Drop xử, duplicate chưa xảy ra; loan vẫn dest=_3, vẫn miss. Retarget cùng bệnh.
-- **(b) Point-level liveness NAIVE** (dest dùng-sau trong block, TÍNH cả `Drop(dest)`): **2 false-positive** — fixtures 84/101 (return-borrow hợp lệ) nổ E2450 oan. Vì `Drop(msg)` đứng trước `Drop(r)` ở scope-end → `Drop(r)` bị tính là "r dùng sau".
+- **(a) Duplicate loan in Assign handler** (dest==source → copy loan with new dest): **FAILED empirically** — headline case still returned 5. Timing issue: `Drop(_1)` precedes `_4 = move _3` in dataflow order; when Drop was processed, duplication had not yet occurred; loan still targeted dest=_3, still missed. Retarget suffered from the same flaw.
+- **(b) NAIVE Point-Level Liveness** (dest used-later in block, COUNTING `Drop(dest)`): **2 false-positives** — fixtures 84/101 (valid return-borrow) erroneously failed with E2450. Because `Drop(msg)` preceded `Drop(r)` at scope-end → `Drop(r)` was counted as "r used later".
 
-## 3. Decision — point-level READ-after-Drop liveness ở Drop-check
+## 3. Decision — Point-Level READ-after-Drop Liveness in Drop-Check
 
-Drop-check bổ sung điều kiện: loan dest **được ĐỌC** (không phải Drop) ở một statement SAU trong CÙNG block:
+The Drop-check adds a condition: loan dest **is READ** (not Dropped) at a subsequent statement within the SAME block:
 ```rust
 let dest_used_after = body.blocks[block.0].statements[stmt_idx+1..].iter().any(|s| match s {
     Assign{source,..} | Borrow{source,..} | GetDiscriminant{source,..} => source.local == dest,
     BinaryOp{left,right,..} => left.local==dest || right.local==dest,
-    _ => false,   // Drop(dest) KHÔNG phải use — dest đang chết
+    _ => false,   // Drop(dest) is NOT a use — dest is dying
 });
 has_active_loans = loan.source.local == *l && (!loan.is_propagated
     || live_out.contains(&loan.dest) || dest_used_after);
 ```
 
-**Bất biến khóa:** *Đọc một reference SAU khi borrowed-source của nó bị Drop (trong cùng frame) = UAF — luôn E2450. Drop chính reference đó (cùng chết) = an toàn.* → quy tắc KHÔNG có false-positive **by construction**: không code hợp lệ nào đọc ref sau khi source chết.
+**Core Invariant:** *Reading a reference AFTER its borrowed source has been Dropped (within the same frame) = UAF — always E2450. Dropping that reference itself (dying together) = safe.* → the rule produces NO false-positives **by construction**: no valid program reads a reference after its source is dead.
 
-**Vì sao đây đúng chỗ (không phải lowerer, không phải loan-follow):**
-- Fix nằm ở **Drop-check borrowck**, construct-AGNOSTIC → phủ If + match + MỌI merge tương lai bằng MỘT điểm, KHÔNG đụng lowering (G outline "guard If/match lowering" = 3 chỗ + vỡ merge).
-- `live_out OR read-after-same-block` = point-level đầy đủ: cross-block escape (live_out: terminator/successor) + same-block-consume (read-after). Bù đúng khe ADR-0046 bỏ.
+**Why this is the correct location (not lowerer, not loan-following):**
+- The fix resides in **borrowck Drop-check**, construct-AGNOSTIC → covers If + match + ALL future merges at a SINGLE point, WITHOUT modifying lowering (G's outline of "guarding If/match lowering" = 3 sites + breaks merges).
+- `live_out OR read-after-same-block` = complete point-level coverage: cross-block escape (live_out: terminator/successor) + same-block consumption (read-after). Perfectly bridges the gap left by ADR-0046.
 
-## 4. Empirical evidence (cây thử, đã revert)
+## 4. Empirical Evidence (Experimental Branch, Reverted)
 
-| Phương án | Headline If-ref | Regression 204 + workspace |
+| Alternative | Headline If-ref | Regression 204 + Workspace |
 |---|---|---|
-| (a) Duplicate loan | ❌ vẫn 5 | — |
-| (b) Point-level naive (Drop=use) | ✅ E2450 | ❌ 84/101 false-pos |
-| **(c) READ-after, Drop loại** | ✅ E2450 | ✅ **204/204 + workspace 0 FAILED** |
+| (a) Duplicate loan | ❌ still 5 | — |
+| (b) Point-level naive (Drop=use) | ✅ E2450 | ❌ 84/101 false-positive |
+| **(c) READ-after, Drop excluded** | ✅ E2450 | ✅ **204/204 + workspace 0 FAILED** |
 
-Clean-tree confirm: UAF=5; với fix=E2450 → load-bearing.
+Clean-tree confirmation: UAF=5; with fix=E2450 → load-bearing.
 
-## 5. Teeth bắt buộc (khi implement)
-- **Headline fixture:** If-reference-arm UAF → E2450. Poison: gỡ `dest_used_after` → trả 5 (UAF về) → RED.
-- **Regression cứng:** 84/101 (return-borrow) GIỮ pass (không false-pos); 102/20/21/24 (E2450/borrow) GIỮ đúng; full 204 + workspace.
-- **match-arm:** ✅ VERIFIED qua **Trit-param match** (fixture `214_match_arm_uaf_e2450.tri`) — E2450 fires; poison `dest_used_after` → UAF về (compile+run trả 2) → RED. Drop-check construct-agnostic phủ **If + match (Trit-param)** bằng cùng một điểm. *Note: scrutinee literal Integer/Trilean chưa hỗ trợ (feature riêng — value-keyed SwitchInt), không ảnh hưởng tính construct-agnostic của fix.*
+## 5. Mandatory Teeth (Upon Implementation)
+- **Headline Fixture:** If-reference-arm UAF → E2450. Poison: remove `dest_used_after` → returns 5 (UAF returns) → RED.
+- **Strict Regression:** 84/101 (return-borrow) RETAIN passing status (no false-positives); 102/20/21/24 (E2450/borrow) RETAIN correctness; full 204 + workspace pass.
+- **Match-Arm:** ✅ VERIFIED via **Trit-param match** (fixture `214_match_arm_uaf_e2450.tri`) — E2450 fires; poison `dest_used_after` → UAF returns (compiles + runs returning 2) → RED. Drop-check construct-agnosticism covers **If + match (Trit-param)** at the same point. *Note: scrutinee literal Integer/Trilean is not yet supported (separate feature — value-keyed SwitchInt), does not affect the construct-agnostic nature of the fix.*
 
 ## 6. Consequences
-- **Tích cực:** bịt UAF class (ref đọc sau source-drop) cho mọi merge; 1 điểm sửa borrowck; 0 regression đo được; KHÔNG đụng lowerer/loan-model (ít rủi ro hơn loan-duplicate).
-- **Chi phí:** Drop-check thêm O(statements-còn-lại) scan/Drop — bounded, chấp nhận.
-- **Đóng băng:** chỉ same-block read-after; cross-block đã do live_out. Nếu sau này cần point-level toàn diện (per-statement liveness) → ADR riêng.
-- **Đính chính ADR-0046:** Drop-check của nó (block live_out) là xấp xỉ; ADR này khóa thêm same-block read-after như điều kiện liveness hợp lệ.
+- **Positive:** Closes UAF class (reading ref after source-drop) for all merges; 1-point borrowck fix; 0 regressions measured; DOES NOT touch lowerer/loan-model (less risky than loan-duplication).
+- **Cost:** Drop-check adds an O(remaining-statements) scan per Drop — bounded, acceptable.
+- **Frozen Scope:** Only same-block read-after; cross-block is already handled by live_out. If comprehensive point-level liveness (per-statement liveness) is needed later → separate ADR.
+- **ADR-0046 Correction:** Its Drop-check (block live_out) was an approximation; this ADR formalizes same-block read-after as a valid liveness condition.
 
-## 7. Chữ ký
-- O: ✅ (recon empirical, 3 phương án đo máu, fix grounded MIR + 0-regression)
-- G: ✅ (ký duyệt 2026-06-19 — ADR mới đè ADR-0046 [không amendment, lịch sử không xóa]; match-arm giữ UNVERIFIED minh bạch; fix point-level READ-after-Drop ở borrowck Drop-check, không lowerer/loan-follow)
-- **Amendment 2026-06-19 (sau ký, sửa-có-dấu-vết):** chữ "match-arm giữ UNVERIFIED" trong chữ ký G ở trên ĐÃ được O xé cờ cùng ngày — verify qua Trit-param match (fixture `214_match_arm_uaf_e2450.tri`, §5): E2450 fires, poison `dest_used_after` → UAF về (trả 2). Chữ ký gốc giữ nguyên làm dấu vết thời điểm ký; **§5 là trạng thái hiện hành** (match-arm VERIFIED, construct-agnostic phủ If + match). Integer/Trilean literal scrutinee vẫn là feature riêng chưa làm.
+## 7. Signatures
+- O: ✅ (empirical recon, 3 options measured, grounded MIR fix + 0-regression)
+- G: ✅ (approved 2026-06-19 — new ADR supersedes ADR-0046 [no amendments, history preserved]; match-arm kept UNVERIFIED transparently; fix point-level READ-after-Drop in borrowck Drop-check, not lowerer/loan-follow)
+- **Amendment 2026-06-19 (Post-Signing, Traceable Edit):** The phrase "match-arm kept UNVERIFIED" in G's signature above was cleared by O on the same day — verified via Trit-param match (fixture `214_match_arm_uaf_e2450.tri`, §5): E2450 fires, poison `dest_used_after` → UAF returns (yields 2). The original signature is retained as historical record; **§5 represents the current state** (match-arm VERIFIED, construct-agnostic covering If + match). Integer/Trilean literal scrutinees remain a separate, unimplemented feature.

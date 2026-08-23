@@ -1,88 +1,85 @@
 # ADR 0078 — Typed HashMap P1 (value-typed: `HashMap<Integer, T>`, T built-in heap)
 
-> # 🩸 NGUYÊN LÝ CỐT LÕI (G khắc đá 2026-06-30)
-> # "Mảng thưa chứa chuỗi" (sparse array / ID-lookup table với giá trị String) là
-> # nền của mọi data-structure thực dụng. Ownership của VALUE phải sound: nhét vào
-> # (insert), lấy ra (remove), chết (drop) — không rỉ một byte. Tái dùng cỗ máy
-> # Vector P1 (ADR-0077), KHÔNG phát minh lại bánh xe. KEY-typed = mặt trận khác.
+> # 🩸 CORE PRINCIPLES (G's Mandate 2026-06-30)
+> # "Sparse arrays containing strings" (sparse array / ID-lookup table with String values) are
+> # the foundation of every pragmatic data structure. VALUE ownership must be sound: 
+> # insertion (insert), removal (remove), and destruction (drop) — without leaking a single byte. 
+> # Reuse the Vector P1 engine (ADR-0077); DO NOT reinvent the wheel. 
+> # KEY-typed = a different battleground.
 
-**Trạng thái:** ✅ **IMPLEMENTED / CLOSED (Phase 1) — G ký 2026-07-01.** Áp dụng Bậc C+.
+**Status:** ✅ **IMPLEMENTED / CLOSED (Phase 1) — G signed 2026-07-01.** Applied Level C+.
 Slice A (storage backend, `a0e60d8`) + Slice B/P1b (typecheck-open `HashMap<Integer,V>` end-to-end source).
-Value-typed HashMap (V = built-in heap) construct/insert(Move)/remove(move-out `V?`)/drop sound qua JIT real-allocator.
-O verify máu 3 vòng (garbage-value root-fix `lower_type` carry value → vacuous-tooth literal-no-drop → named-local poison→SIGABRT 134 ĐỎ). KEY-typed = Tầng 2 defer (ADR sau).
-Mở `HashMap<Integer, T>` với T = built-in (scalar / String / Vector / HashMap / Nullable tương ứng).
-**KEY giữ Integer cứng** (key-typed = ADR sau, đụng hash/eq per-type + Comparable ADR-0038).
-Continuation của ADR-0077 (Typed Vector P1) — tái dùng stride / typed-free loop / move-track / by-ptr ABI cho VALUE.
+Value-typed HashMap (V = built-in heap) construct/insert(Move)/remove(move-out `V?`)/drop sound via JIT real-allocator.
+O verified through 3 rounds of blood testing (garbage-value root-fix `lower_type` carry value → vacuous-tooth literal-no-drop → named-local poison → RED SIGABRT 134). KEY-typed = Level 2 defer (subsequent ADR).
+Expose `HashMap<Integer, T>` with T = built-in (correspondingly scalar / String / Vector / HashMap / Nullable).
+**KEY remains hardcoded as Integer** (key-typed = subsequent ADR, involves per-type hash/eq + Comparable ADR-0038).
+Continuation of ADR-0077 (Typed Vector P1) — reuse stride / typed-free loop / move-track / by-ptr ABI for VALUE.
 
-**Sibling/kế thừa:** ADR-0077 (Typed Vector P1 — cỗ máy value-storage tái dùng nguyên), ADR-0060 (P1/P2 tách-tầng),
-ADR-0043 (HashMap builtins gốc), ADR-0076 (sentinel-no-op free R4).
-**KHÔNG đụng:** key-typed (`HashMap<String, V>` — Tầng 2, defer), native-layout (Option D), ADR-0068 (Box CẤM).
-
----
-
-## Issue — 3 tầng độ khó (recon O 2026-06-30, file:line)
-
-HashMap hiện **Integer→Integer cứng**. Recon lật ra HashMap KHÔNG phải "Vector pattern × 2" — nó tách 3 tầng:
-
-1. **Tầng 1 — VALUE typing (= Vector y hệt):** value chỉ store/free/move → **đúng cỗ máy Vector** (stride/typed-free/move-track/by-ptr). Reuse trọn.
-2. **Tầng 2 — KEY typing (MỚI, "heavy" thật):** KEY cần **hash + equality per key-type**. `mir_lower.rs:4015-4027`: `hash = k % cap` (integer-modulo), `stored_k == k` (i64-eq) — i64-only. String key đòi string-hash (`cap_id_hash`@3155 mẫu FNV-1a) + `__triet_string_eq`. **Vector element KHÔNG bao giờ so sánh; HashMap key PHẢI.** → **DEFER (ADR sau).**
-3. **Tầng 3 — typecheck repr:** HashMap = `Type::UserStruct { name:"HashMap", fields:[__key:Integer,__value:Integer] }` (env.rs:336) — KHÔNG dedicated `Type::HashMap(K,V)`. MIR bare `MirType::HashMap` (mir/lib.rs:498).
-
-**HM-P1 = Tầng 1 + Tầng 3.** Tầng 2 trói gô vào backlog.
+**Sibling/Inheritance:** ADR-0077 (Typed Vector P1 — reuse the exact same value-storage engine), ADR-0060 (P1/P2 separation),
+ADR-0043 (Original HashMap builtins), ADR-0076 (sentinel-no-op free R4).
+**DO NOT touch:** key-typed (`HashMap<String, V>` — Level 2, defer), native-layout (Option D), ADR-0068 (Box PROHIBITED).
 
 ---
 
-## Quyết định
+## Issue — 3 levels of complexity (recon O 2026-06-30, file:line)
 
-Mở `HashMap<Integer, T>` (value-typed) qua các mũi, **K=Integer hardcode**, đối xứng Typed Vector P1.
+HashMap is currently **hardcoded Integer→Integer**. Recon revealed that HashMap is NOT a "Vector pattern × 2" — it consists of 3 distinct levels:
 
-### Mũi A — typecheck repr: đập `UserStruct` → dedicated `Type::HashMap(Box<K>, Box<V>)`
-- `types.rs`: thêm variant `HashMap(Box<Self>, Box<Self>)`. Giết `UserStruct{name:"HashMap",__key,__value}` giả cầy.
-- `extract_type_params` (check/exprs.rs:2274 mẫu Vector arm): thêm `(HashMap(pk,pv), HashMap(ak,av))` walk cả 2 slot.
-- `env.rs`: declare generic `hashmap_new<V>() -> HashMap<Integer,V>` · `insert<V>(HashMap<Integer,V>, Integer, V) -> HashMap<Integer,V>` · `get<V>(HashMap<Integer,V>, Integer) -> V?` · `remove<V>(HashMap<Integer,V>, Integer) -> V?`. K-slot = Integer cứng (KHÔNG type-param cho key).
-- MIR `MirType::HashMap` → `HashMap(Box<MirType>, Box<MirType>)` (repr fidelity; chỉ VALUE drives typed-free vì K=Integer Copy). Blast ~ giống Vector MŨI 1 (rustc-guided).
+1. **Level 1 — VALUE typing (= identical to Vector):** value only requires store/free/move → **matches the Vector engine** (stride/typed-free/move-track/by-ptr). Full reuse.
+2. **Level 2 — KEY typing (NEW, truly "heavy"):** KEY requires **hash + equality per key-type**. `mir_lower.rs:4015-4027`: `hash = k % cap` (integer-modulo), `stored_k == k` (i64-eq) — i64-only. String keys require string-hash (`cap_id_hash`@3155 FNV-1a sample) + `__triet_string_eq`. **Vector elements NEVER require comparison; HashMap keys MUST.** → **DEFER (subsequent ADR).**
+3. **Level 3 — typecheck representation:** HashMap = `Type::UserStruct { name:"HashMap", fields:[__key:Integer,__value:Integer] }` (env.rs:336) — NO dedicated `Type::HashMap(K,V)`. MIR uses bare `MirType::HashMap` (mir/lib.rs:498).
 
-### Mũi B — slot fat-value: inline value bằng value-stride (KHÔNG box)
-- Slot hiện `[key8 | value8 | state1 | pad7]` = 24B; value-cell 8B **KHÔNG chứa nổi String fat 24B**.
-- **Quyết: inline-grow** (đối xứng Vector, KHÔNG box — box = +alloc +indirection, đã bác ở ADR-0077 §ph.án 2). Slot = `[key8 | value@value_stride | state]`; `value_stride` từ value-type (8 scalar / 24 String) qua **`vector_elem_size` helper tái dùng** (ADR-0077). Probing KHÔNG đổi (key@0, state@offset cố định sau value cell).
-- `insert` value-stride-aware: fat value **by-ptr memcpy** (như push@MŨI4); **rehash loop** (`mir_lower.rs:3925`) memcpy value-cell theo stride (KHÔNG `v_ptr.read_unaligned()` i64) — đây là "cày cuốc cẩn thận" G dặn.
-
-### Mũi C — typed drop-glue (JIT-emitted, tái dùng Vector MŨI 3)
-- HashMap Drop site: iterate `cap` slot, `state==occupied(1)` → free value@value-cell qua **`emit_heap_free_at`** (registry-routed, đếm được — chống vacuity như Vector). KEY=Integer KHÔNG free. Sentinel-no-op R4.
-
-### Mũi D — move-track + take-out
-- **insert = Move value:** `arg_consumes` value-arg element-type-aware (heap→consume, Copy→no-op) — đúng cỗ máy push Vùng 3 ADR-0077 (borrowck move-track + M3-zero + JIT).
-- **Take-out = `remove(map,key) -> V?` (shim MỚI):** move-out value + tombstone slot (state→deleted). Ownership cắt đứt (như pop). **`get(HashMap<Integer, heap>)` → E1047 REFUSE** (copy-out heap value, defer clone/borrow — đối xứng Vector get). `get(HashMap<Integer,Integer>)` Copy → vẫn `V?`.
-
-### Ranh giới (defer — đụng là chết)
-KEY-typed `HashMap<String,V>` (Tầng 2: hash/eq per-type, Comparable ADR-0038) · get-clone/borrow heap value · `HashMap<_, UserStruct>` (P2 native-layout) · ADR-0068 Box.
+**HM-P1 = Level 1 + Level 3.** Level 2 is relegated to the backlog.
 
 ---
 
-## Phương án đã cân nhắc
-| # | Phương án | Kết luận |
+## Decision
+
+Expose `HashMap<Integer, T>` (value-typed) via several approaches, with **K=Integer hardcoded**, symmetric to Typed Vector P1.
+
+### Approach A — typecheck representation: replace `UserStruct` with dedicated `Type::HashMap(Box<K>, Box<V>)`
+- `types.rs`: add variant `HashMap(Box<Self>, Box<Self>)`. Eliminate the pseudo `UserStruct{name:"HashMap",__key,__value}`.
+- `extract_type_params` (check/exprs.rs:2274, Vector arm sample): add `(HashMap(pk,pv), HashMap(ak,av))` to walk both slots.
+- `env.rs`: declare generic `hashmap_new<V>() -> HashMap<Integer,V>` · `insert<V>(HashMap<Integer,V>, Integer, V) -> HashMap<Integer,V>` · `get<V>(HashMap<Integer,V>, Integer) -> V?` · `remove<V>(HashMap<Integer,V>, Integer) -> V?`. K-slot = hardcoded Integer (NO type-param for key).
+- MIR `MirType::HashMap` → `HashMap(Box<MirType>, Box<MirType>)` (repr fidelity; only VALUE drives typed-free because K=Integer Copy). Implementation follows Vector APPROACH 1 (rustc-guided).
+
+### Approach B — slot fat-value: inline value using value-stride (NO boxing)
+- Current slot `[key8 | value8 | state1 | pad7]` = 24B; an 8B value-cell **CANNOT hold a 24B String fat value**.
+- **Decision: inline-grow** (symmetric to Vector, NO boxing — boxing = +alloc +indirection, rejected in ADR-0077 §option 2). Slot = `[key8 | value@value_stride | state]`; `value_stride` is derived from the value-type (8 for scalar / 24 for String) via **reused `vector_elem_size` helper** (ADR-0077). Probing remains unchanged (key@0, state@fixed offset after value cell).
+- `insert` is value-stride-aware: fat value uses **by-ptr memcpy** (as in push@APPROACH 4); **rehash loop** (`mir_lowers.rs:3925`) performs memcpy on value-cells according to stride (NO `v_ptr.read_unaligned()` i64) — this is the "meticulous implementation" mandated by G.
+
+### Approach C — typed drop-glue (JIT-emitted, reuse Vector APPROACH 3)
+- HashMap Drop site: iterate `cap` slots, if `state==occupied(1)` → free value@value-cell via **`emit_heap_free_at`** (registry-routed, countable — prevents vacuity as in Vector). KEY=Integer does NOT require freeing. Sentinel-no-op R4.
+
+### Approach D — move-track + take-out
+- **insert = Move value:** `arg_consumes` value-arg is element-type-aware (heap→consume, Copy→no-op) — matches the push engine in Region 3 of ADR-0077 (borrowck move-track + M3-zero + JIT).
+- **Take-out = `remove(map,key) -> V?` (NEW shim):** move-out value + tombstone slot (state→deleted). Ownership is severed (as in pop). **`get(HashMap<Integer, heap>)` → E1047 REFUSE** (copy-out heap value is prohibited; defer clone/borrow — symmetric to Vector get). `get(HashMap<Integer,Integer>)` is a Copy → still returns `V?`.
+
+### Boundaries (defer — touching this is fatal)
+KEY-typed `HashMap<String,V>` (Level 2: hash/eq per-type, Comparable ADR-0038) · get-clone/borrow heap value · `HashMap<_, UserStruct>` (P2 native-layout) · ADR-0068 Box.
+
+---
+
+## Alternatives Considered
+| # | Alternative | Conclusion |
 |---|-----------|----------|
-| 1 | **Inline value by value-stride** (chọn) | tái dùng Vector machinery, 1 alloc, value-semantics |
-| 2 | Box value (cell = 8B ptr→heap value) | bác — +alloc +indirection (như ADR-0077 §2) |
-| 3 | Gộp key-typed cùng campaign | bác (G) — Tầng 2 lôi theo Comparable ADR-0038, chết chìm |
-| 4 | get-heap-value copy-out | bác — clone-shim/borrow-lifetime chưa có; dùng `remove` move-out |
+| 1 | **Inline value by value-stride** (chosen) | reuse Vector machinery, 1 alloc, value-semantics |
+| 2 | Box value (cell = 8B ptr→heap value) | rejected — +alloc +indirection (as per ADR-0077 §2) |
+| 3 | Bundle key-typed in the same campaign | rejected (G) — Level 2 drags in Comparable ADR-0038, causing failure |
+| 4 | get-heap-value copy-out | rejected — clone-shim/borrow-lifetime not yet implemented; use `remove` move-out |
 
-## Hậu quả
-**Tích cực:** sparse-array/ID-table chứa heap value sound; dedicated `Type::HashMap(K,V)` (đập UserStruct giả cầy) = nền cho key-typed sau; tái dùng Vector machinery (0 cỗ máy free mới). **Tiêu cực:** `MirType::HashMap` arity đổi → blast rustc-guided; insert rehash value-stride-aware (bounded). **Rủi ro:** rehash memcpy value sai stride → corruption (teeth); insert không consume heap value → double-free (teeth SIGABRT 134); drop không loop value → leak (teeth).
+## Consequences
+**Positive:** sparse-array/ID-table containing heap values is sound; dedicated `Type::HashMap(K,V)` (replacing pseudo UserStruct) = foundation for future key-typed; reuse of Vector machinery (0 new free engines). **Negative:** `MirType::HashMap` arity changes → requires rustc-guided blast; insert rehash is value-stride-aware (bounded). **Risks:** rehash memcpy uses incorrect stride → corruption (teeth); insert fails to consume heap value → double-free (teeth SIGABRT 134); drop fails to loop through values → leak (teeth).
 
-## Teeth (O verify máu — poison phải đỏ, cp-snapshot KHÔNG git checkout)
+## Teeth (O's blood verification — poison must be RED, cp-snapshot MUST NOT git checkout)
 | # | Tooth | Poison → RED |
 |---|---|---|
-| 1 💀💀 | insert heap value SIGABRT 134 (G gold std) | value-arg consume→false → caller double-free (real-allocator) |
-| 2 💀 | drop leak | gỡ typed-free slot-loop → occupied String value FREE==0 |
-| 3 | rehash value-stride | poison rehash dùng i64-read thay memcpy stride → corruption khi grow + fat value |
-| 4 | remove take-out | remove move-out + tombstone → value freed once via caller; poison tombstone → double-free |
-| 5 | get-heap refuse | `get(HashMap<Integer,String>)` → E1047 |
-| 6 | backward-compat | `HashMap<Integer,Integer>` insert/get/remove corpus xanh |
+| 1 💀💀 | insert heap value SIGABRT 134 (G gold standard) | value-arg consume $\rightarrow$ false $\rightarrow$ caller double-free (real-allocator) |
+| 2 💀 | drop leak | remove typed-free slot-loop $\rightarrow$ occupied String value FREE==0 |
+| 3 | rehash value-stride | poison rehash uses i64-read instead of memcpy stride $\rightarrow$ corruption during grow + fat value |
+| 4 | remove take-out | remove move-out + tombstone $\rightarrow$ value freed once via caller; poison tombstone $\rightarrow$ double-free |
+| 5 | get-heap refuse | `get(HashMap<Integer,String>)` $\rightarrow$ E1047 |
+| 6 | backward-compat | `HashMap<Integer,Integer>` insert/get/remove corpus is green |
 
-## Slices (đối xứng Vector A/B)
-- **HM-P1a (backend):** Mũi A-MIR + B slot + C typed-free + insert value-stride + remove shim. Verify hand-built MIR + counting.
-- **HM-P1b (typecheck-open):** Mũi A-typecheck (`Type::HashMap`, generic builtins) + D move-track + get-heap E1047. End-to-end source + SIGABRT 134.
-
-## Ngày hiệu lực
-Bậc C+ khi từng slice landed (O verify máu, G ký). Không hồi tố `HashMap<Integer,Integer>` (fast-path bảo tồn).
+## Slices (symmetric to Vector A/B)
+- **HM-P1a (backend):** Approach A-MIR + B slot

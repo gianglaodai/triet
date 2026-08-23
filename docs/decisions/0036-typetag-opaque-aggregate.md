@@ -1,20 +1,20 @@
 # ADR 0036 — `TypeTag::Opaque`: disambiguating user-defined aggregates from true `Unit`
 
-**Trạng thái:** **Locked** (v0.11.x.jit.4.agg.opaque, author sign-off received). Addresses [ADR-0035 §4](0035-jit-boxed-refcount-discipline.md) (the `TypeTag::Unit` ambiguity ceiling) and supersedes the lowerer's `_ => TypeTag::Unit` catch-all for user-defined struct, enum, and generic types. This is an **IR-shape change** with a `.triv` version bump (v7 → v8) and self-host lockstep requirement.
+**Status:** **Locked** (v0.11.x.jit.4.agg.opaque, author sign-off received). Addresses [ADR-0035 §4](0035-jit-boxed-refcount-discipline.md) (the `TypeTag::Unit` ambiguity ceiling) and supersedes the lowerer's `_ => TypeTag::Unit` catch-all for user-defined struct, enum, and generic types. This is an **IR-shape change** with a `.triv` version bump (v7 $\rightarrow$ v8) and self-host lockstep requirement.
 
 ## Issue
 
 The lowerer maps every user-defined type (struct, enum, generic type parameter) to `TypeTag::Unit` ([`lowerer.rs:757`](../../crates/triet-ir/src/lowerer.rs#L757)). The self-host compiler does the same ([`ir_lowerer.tri:1754`](../../compiler/ir_lowerer.tri#L1754)). This was an acceptable placeholder through v0.10 — the IR doesn't track field layout, and `Unit` served as "something composite, don't look inside." But it creates a **blocking ambiguity** at two JIT decision points:
 
-1. **Cross-mode marshaling ([ADR-0035 §4](0035-jit-boxed-refcount-discipline.md)).** `boundary_class(TypeTag::Unit)` returns `None` → tier down, because the codegen can't tell a zero-sized `Unit` return (needs no action) from a `Rc<RuntimeValue>` struct pointer (needs pass-through). **410 functions** tier down on this ambiguity at 41.0% coverage — the single largest remaining cross-mode blocker.
+1. **Cross-mode marshaling ([ADR-0035 §4](0035-jit-boxed-refcount-discipline.md)).** `boundary_class(TypeTag::Unit)` returns `None` $\rightarrow$ tier down, because the codegen cannot tell a zero-sized `Unit` return (needs no action) from a `Rc<RuntimeValue>` struct pointer (needs pass-through). **410 functions** tier down on this ambiguity at 41.0% coverage — the single largest remaining cross-mode blocker.
 
-2. **Boxing decision.** `is_composite_tag` does not include `Unit`, so a function whose only aggregate is a struct typed `Unit` appears to be all-scalar. If it's a composite return, `is_composite_tag` returns false → the unboxed mode skips the clone-on-return discipline → **latent double-free**. Currently masked because such functions hit the cross-mode tier-down first (finding 1), but architecturally unsound.
+2. **Boxing decision.** `is_composite_tag` does not include `Unit`, so a function whose only aggregate is a struct typed `Unit` appears to be all-scalar. If it's a composite return, `is_composite_tag` returns false $\rightarrow$ the unboxed mode skips the clone-on-return discipline $\rightarrow$ **latent double-free**. Currently masked because such functions hit the cross-mode tier-down first (finding 1), but architecturally unsound.
 
-3. **Clone-on-return ([ADR-0035 §1](0035-jit-boxed-refcount-discipline.md)).** The unboxed `Ret` path uses `is_composite_tag(&func.return_type)` to decide whether to clone a borrowed return. A struct typed `Unit` is misclassified as scalar → no clone → double-free if the function returns a borrowed composite parameter. Same root cause as finding 2.
+3. **Clone-on-return ([ADR-0035 §1](0035-jit-boxed-refcount-discipline.md)).** The unboxed `Ret` path uses `is_composite_tag(&func.return_type)` to decide whether to clone a borrowed return. A struct typed `Unit` is misclassified as scalar $\rightarrow$ no clone $\rightarrow$ double-free if the function returns a borrowed composite parameter. Same root cause as finding 2.
 
 The compound impact is **~410 cross-mode + a substantial share of ~192 call blockers** — roughly 600 of the ~912 remaining tier-downs at 41.0% coverage. Resolving this ambiguity is the single highest-leverage step toward the bootstrap gate lift.
 
-## Quyết định
+## Decision
 
 **Add `TypeTag::Opaque` — a single new variant meaning "a user-defined aggregate type whose layout the IR does not track (struct, enum, or erased generic type parameter)." The lowerer (both Rust and self-host) emits `Opaque` instead of `Unit` for user-defined types. True `Unit` remains `Unit` and means exclusively the zero-sized unit type `()`. The `.triv` wire format bumps to v8.**
 
@@ -41,7 +41,7 @@ pub enum TypeTag {
 }
 ```
 
-`Opaque` is deliberately **unparameterized** — it carries no inner type, no name, no field list. It is the minimal signal: "this value is a heap-boxed composite, not a scalar." That's all the JIT's boxing/marshaling/clone decisions need. Carrying richer type information is a Bậc C concern ([ADR-0034](0034-jit-aggregate-coverage.md) Addendum — native aggregate codegen, post-v0.11).
+`Opaque` is deliberately **unparameterized** — it carries no inner type, no name, no field list. It is the minimal signal: "this value is a heap-boxed composite, not a scalar." That's all the JIT's boxing/marshaling/clone decisions need. Carrying richer type information is a Tier C concern ([ADR-0034](0034-jit-aggregate-coverage.md) Addendum — native aggregate codegen, post-v0.11).
 
 ### §2 — Lowerer changes (Rust + self-host lockstep)
 
@@ -70,18 +70,18 @@ Three sites change (lines 757, 775, 778 — the `Named` catch-all, the `Generic`
 New self-host additions:
 - `OpaqueTag(PrimitiveMarker)` variant in `enum TypeTag`
 - `alloc_tag_opaque` function (mirrors `alloc_tag_unit`)
-- `type_tag_display` arm for `OpaqueTag` → `"Opaque"`
-- `resolve_named_type_tag` + `resolve_type_expr_to_tag` wildcards → `alloc_tag_opaque`
+- `type_tag_display` arm for `OpaqueTag` $\rightarrow$ `"Opaque"`
+- `resolve_named_type_tag` + `resolve_type_expr_to_tag` wildcards $\rightarrow$ `alloc_tag_opaque`
 
 **Stage 2 ≡ Stage 3 lockstep:** the Rust lowerer and self-host lowerer emit the same `TypeTag::Opaque` disc (12) for user-defined types. Since both currently emit `Unit` (disc 6) for these, and both will change to `Opaque` (disc 12) in the same step, the `.triv` output stays byte-identical between stages. The bootstrap gate (`stage2_eq_stage3_main_tri_byte_identical`) is **not** broken by this change, because:
-- Rust compiler (Stage 1) → emits `.triv` with `Opaque` (disc 12) for user types
-- Self-host Stage 2 (run by Rust VM) → emits `.triv` with `Opaque` (disc 12) for user types
-- Self-host Stage 3 (run by Stage 2 VM) → emits `.triv` with `Opaque` (disc 12) for user types
+- Rust compiler (Stage 1) $\rightarrow$ emits `.triv` with `Opaque` (disc 12) for user types
+- Self-host Stage 2 (run by Rust VM) $\rightarrow$ emits `.triv` with `Opaque` (disc 12) for user types
+- Self-host Stage 3 (run by Stage 2 VM) $\rightarrow$ emits `.triv` with `Opaque` (disc 12) for user types
 - Stage 2 `.triv` ≡ Stage 3 `.triv` ✓ (both use the self-host lowerer, which now emits `Opaque`)
 
-The key invariant: **Stage 2 and Stage 3 use the same self-host compiler source** → their outputs are identical regardless of what the Rust compiler does. The Rust compiler's `.triv` output is compared against Stage 2 only for the bootstrap test, and that test compares the *self-host compiled* output, not the Rust-compiled output.
+The key invariant: **Stage 2 and Stage 3 use the same self-host compiler source** $\rightarrow$ their outputs are identical regardless of what the Rust compiler does. The Rust compiler's `.triv` output is compared against Stage 2 only for the bootstrap test, and that test compares the *self-host compiled* output, not the Rust-compiled output.
 
-### §3 — `.triv` wire format bump (v7 → v8)
+### §3 — `.triv` wire format bump (v7 $\rightarrow$ v8)
 
 **New discriminant:** `Opaque` = disc **12** (payload-free, like `Unit` disc 6).
 
@@ -93,7 +93,7 @@ TypeTag::Opaque => write_u8(buf, 12),
 12 => Ok(TypeTag::Opaque),
 ```
 
-Version bump to v8 per [ADR-0008](0008-triv-binary-format.md) §"Version compatibility": a new type discriminant that old readers can't parse = patch-level bump. Old readers (v7) encountering disc 12 get `TrivError::UnknownTypeDiscriminant(12)` — the existing error path, correct behavior.
+Version bump to v8 per [ADR-0008](0008-triv-binary-format.md) §"Version compatibility": a new type discriminant that old readers cannot parse = patch-level bump. Old readers (v7) encountering disc 12 get `TrivError::UnknownTypeDiscriminant(12)` — the existing error path, correct behavior.
 
 **Note:** while bumping, also add the missing disc 11 (Atomic) reader arm, which `write_type_tag` emits but `read_type_tag` currently falls through to the error case. This is a pre-existing gap — fixed opportunistically.
 
@@ -136,9 +136,9 @@ fn boundary_class(tag: &TypeTag) -> Option<BoundaryClass> {
 
 This adds **`Opaque`** to the pass-through path; **`Unit` stays `None` (tier down)**.
 
-**Why `Unit` is NOT pass-through (correction to an earlier draft of this ADR):** the draft proposed lumping `Unit` into `PassThrough` on the premise that "`Unit` is an `Rc<RuntimeValue>` ptr like any composite, same repr in both modes." That premise is **false on the unboxed side**: `map_type(TypeTag::Unit) = I8` (a 1-byte scalar), not an i64 pointer. So a true-`Unit` value does **not** have the same representation across the boxed↔unboxed boundary — in boxed mode it is an i64 box ptr, in unboxed mode an I8 scalar. Pass-through (cross the i64 ptr unmarshaled) would hand the unboxed callee an i64 where it declared I8 (and vice-versa for the return). That mismatch happens to be caught by the Cranelift verifier → a late tier-down at `define_function`, so it is *memory-safe by accident* — but it is **not** a correct pass-through, the justification was wrong, and it would silently become a double-free if `map_type(Unit)` ever changed to I64. Classifying `Unit` as `None` makes the tier-down explicit at marshaling time and removes that latent fragility. `Unit` cross-mode boundaries are rare now that `Opaque` absorbs all user-aggregate traffic, so the lost coverage is ~0 (the audit shows no residual `Unit` cross-mode blockers). Only `Long` (i128, ~0 occurrences in self-host) is the other unclassified boundary.
+**Why `Unit` is NOT pass-through (correction to an earlier draft of this ADR):** the draft proposed lumping `Unit` into `PassThrough` on the premise that "`Unit` is an `Rc<RuntimeValue>` ptr like any composite, same repr in both modes." That premise is **false on the unboxed side**: `map_type(TypeTag::Unit) = I8` (a 1-byte scalar), not an i64 pointer. So a true-`Unit` value does **not** have the same representation across the boxed↔unboxed boundary — in boxed mode it is an i64 box ptr, in unboxed mode an I8 scalar. Pass-through (cross the i64 ptr unmarshaled) would hand the unboxed callee an i64 where it declared I8 (and vice-versa for the return). That mismatch happens to be caught by the Cranelift verifier $\rightarrow$ a late tier-down at `define_function`, so it is *memory-safe by accident* — but it is **not** a correct pass-through, the justification was wrong, and it would silently become a double-free if `map_type(Unit)` ever changed to I64. Classifying `Unit` as `None` makes the tier-down explicit at marshaling time and removes that latent fragility. `Unit` cross-mode boundaries are rare now that `Opaque` absorbs all user-aggregate traffic, so the lost coverage is ~0 (the audit shows no residual `Unit` cross-mode blockers). Only `Long` (i128, ~0 occurrences in self-host) is the other unclassified boundary.
 
-**Clone-on-return impact (ADR-0035 §1):** `is_composite_tag` now includes `Opaque` → the unboxed `Ret` correctly clones a borrowed `Opaque`-typed return. `Unit` is NOT added to `is_composite_tag` because a true `Unit` return in unboxed mode is value-copy (the `i64` encoding of `Unit` is a constant, not a refcounted pointer), so cloning it would be incorrect. If a `Unit`-returning unboxed function returns a borrowed parameter, it's returning a `Unit` constant — value-copy, no double-free possible.
+**Clone-on-return impact (ADR-0035 §1):** `is_composite_tag` now includes `Opaque` $\rightarrow$ the unboxed `Ret` correctly clones a borrowed `Opaque`-typed return. `Unit` is NOT added to `is_composite_tag` because a true `Unit` return in unboxed mode is value-copy (the `i64` encoding of `Unit` is a constant, not a refcounted pointer), so cloning it would be incorrect. If a `Unit`-returning unboxed function returns a borrowed parameter, it's returning a `Unit` constant — value-copy, no double-free possible.
 
 ### §5 — `is_boxed` impact
 
@@ -151,14 +151,14 @@ Files modified:
 | Crate | File | Change |
 |---|---|---|
 | `triet-ir` | `src/types.rs` | Add `Opaque` variant to `TypeTag` enum + `Display` arm |
-| `triet-ir` | `src/lowerer.rs` | 3 sites: `_ => TypeTag::Unit` → `TypeTag::Opaque` |
-| `triet-ir` | `src/serde.rs` | Disc 12 write/read + version bump 7→8 + disc 11 Atomic read fix |
+| `triet-ir` | `src/lowerer.rs` | 3 sites: `_ => TypeTag::Unit` $\rightarrow$ `TypeTag::Opaque` |
+| `triet-ir` | `src/serde.rs` | Disc 12 write/read + version bump 7$\rightarrow$8 + disc 11 Atomic read fix |
 | `triet-ir` | `src/lib.rs` | Re-export (TypeTag is already re-exported — no change expected) |
 | `triet-ir` | `src/vm.rs` | `RuntimeValue::type_tag()`: `Struct/Enum/Closure => TypeTag::Opaque` (line 197); wildcard inner types stay `Unit` |
-| `triet-jit` | `src/codegen.rs` | `map_type` (`Opaque` → I64) + `is_composite_tag` + `boundary_class` |
+| `triet-jit` | `src/codegen.rs` | `map_type` (`Opaque` $\rightarrow$ I64) + `is_composite_tag` + `boundary_class` |
 | `triet-ir` | tests | TypeTag display, serde round-trip, version pin v8 |
 | self-host | `compiler/ir_lowerer.tri` | `OpaqueTag` variant + `alloc_tag_opaque` + lowerer wildcards |
-| self-host | `compiler/pack_writer.tri` | `TYPE_TAG_OPAQUE = 12` + `TRIV_VERSION` 7→8 + `write_type_tag`/`type_tag_discriminator`/`type_tag_eq` |
+| self-host | `compiler/pack_writer.tri` | `TYPE_TAG_OPAQUE = 12` + `TRIV_VERSION` 7$\rightarrow$8 + `write_type_tag`/`type_tag_discriminator`/`type_tag_eq` |
 | docs | `docs/decisions/0008-triv-binary-format.md` | Version history v8 entry |
 
 **NOT modified** (scope guard):
@@ -169,7 +169,7 @@ Files modified:
 
 ### §7 — Acceptance criteria
 
-1. **`cargo test --workspace`** — all green (baseline ≥ 1676).
+1. **`cargo test --workspace`** — all green (baseline $\ge$ 1676).
 2. **`cargo clippy --workspace --all-targets -- -D warnings`** — zero warnings.
 3. **JIT audit re-measurement** — `cargo test -p triet-bootstrap --test jit_tier_down_audit -- --ignored --nocapture`: cross-mode blocker category drops from ~410 to near-zero (residual = `Long`-typed boundaries only). Coverage % increases significantly (target: > 50%).
 4. **`.triv` round-trip** — existing programs serialize/deserialize correctly with the new disc 12. A v7 reader rejects disc 12 with `UnknownTypeDiscriminant`.
@@ -183,32 +183,32 @@ Files modified:
 3. **Self-host lockstep** — add `OpaqueTag` + `alloc_tag_opaque` + lowerer changes. Run `cargo test --workspace` (Stage 2 ≡ Stage 3 should pass — both now emit `Opaque`).
 4. **JIT codegen** — update `is_composite_tag`, `boundary_class`, any `TypeTag::Unit` pattern matches in codegen.rs that need an `Opaque` arm.
 5. **Re-audit** — measure coverage improvement.
-6. **Cleanup** — `TypeTag::Display`, doc comments, ADR-0008 version history, this ADR status → Locked.
+6. **Cleanup** — `TypeTag::Display`, doc comments, ADR-0008 version history, this ADR status $\rightarrow$ Locked.
 
-Steps 1–3 are the **self-host lockstep critical path** — they must be committed together (or in a sequence that never leaves Stage 2 ≢ Stage 3 on `main`). Step 4 is safe to separate.
+Steps 1–3 are the **self-host lockstep critical path** — they must be committed together (or in a sequence that never leaves Stage 2 $\not\equiv$ Stage 3 on `main`). Step 4 is safe to separate.
 
-## Không làm
+## Rejected Alternatives
 
-- **Parameterized `TypeTag::Struct(name)` / `TypeTag::Enum(name, variants)`.** Would give the IR full structural type info. Rejected for v0.11: the JIT doesn't need field layout to box/marshal correctly (`Opaque` suffices), and carrying names/fields through the IR + `.triv` + self-host is a large, high-risk change. This is Bậc C territory — native aggregate codegen needs field layout, but that phase replaces boxing entirely and will introduce its own type-info mechanism. Don't pay the cost now for a benefit that only arrives post-v0.11.
+- **Parameterized `TypeTag::Struct(name)` / `TypeTag::Enum(name, variants)`.** Would give the IR full structural type info. Rejected for v0.11: the JIT does not need field layout to box/marshal correctly (`Opaque` suffices), and carrying names/fields through the IR + `.triv` + self-host is a large, high-risk change. This is Tier C territory — native aggregate codegen needs field layout, but that phase replaces boxing entirely and will introduce its own type-info mechanism. Don't pay the cost now for a benefit that only arrives post-v0.11.
 
-- **Multiple `TypeTag` variants (`Struct`/`Enum`/`Generic`).** Would distinguish the three kinds of user aggregates. Rejected: the JIT's boxing and marshaling decisions don't vary by aggregate kind — struct, enum, and generic-instantiation are all `Rc<RuntimeValue>` pointers, all boxed, all pass-through at boundaries. One `Opaque` is sufficient and simpler.
+- **Multiple `TypeTag` variants (`Struct`/`Enum`/`Generic`).** Would distinguish the three kinds of user aggregates. Rejected: the JIT's boxing and marshaling decisions do not vary by aggregate kind — struct, enum, and generic-instantiation are all `Rc<RuntimeValue>` pointers, all boxed, all pass-through at boundaries. One `Opaque` is sufficient and simpler.
 
-- **Removing `TypeTag::Unit` entirely (replacing with `Opaque`).** Would simplify the enum but lose the "true zero-sized Unit" signal. True `Unit` has specific semantics: it's the return type of void functions, it's not a composite, it doesn't need cloning. Keeping `Unit` distinct from `Opaque` is essential for correct clone-on-return (§4) and prevents needlessly boxing void functions.
+- **Removing `TypeTag::Unit` entirely (replacing with `Opaque`).** Would simplify the enum but lose the "true zero-sized Unit" signal. True `Unit` has specific semantics: it is the return type of void functions, it is not a composite, it does not need cloning. Keeping `Unit` distinct from `Opaque` is essential for correct clone-on-return (§4) and prevents needlessly boxing void functions.
 
-- **A breaking `.triv` major version (v2.0).** Would allow reshuffling all discriminants. Rejected: a patch bump (v7 → v8) with a new disc 12 is sufficient, backward-compatible on the read side (old readers reject cleanly), and doesn't require coordinating a major version migration across tools.
+- **A breaking `.triv` major version (v2.0).** Would allow reshuffling all discriminants. Rejected: a patch bump (v7 $\rightarrow$ v8) with a new disc 12 is sufficient, backward-compatible on the read side (old readers reject cleanly), and does not require coordinating a major version migration across tools.
 
-## Prior art
+## Prior Art
 
-- **LLVM `%opaque = type opaque`** — LLVM IR supports opaque (incomplete) struct types whose body is not known. Used for forward declarations and type erasure. Triết's `TypeTag::Opaque` serves a similar purpose: "this is a composite, but the IR doesn't describe its structure."
+- **LLVM `%opaque = type opaque`** — LLVM IR supports opaque (incomplete) struct types whose body is not known. Used for forward declarations and type erasure. Triet's `TypeTag::Opaque` serves a similar purpose: "this is a composite, but the IR does not describe its structure."
 
-- **JVM's `Object` type** — the JVM's type system erases generics to `Object` at the bytecode level, similar to how Triết erases user aggregates to `Opaque`. The JVM's verifier can still reason about reference/value distinction (which is all the JIT needs here).
+- **JVM's `Object` type** — the JVM's type system erases generics to `Object` at the bytecode level, similar to how Triet erases user aggregates to `Opaque`. The JVM's verifier can still reason about reference/value distinction (which is all the JIT needs here).
 
-- **Cranelift's `AbiParam`** — Cranelift's own IR doesn't have "opaque" types, but its calling convention layer treats all pointer-width values as `I64` regardless of what they point to. Triết's boxed mode does the same — `Opaque` confirms "this is an `I64` pointer to a heap object" at the Triết IR level.
+- **Cranelift's `AbiParam`** — Cranelift's own IR does not have "opaque" types, but its calling convention layer treats all pointer-width values as `I64` regardless of what they point to. Triet's boxed mode does the same — `Opaque` confirms "this is an `I64` pointer to a heap object" at the Triet IR level.
 
-## Tham chiếu
+## References
 
 - [ADR-0035 §4](0035-jit-boxed-refcount-discipline.md) — the `TypeTag::Unit` ambiguity ceiling this ADR resolves.
-- [ADR-0034](0034-jit-aggregate-coverage.md) — Bậc A per-function uniform boxing + the oracle/Bậc-C staging.
+- [ADR-0034](0034-jit-aggregate-coverage.md) — Tier A per-function uniform boxing + the oracle/Tier-C staging.
 - [ADR-0008](0008-triv-binary-format.md) — `.triv` wire format + version compatibility rules.
 - [ADR-0007](0007-ir-design.md) — IR design + `TypeTag` original specification.
 - [ADR-0019](0019-self-hosting-compiler-bootstrap.md) — self-host compiler + 3-stage bootstrap + byte-identical gate.

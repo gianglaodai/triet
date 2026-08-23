@@ -1,187 +1,187 @@
 # ADR 0072 — Expected-Type Propagation in AST→MIR Lowering
 
-**Trạng thái:** **🔒 SEALED** (Mentor G ký đóng vĩnh viễn 2026-06-27; O verify máu 3 slice — byte-identical toàn corpus + poison đỏ độc lập + structural grep sạch). Áp dụng cho rewrite-era (Bậc C, `triet-lower`). Đóng **TODO Gap #2** (expected-type propagation cho `~0`/Outcome-constructor lồng trong block-final/if-arm/match-arm) + bug producer-side **hàm trả `T?`** phát hiện phiên 2026-06-27.
+**Status:** **🔒 SEALED** (Permanently sealed by Mentor G 2026-06-27; blood-verified by O across 3 slices — byte-identical across entire corpus + independent failing poison tests + clean structural grep). Applicable to rewrite-era (Tier C, `triet-lower`). Closes **TODO Gap #2** (expected-type propagation for `~0`/Outcome-constructors nested in block-finals/if-arms/match-arms) + producer-side bug for **functions returning `T?`** discovered in the 2026-06-27 session.
 
-**Thực thi (3 slice, local commits chờ push):** Slice 1 `c9a46e6` (signature plumbing, byte-identical) · Slice 2 `2c900fb` (wire 4 nguồn + leaf-consumer đọc `expected` + đập 3 Bug-B redirect + fallback §2.5 chuyển-tiếp; mở `T?`-return scalar) · Slice 3 (transparent forwarding if/match/block + gỡ sạch fallback §2.5 + **nhổ `c.sig.return_type` khỏi input constructor** + extract helper `emit_outcome_zero`; SEAL). Bằng chứng đóng: 157 UNTYPED (qua fallback cũ) vs 157 ANNOTATED (qua nguồn tường minh) ⟹ **MIR byte-identical** — hệ thống không hay biết khác biệt. `c.sig.return_type` nay chỉ sống ở 4 nguồn return-position hợp pháp.
+**Implementation (3 slices, local commits awaiting push):** Slice 1 `c9a46e6` (signature plumbing, byte-identical) · Slice 2 `2c900fb` (wired 4 sources + leaf-consumer reading `expected` + eliminated 3 Bug-B redirects + transition fallback §2.5; unlocked scalar `T?`-returns) · Slice 3 (transparent forwarding across if/match/block + completely removed fallback §2.5 + **excised `c.sig.return_type` from constructor inputs** + extracted `emit_outcome_zero` helper; SEALED). Proof of closure: 157 UNTYPED (via old fallback) vs 157 ANNOTATED (via explicit sources) ⟹ **MIR byte-identical** — system detects zero divergence. `c.sig.return_type` now lives solely at the 4 legitimate return-position sources.
 
-**Quyết định G (LOCKED 2026-06-27):** dùng **param tường minh `expected: Option<&MirType>`** truyền thẳng qua signature `lower_expr` — KHÔNG dùng context ẩn (`c.expected_stack`). Lý do G: *"Cái gì ẩn thì sớm muộn cũng sinh bug thối — `c.sig.return_type` là ví dụ hoàn hảo. Refactor một lần cho đàng hoàng, compiler tự-mô-tả."* Lộ trình 3-slice; điều kiện tiên quyết: **gate byte-identical ở Slice 1.**
+**G's Ruling (LOCKED 2026-06-27):** use **explicit parameter `expected: Option<&MirType>`** passed directly through `lower_expr` signature — DO NOT use hidden context (`c.expected_stack`). Rationale from G: *"Hidden state inevitably breeds rotten bugs — `c.sig.return_type` is the textbook example. Refactor it properly once; let the compiler be self-describing."* 3-slice roadmap; prerequisite: **byte-identical gate at Slice 1.**
 
-**Issue:** Cú pháp `~+ v` / `~- e` / `~0` (`Expr::OutcomeConstructor`) và `~0` bare (`Expr::NullLiteral`) **không tự mang đủ thông tin** để biết phải hạ thành đại diện nào: 16-byte Outcome StackSlot (`OutcomeAlloc`), hay nullable repr (PA-3c — payload-plain / NULL_SENTINEL). Quyết định đó phụ thuộc **kiểu kỳ vọng tại vị trí** (`expected type` / context). Lowerer hiện **KHÔNG truyền** kiểu kỳ vọng; nó dùng `c.sig.return_type` (kiểu trả về của HÀM) làm proxy toàn cục, rồi vá thủ công các vị trí cục bộ khác bằng "redirect" đặc thù. Hệ quả: một lớp bug `OutcomeAlloc on non-Outcome type` + nợ chắp-vá-per-site.
+**Issue:** Syntaxes `~+ v` / `~- e` / `~0` (`Expr::OutcomeConstructor`) and bare `~0` (`Expr::NullLiteral`) **do not carry sufficient intrinsic information** to determine their lower-level representation: a 16-byte Outcome StackSlot (`OutcomeAlloc`), or a nullable representation (PA-3c — plain-payload / NULL_SENTINEL). That decision depends on the **expected type at the call site** (`expected type` / context). The lowerer previously **DID NOT propagate** expected types; it used `c.sig.return_type` (the FUNCTION's return type) as a global proxy, manually patching other local sites with ad-hoc "redirects". Result: a class of `OutcomeAlloc on non-Outcome type` bugs + per-site patchwork debt.
 
 ---
 
-## 1. Bối cảnh — bằng chứng máu (recon phiên 2026-06-27)
+## 1. Context — Physical Evidence (Recon Session 2026-06-27)
 
-### 1.1 Case study: một chẩn đoán sai sống 1 phiên vì thiếu expected-type
+### 1.1 Case study: a misdiagnosis persisting for a session due to missing expected-type
 
-Sổ bàn giao ghi blocker `match-arm bind heap payload move-out`: `match get(){~+ s => s}` → `lowerer does not support Identifier`. **Recon chứng minh đây là HAI lỗi chồng nhau, cả hai đều KHÔNG phải "match-arm move-out":**
+Handover notes recorded a blocker on `match-arm bind heap payload move-out`: `match get(){~+ s => s}` → `lowerer does not support Identifier`. **Recon proved these were TWO overlapping issues, neither being "match-arm move-out":**
 
-1. **Sương mù — name collision.** Hàm test tên đúng chữ `get`, va `get` builtin free-function (Vector/HashMap) tại `lib.rs:2220`. Call `get()` (0 arg) → `arguments.len() != 2` → `unsupported_expr(callee)` (`lib.rs:2223-2227`) → in `Identifier { name: "get" }`. Đổi `get`→`fetch`: lỗi bốc hơi.
-2. **Kẻ thù thật — expected-type.** Đổi tên xong lộ: `function fetch() -> Integer? = ~+ 5` (chỉ producer, không match, không move-out, không heap) → `MIR verification error: OutcomeAlloc on local _0 with non-Outcome type 'Integer?'`.
+1. **Fog of war — name collision.** The test function was named `get`, colliding with the builtin free-function `get` (Vector/HashMap) at `lib.rs:2220`. Calling `get()` (0 args) → `arguments.len() != 2` → `unsupported_expr(callee)` (`lib.rs:2223-2227`) → printed `Identifier { name: "get" }`. Renaming `get`→`fetch`: error evaporated.
+2. **The real culprit — expected-type.** After renaming: `function fetch() -> Integer? = ~+ 5` (producer only, no match, no move-out, no heap) → `MIR verification error: OutcomeAlloc on local _0 with non-Outcome type 'Integer?'`.
 
-Probe matrix (mỗi dòng đổi đúng 1 biến, driver chạy độc lập):
+Probe matrix (each row modified exactly 1 variable, executed independently by driver):
 
-| Probe | Hình | Kết quả |
+| Probe | Form | Result |
 |---|---|---|
-| `match make_greeting() { ~+ x => x }` (`String~Integer`) | Outcome move-out | **OK, chạy, exit 0** |
-| `fetch() -> Integer? = ~+ 5` + main rỗng | producer nullable | **FAIL OutcomeAlloc** |
-| `-> Integer? = fetch()` | passthrough | FAIL OutcomeAlloc |
-| `let r: Integer? = fetch()` | consumer | FAIL OutcomeAlloc |
+| `match make_greeting() { ~+ x => x }` (`String~Integer`) | Outcome move-out | **OK, runs, exit 0** |
+| `fetch() -> Integer? = ~+ 5` + empty main | nullable producer | **FAILS OutcomeAlloc** |
+| `-> Integer? = fetch()` | passthrough | FAILS OutcomeAlloc |
+| `let r: Integer? = fetch()` | consumer | FAILS OutcomeAlloc |
 | `let r: Integer? = ~+ 5; match r {…}` (local) | local nullable match | **OK** |
 
-→ `match`-arm move-out trên Outcome **đã chạy**. Temp slot của call-return-aggregate hạ bình thường (fixture 113/139/142). "Match-arm move-out" KHÔNG phải feature mới — nó là **nạn nhân** của expected-type.
+→ `match`-arm move-out on Outcomes **was already working**. The temporary slot for call-return-aggregates lowered normally (fixtures 113/139/142). "Match-arm move-out" was NOT a new feature — it was a **victim** of missing expected-type.
 
-### 1.2 Cơ chế khuyết tật (file:line)
+### 1.2 Defective Mechanism (file:line)
 
-`Expr::OutcomeConstructor` (`lib.rs:1712`) quyết Outcome-vs-Nullable bằng cách đọc **`c.sig.return_type`** (kiểu trả về của hàm — context TOÀN CỤC):
-- `lib.rs:1722` `~0`: nếu `c.sig.return_type` ≠ Outcome → coi như NullLiteral.
-- `lib.rs:1762-1775` payload-type: `if let Outcome = c.sig.return_type` → lấy value/error type; ngược lại `Unknown`.
-- `lib.rs:1784-1790` **LUÔN emit `OutcomeAlloc` với `outcome_ty = c.sig.return_type.clone()`**.
+`Expr::OutcomeConstructor` (`lib.rs:1712`) decided Outcome-vs-Nullable by reading **`c.sig.return_type`** (function return type — GLOBAL context):
+- `lib.rs:1722` `~0`: if `c.sig.return_type` ≠ Outcome → treated as NullLiteral.
+- `lib.rs:1762-1775` payload-type: `if let Outcome = c.sig.return_type` → extracts value/error type; otherwise `Unknown`.
+- `lib.rs:1784-1790` **ALWAYS emitted `OutcomeAlloc` with `outcome_ty = c.sig.return_type.clone()`**.
 
-Khi `c.sig.return_type = Nullable(T)`: nhánh `if let Outcome` trượt → payload `Unknown`, **NHƯNG vẫn emit `OutcomeAlloc` trên slot kiểu `Nullable(T)`** → verifier bắt `OutcomeAlloc on non-Outcome type`. Đó là **"Bug B"** — tên đã được đặt sẵn trong code tại `lib.rs:1307-1313`.
+When `c.sig.return_type = Nullable(T)`: the `if let Outcome` branch missed → payload `Unknown`, **YET STILL emitted `OutcomeAlloc` on a slot typed `Nullable(T)`** → verifier caught `OutcomeAlloc on non-Outcome type`. This was **"Bug B"** — named as such in the codebase at `lib.rs:1307-1313`.
 
-### 1.3 Các "redirect" bolt-on hiện có — bằng chứng nợ chắp vá
+### 1.3 Existing Bolt-On "Redirects" — Evidence of Patchwork Debt
 
-Vì constructor đọc context toàn cục, mọi vị trí context CỤC BỘ phải vá riêng bằng cách **lột `~+` TRƯỚC khi tới constructor**:
-- **let-annotation** `let x: T? = ~+ v` — `lib.rs:1314-1324`: nếu annotation nullable + init là `~+ inner`, hạ `inner` plain thay vì OutcomeConstructor.
-- **struct-field** `Struct { f: ~+ v }` (field `f: T?`) — `lib.rs:2986-2998`: cùng mánh lột `~+`.
-- **return-stmt `~0`** — `lib.rs:1446-1451`; **expr-body `~0`** — `lib.rs:884-895` (chỉ `is_null_expr`, KHÔNG bắt `~+ v`).
+Because the constructor read global context, every LOCAL context had to be patched by **stripping `~+` BEFORE reaching the constructor**:
+- **let-annotation** `let x: T? = ~+ v` — `lib.rs:1314-1324`: if annotation is nullable + init is `~+ inner`, lowers `inner` as plain value instead of OutcomeConstructor.
+- **struct-field** `Struct { f: ~+ v }` (field `f: T?`) — `lib.rs:2986-2998`: same `~+` stripping trick.
+- **return-stmt `~0`** — `lib.rs:1446-1451`; **expr-body `~0`** — `lib.rs:884-895` (only `is_null_expr`, NOT handling `~+ v`).
 
-Mỗi vị trí value-context mới (block-final, if-arm, match-arm, call-argument, function-return-body cho `~+ v`) lại phải vá lại. Comment `lib.rs:882-883` tự thú: *"Block-final / if-arm `~0` is a SEPARATE expected-type-propagation gap"*.
+Every new value-context position (block-final, if-arm, match-arm, call-argument, function-return-body for `~+ v`) required another ad-hoc patch. Comment in `lib.rs:882-883` admitted: *"Block-final / if-arm `~0` is a SEPARATE expected-type-propagation gap"*.
 
-### 1.4 Đính chính kỹ thuật framing của G (NullableAlloc)
+### 1.4 Technical Correction to G's Framing (NullableAlloc)
 
-WO nói "gọi đúng Constructor (`NullableAlloc` hay `OutcomeAlloc`)". **KHÔNG tồn tại `NullableAlloc`** (`grep -rn NullableAlloc crates/` = rỗng). Theo PA-3c, "xây" nullable KHÔNG phải một alloc:
-- **present scalar** `~+ 5` (`Integer?`) = hạ `5` plain — **value IS the repr** (identity, không tag).
-- **present aggregate** `~+ Struct{..}` (`Struct?`) = hạ payload plain + **widening Assign** (slot = size+8, tag@0, fields@+8 — JIT taxonomy case 2, `lib.rs:1339-1362`).
-- **null** `~0` (`T?`) = `Const NULL_SENTINEL` (`lib.rs:892` / niche-cho-struct tại runtime).
+The WO mentioned "calling the right Constructor (`NullableAlloc` vs `OutcomeAlloc`)". **`NullableAlloc` DOES NOT EXIST** (`grep -rn NullableAlloc crates/` = empty). Under PA-3c, constructing a nullable is NOT an allocation:
+- **present scalar** `~+ 5` (`Integer?`) = lower `5` plain — **the value IS the representation** (identity, no tag).
+- **present aggregate** `~+ Struct{..}` (`Struct?`) = lower payload plain + **widening Assign** (slot = size+8, tag@0, fields@+8 — JIT taxonomy case 2, `lib.rs:1339-1362`).
+- **null** `~0` (`T?`) = `Const NULL_SENTINEL` (`lib.rs:892` / struct niche at runtime).
 
-Vậy nhiệm vụ của expected-type KHÔNG phải "chọn alloc khác", mà là **chọn ĐƯỜNG HẠ**: Outcome-StackSlot vs nullable-(identity/widen/sentinel). ADR giữ đúng cơ chế PA-3c đã có; chỉ thay nguồn-quyết-định từ `c.sig.return_type` (proxy sai) sang `expected_ty` (cục bộ đúng).
+Thus, expected-type's role is NOT to "choose a different allocation", but to **select the LOWERING PATH**: Outcome-StackSlot vs nullable-(identity/widen/sentinel). This ADR preserves existing PA-3c mechanics; it merely shifts the decision authority from `c.sig.return_type` (flawed proxy) to `expected_ty` (accurate local context).
 
 ---
 
-## 2. Quyết định
+## 2. Decision
 
-**Luồng `expected_ty: Option<&MirType>` được truyền tường minh xuyên cây lowering.** `Expr::OutcomeConstructor` và `Expr::NullLiteral` đọc `expected_ty` (KHÔNG đọc `c.sig.return_type`) để chọn đường hạ. Mọi "redirect" bolt-on (§1.3) bị xoá, thay bằng một quy tắc đồng nhất: **vị trí value-context truyền expected_ty xuống biểu thức của nó.**
+**The flow `expected_ty: Option<&MirType>` is explicitly threaded down the lowering tree.** `Expr::OutcomeConstructor` and `Expr::NullLiteral` read `expected_ty` (NOT `c.sig.return_type`) to choose the lowering path. All bolt-on "redirects" (§1.3) are deleted, replaced by a single uniform rule: **value-context positions propagate expected_ty down to their sub-expressions.**
 
-### 2.1 Đổi signature `lower_expr`
+### 2.1 Modifying `lower_expr` Signature
 
 ```rust
-// CŨ (lib.rs:1622):
+// OLD (lib.rs:1622):
 fn lower_expr(expr_id: ExprId, arena: &Arena, c: &mut Ctx) -> Result<Local, LowerError>
 
-// MỚI:
+// NEW:
 fn lower_expr(
     expr_id: ExprId,
-    expected: Option<&MirType>,   // kiểu kỳ vọng tại vị trí; None = không ràng buộc
+    expected: Option<&MirType>,   // expected type at position; None = unconstrained
     arena: &Arena,
     c: &mut Ctx,
 ) -> Result<Local, LowerError>
 ```
 
-61 call-site `lower_expr(` cập nhật cơ học. **Mặc định an toàn = `None`** (giữ y hệt hành vi hiện tại cho mọi vị trí KHÔNG phải value-context). Chỉ một nhúm vị trí truyền `Some(_)` (xem §2.3). Quy ước chống churn-vĩnh-viễn: vì 61 site, **không** thêm overload thứ hai — một hàm, một param, đa số `None`.
+All 61 `lower_expr(` call sites updated mechanically. **Safe default = `None`** (preserves exact existing behavior for all non-value-context positions). Only a small set of positions pass `Some(_)` (see §2.3). Rule against perpetual churn: across all 61 sites, **no** secondary overload added — one function, one parameter, mostly `None`.
 
-> **Quyết định G (LOCKED):** param tường minh. Hướng `c.expected_stack` (context ẩn) **bị bác** — cùng họ bệnh với `c.sig.return_type`. Churn 61 site là chi phí một lần, đổi lấy compiler tự-mô-tả.
+> **G's Ruling (LOCKED):** explicit parameter. The alternative `c.expected_stack` (hidden context) **was rejected** — sharing the exact architectural pathology of `c.sig.return_type`. Churn across 61 sites is a one-time cost for a self-describing compiler.
 
-### 2.2 Quy tắc truyền — TRANSPARENT vs OPAQUE
+### 2.2 Propagation Rules — TRANSPARENT vs OPAQUE
 
-Phân loại từng vị trí con của mỗi `Expr`:
+Categorization of child positions for each `Expr`:
 
-- **TRANSPARENT** (forward expected_ty xuống nguyên vẹn — giá trị của con CHÍNH LÀ giá trị vị trí cha):
-  - `Block { .., tail }` → tail nhận expected của block.
-  - `If { cond, then, else }` → cond nhận `Some(Trilean!)`; **then & else nhận expected của if** (cả hai arm cùng kiểu kết quả).
-  - `Match { scrutinee, arms }` → scrutinee nhận `None` (kiểu của nó độc lập); **mỗi arm body nhận expected của match**.
-  - `OutcomeConstructor`/`NullLiteral` = **LEAF tiêu thụ** (xem §2.4).
-- **OPAQUE** (con nhận `None` — kiểu con không liên quan kiểu cha):
-  - `BinaryOp`/`UnaryOp` operands, comparison, logic ops.
-  - index/receiver/argument-trong-builtin, condition của while, scrutinee của match.
-  - *(call-argument: tương lai có thể truyền param-type; ADR này để `None` — out of scope, ghi backlog.)*
+- **TRANSPARENT** (forward expected_ty down intact — child value IS the parent value):
+  - `Block { .., tail }` → tail receives block's expected type.
+  - `If { cond, then, else }` → cond receives `Some(Trilean!)`; **then & else receive if's expected type** (both arms share result type).
+  - `Match { scrutinee, arms }` → scrutinee receives `None` (independent type); **each arm body receives match's expected type**.
+  - `OutcomeConstructor`/`NullLiteral` = **consuming LEAVES** (see §2.4).
+- **OPAQUE** (child receives `None` — child type unrelated to parent type):
+  - `BinaryOp`/`UnaryOp` operands, comparisons, logical operations.
+  - index/receiver/builtin arguments, while condition, match scrutinee.
+  - *(call arguments: parameter types can be forwarded in the future; left as `None` in this ADR — out of scope, logged to backlog.)*
 
-### 2.3 Nguồn của expected_ty (nơi sinh `Some`)
+### 2.3 Sources of expected_ty (where `Some` originates)
 
-| Vị trí | expected_ty đến từ | file:line hiện tại |
+| Position | expected_ty originates from | Current file:line |
 |---|---|---|
 | Function body tail (block-final / expr-body) | `c.sig.return_type` | `lib.rs:878-898` |
-| `Stmt::Return expr` | `c.sig.return_type` | `lib.rs:1446` vùng |
-| `let x: T = init` | annotation `T` (qua `lower_type_simple`) | `lib.rs:1307-1366` |
-| Struct-field init `Struct{ f: e }` | kiểu khai báo của field `f` | `lib.rs:2954-2998` |
-| Match-arm body | expected của `match` (transparent) | nhánh match §2.2 |
-| If-arm body | expected của `if` (transparent) | nhánh if §2.2 |
+| `Stmt::Return expr` | `c.sig.return_type` | `lib.rs:1446` region |
+| `let x: T = init` | annotation `T` (via `lower_type_simple`) | `lib.rs:1307-1366` |
+| Struct-field init `Struct{ f: e }` | declared type of field `f` | `lib.rs:2954-2998` |
+| Match-arm body | expected type of `match` (transparent) | match branch §2.2 |
+| If-arm body | expected type of `if` (transparent) | if branch §2.2 |
 
-Lưu ý: `c.sig.return_type` KHÔNG biến mất — nó trở thành **nguồn ban đầu** của expected_ty tại đúng 2 vị trí (function-body-tail + return-stmt), thay vì bị constructor đọc lén ở tầng sâu.
+Note: `c.sig.return_type` DOES NOT vanish — it becomes the **initial origin** of expected_ty at exactly 2 locations (function-body-tail + return-stmt), rather than being covertly inspected deep in the constructor.
 
-### 2.4 LEAF tiêu thụ — `OutcomeConstructor` & `NullLiteral` tái cấu trúc
+### 2.4 Consuming LEAVES — Restructuring `OutcomeConstructor` & `NullLiteral`
 
-`Expr::OutcomeConstructor { arm, payload }` đọc `expected` (KHÔNG đọc `c.sig.return_type`):
+`Expr::OutcomeConstructor { arm, payload }` inspects `expected` (NOT `c.sig.return_type`):
 
 ```
 match expected {
   Some(Outcome{value_type, error_type, ..}) =>
-      // ĐƯỜNG OUTCOME (giữ nguyên lib.rs:1762-1810): OutcomeAlloc + disc + payload.
-      // payload_ty = value_type/error_type theo arm.
+      // OUTCOME PATH (preserved intact lib.rs:1762-1810): OutcomeAlloc + disc + payload.
+      // payload_ty = value_type/error_type per arm.
   Some(Nullable(inner)) =>
       match arm {
-        Positive(Some(p)) => lower_expr(p, Some(inner), ..)   // payload-plain; widen do vị trí cha Assign lo (PA-3c)
-        Zero               => Const NULL_SENTINEL              // null repr
-        Negative(_)        => Err  // ~- trên T? — typecheck E lẽ ra đã chặn
+        Positive(Some(p)) => lower_expr(p, Some(inner), ..)   // plain payload; widening handled by parent Assign (PA-3c)
+        Zero               => Const NULL_SENTINEL              // null representation
+        Negative(_)        => Err  // ~- on T? — should already be blocked by typechecker
       }
   Some(other_non_wrapper) | None =>
       Err(null_literal_without_expected_type / outcome_without_expected_type)
 }
 ```
 
-`Expr::NullLiteral` (`lib.rs:1679`) đồng dạng: `Some(Nullable(_))` → sentinel; `Some(Outcome{..})` → Outcome-zero (disc=0); khác → `Err` (đây chính là `is_null_expr` special-case ở `lib.rs:884` được TỔNG QUÁT HOÁ — xoá nhánh ad-hoc).
+`Expr::NullLiteral` (`lib.rs:1679`) operates analogously: `Some(Nullable(_))` → sentinel; `Some(Outcome{..})` → Outcome-zero (disc=0); otherwise → `Err` (generalizing the `is_null_expr` special case in `lib.rs:884` — eliminating ad-hoc branches).
 
-**Hệ quả dọn nợ:** ba redirect bolt-on (`lib.rs:1314-1324`, `2986-2998`, `884-895`) **bị xoá**. Chúng từng phải lột `~+`/`~0` trước constructor vì constructor đọc sai context; nay constructor đọc đúng `expected` → để `~+`/`~0` đi thẳng qua `lower_expr(.., Some(field_or_annotation_ty))`. Ít code hơn, một đường duy nhất.
-
----
-
-### 2.5 Fallback chuyển-tiếp Slice 2→3 (giữ mọi gate xanh từng lát)
-
-Recon 2026-06-27 phát hiện **3 fixture (160/161/187)** đặt `~+`/`~-` trong **match-arm-body** của hàm trả Outcome (vd `function f(c) -> Integer~Integer = match c { Color::Red => ~+ 5, … }`). Chúng chạy nhờ constructor đọc `c.sig.return_type`. Nếu Slice 2 cho leaf-consumer đọc `expected` STRICT (Err khi `None`) trong khi forwarding qua `match`/`if`/`block` còn ở **Slice 3** → 3 fixture nhận `None` → vỡ → gate rụng.
-
-**Quyết định slicing (O, để gate xanh từng lát):**
-- **Slice 2** — leaf-consumer đọc `expected`, nhưng khi `expected == None` **lùi về `c.sig.return_type`** (hành vi cũ). Vị trí đã-wire (function-body/let/return/struct-field) truyền `Some(_)` thật → mở `T?`-return. Vị trí chưa-wire (match/if/block arm: 160/161/187) nhận `None` → fallback → byte-identical.
-- **Slice 3** — wire transparent-forwarding (if/match/block) **VÀ gỡ hẳn fallback** → `c.sig.return_type` thôi làm input của constructor (chỉ còn là *nguồn* expected tại function-body/return per §2.3). Kết thúc việc giết context ẩn.
-
-Fallback là **giàn giáo chuyển-tiếp có lịch tháo dỡ ở Slice 3**, KHÔNG phải nợ ẩn. `c.sig.return_type` chưa chết hẳn ở Slice 2 — nó chết ở Slice 3. Ghi minh bạch để không ai tưởng Slice 2 đã đóng trọn việc giết context ẩn.
-
-## 3. Phạm vi & blast radius
-
-- **Signature churn:** 61 call-site `lower_expr(` (cơ học, đa số thêm `None`).
-- **Đọc `c.sig.return_type` cho quyết-định-constructor:** 11 usage (`grep` 2026-06-27) — gom về §2.3.
-- **Xoá:** 3 redirect bolt-on + nhánh `is_null_expr` ad-hoc tại function-body.
-- **KHÔNG đụng:** JIT (`triet-jit`), MIR statement set (`OutcomeAlloc`/`StructAlloc`/`EnumAlloc` giữ nguyên — KHÔNG thêm `NullableAlloc`), borrowck. Đây thuần là tầng `triet-lower`.
-
-**Bất biến phải giữ (regression gate):** mọi fixture Outcome (113/139/142, 107-135) + nullable local (225-230) + nested-nullable-aggregate (ADR-0065) **byte-identical**. Đường Outcome `Some(Outcome{..})` = copy nguyên logic cũ; đường nullable local đã đi qua redirect → nay đi qua expected_ty cùng kết quả.
+**Debt payoff:** three bolt-on redirects (`lib.rs:1314-1324`, `2986-2998`, `884-895`) **are deleted**. They previously stripped `~+`/`~0` because the constructor read incorrect context; now that constructor reads `expected` accurately → `~+`/`~0` flows cleanly through `lower_expr(.., Some(field_or_annotation_ty))`. Less code, single unified pathway.
 
 ---
 
-## 4. Tiêu chí mở khoá (feature lộ ra sau khi ADR landed)
+### 2.5 Transition Fallback Slice 2→3 (maintaining green gates per slice)
 
-1. `function f() -> T? = ~+ v` / `= ~0` hạ đúng (scalar + aggregate + heap-aware theo ADR-0062 nếu đã mở).
-2. `match call_returning_T_question() { ~+ s => … ~0 => … }` chạy.
-3. `if c { ~+ v } else { ~0 }` với kiểu kết quả `T?` chạy (Gap #2 if-arm).
-4. Block-final `{ …; ~0 }` trong vị trí kỳ vọng `T?`/Outcome chạy (Gap #2 block-final).
-5. Toàn bộ corpus cũ XANH byte-identical.
+Recon on 2026-06-27 identified **3 fixtures (160/161/187)** placing `~+`/`~-` inside **match-arm-bodies** of functions returning Outcomes (e.g. `function f(c) -> Integer~Integer = match c { Color::Red => ~+ 5, … }`). They functioned because the constructor fell back to `c.sig.return_type`. If Slice 2 forced leaf-consumers to read `expected` STRICTLY (returning Err on `None`) while forwarding through `match`/`if`/`block` remained scheduled for **Slice 3** → those 3 fixtures would receive `None` → break → fail the test gate.
 
----
+**Slicing strategy (by O, maintaining green gates throughout):**
+- **Slice 2** — leaf-consumer reads `expected`, but when `expected == None` **falls back to `c.sig.return_type`** (legacy behavior). Wired sites (function-body/let/return/struct-field) pass real `Some(_)` → unlocking `T?`-returns. Unwired sites (match/if/block arms: 160/161/187) receive `None` → fallback → byte-identical.
+- **Slice 3** — wire transparent forwarding (if/match/block) **AND remove fallback entirely** → `c.sig.return_type` ceases to be an input to the constructor (surviving only as an expected-type *source* at function-body/return per §2.3). Completes the elimination of hidden context.
 
-## 5. Phương án bị bác
+The fallback is **transitional scaffolding scheduled for teardown in Slice 3**, NOT hidden debt. `c.sig.return_type` does not die fully in Slice 2 — it dies in Slice 3. Documented transparently so Slice 2 is not mistaken for the final elimination of hidden context.
 
-**Option A — chắp vá per-site:** thêm redirect "Bug B" tại function-body-tail (và sau đó if-arm, match-arm…). **Bác (G, 2026-06-27):** *"Hôm nay vá function-body, ngày mai vá if-arm, ngày mốt vá match-arm? Đéo bao giờ."* Chính TODO Gap #2 đã cảnh báo "KHÔNG chắp vá per-site". Option A nhân nợ; mỗi vị trí value-context mới = một redirect mới + một mặt bug mới.
+## 3. Scope & Blast Radius
 
----
+- **Signature churn:** 61 `lower_expr(` call sites (mechanical, predominantly adding `None`).
+- **Reading `c.sig.return_type` for constructor decisions:** 11 usages (`grep` 2026-06-27) — consolidated to §2.3.
+- **Deletions:** 3 bolt-on redirects + ad-hoc `is_null_expr` branch in function body.
+- **Untouched:** JIT (`triet-jit`), MIR statement set (`OutcomeAlloc`/`StructAlloc`/`EnumAlloc` retained — NO new `NullableAlloc`), borrowck. Confined strictly to `triet-lower`.
 
-## 6. Backlog sinh ra (KHÔNG quên — G chốt 2026-06-27)
-
-- **BuiltinShadowing UX trap (E-code mới).** User đặt tên hàm trùng builtin (`get`/`append`/…) → hiện quăng `unsupported_expr` khó hiểu (case study §1.1 nướng 1 phiên). Sửa: error đàng hoàng `ReservedBuiltinName` / `BuiltinShadowing` (namespace `triet::lower::Exxxx` hoặc typecheck). Ưu tiên: gom vào một WO dọn dẹp sau, KHÔNG ưu tiên số 1, KHÔNG ĐƯỢC QUÊN.
-- **call-argument expected_ty:** truyền param-type xuống argument (cho `~+`/`~0` làm tham số). Out of scope ADR này; ghi nhận khi cần.
+**Preserved invariants (regression gate):** all Outcome fixtures (113/139/142, 107-135) + local nullable fixtures (225-230) + nested-nullable-aggregates (ADR-0065) remain **byte-identical**. Outcome path `Some(Outcome{..})` replicates legacy logic verbatim; local nullable path previously traversing redirects now flows through expected_ty with identical results.
 
 ---
 
-## 7. Liên kết
+## 4. Unlocked Capabilities (features enabled post-ADR landing)
 
-- Đóng **TODO Gap #2** (`TODO.md` mục Heap-Nullable backlog #68).
-- Liên quan: ADR-0020 (Outcome), ADR-0041 (PA-3c nullable sentinel), ADR-0065 (nullable aggregate — nguồn của redirect bolt-on), ADR-0062 (heap-nullable — hưởng lợi khi mở).
-- Đính chính sổ bàn giao: `spec/plans/MENTOR_G_STATE.md:14/49` ("match-arm move-out blocked by does not support Identifier") = chẩn đoán sai; kẻ thù thật = expected-type (ADR này).
+1. `function f() -> T? = ~+ v` / `= ~0` lowers correctly (scalar + aggregate + heap-aware per ADR-0062 if enabled).
+2. `match call_returning_T_question() { ~+ s => … ~0 => … }` executes.
+3. `if c { ~+ v } else { ~0 }` with result type `T?` executes (Gap #2 if-arms).
+4. Block-final `{ …; ~0 }` in positions expecting `T?`/Outcome executes (Gap #2 block-finals).
+5. Entire existing test corpus PASSES byte-identical.
+
+---
+
+## 5. Rejected Alternatives
+
+**Option A — per-site patching:** adding a "Bug B" redirect at function-body-tail (and subsequently if-arms, match-arms…). **Rejected (G, 2026-06-27):** *"Patch function body today, patch if-arms tomorrow, patch match-arms the day after? Never."* TODO Gap #2 explicitly warned "DO NOT patch per-site". Option A compounds debt; every new value-context site creates another redirect and new bug surface.
+
+---
+
+## 6. Arising Backlog (NOT forgotten — finalized by G 2026-06-27)
+
+- **BuiltinShadowing UX trap (new error code).** Defining a user function with the same name as a builtin (`get`/`append`/…) currently triggers confusing `unsupported_expr` errors (case study §1.1 burned a full session). Fix: proper error diagnostics `ReservedBuiltinName` / `BuiltinShadowing` (namespace `triet::lower::Exxxx` or typechecker). Priority: consolidate into subsequent cleanup WO, NOT priority #1, CANNOT BE FORGOTTEN.
+- **call-argument expected_ty:** propagate parameter types down to arguments (for passing `~+`/`~0` as arguments). Out of scope for this ADR; logged for future implementation.
+
+---
+
+## 7. References
+
+- Closes **TODO Gap #2** (`TODO.md` under Heap-Nullable backlog #68).
+- Related: ADR-0020 (Outcome), ADR-0041 (PA-3c nullable sentinel), ADR-0065 (nullable aggregate — source of bolt-on redirects), ADR-0062 (heap-nullable — benefits upon enablement).
+- Handover correction: `spec/plans/MENTOR_G_STATE.md:14/49` ("match-arm move-out blocked by does not support Identifier") = misdiagnosis; true blocker = expected-type (this ADR).

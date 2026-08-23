@@ -1,240 +1,235 @@
 # ADR 0088 — Double-Nullable Container Reads (`T??` on `get`-family)
 
-**Trạng thái:** **Lane A ĐÓNG** (O✅/G✅/Giang✅ 2026-07-27, `d9b659a` — xem
-**§AMEND-1**: hàng rào `E1055` 2 tầng / 2 lớp nguồn + 9 răng cưa 511-519).
-**Lane B (thiết kế `T??` thật) HOÃN VÔ THỜI HẠN.** Thân bài dưới đây là bản
-gốc 2026-07-25 (defer `get`-family qua E1051) — nó CHỈ phủ `get`/`get_ref`,
-và §Quyết định của nó có **một nhận định sai về `contains`** đã được §AMEND-1
-§88A.4 đính chính. Đọc §AMEND-1 trước khi hành động theo thân bài.
+**Status:** **Lane A CLOSED** (O✅/G✅/Giang✅ 2026-07-27, `d9b659a` — see
+**§AMEND-1**: 2-tier / 2-source-class `E1055` fence + 9 safeguards 511-519).
+**Lane B (true `T??` design) DEFERRED INDEFINITELY.** The main body below represents
+the original 2026-07-25 draft (deferring `get`-family via E1051) — it ONLY covered `get`/`get_ref`,
+and its §Decision contained **an erroneous assertion regarding `contains`** corrected in §AMEND-1
+§88A.4. Read §AMEND-1 prior to taking action based on the main body.
 
-**Issue:** `get`/`get_ref` trên container (`Vector<T>`/`HashMap<K,T>`) trả về
-`T?` — outer `?` mã hoá "key/index có tồn tại hay không". Khi `T` bản thân đã
-là `T0?` (giá trị lưu trong container CÓ THỂ null, ví dụ
-`HashMap<Integer,Integer?>`), kết quả logic của `get` là **double-nullable**:
-`(T0?)?` / `T0??` — outer `?` = "key found", inner `?` = "giá trị lưu là
-null". Trước WO-GetRefNullableRefuse, trường hợp này rơi xuống
-`NoMatchingOverload` (E1041) generic — một lỗi ĐÚNG (không compile được)
-nhưng SAI LÝ DO (trông như "không có overload nào" chứ không phải "double-
-nullable chưa được thiết kế").
+**Issue:** `get`/`get_ref` on containers (`Vector<T>`/`HashMap<K,T>`) returns
+`T?` — the outer `?` encodes "whether key/index exists". When `T` is itself already
+`T0?` (the value stored in the container CAN be null, e.g.
+`HashMap<Integer,Integer?>`), the logical result of `get` is **double-nullable**:
+`(T0?)?` / `T0??` — outer `?` = "key found", inner `?` = "stored value is
+null". Prior to WO-GetRefNullableRefuse, this case fell through to generic
+`NoMatchingOverload` (E1041) — a CORRECT refusal (did not compile) for the
+WRONG REASON (appeared as "no matching overload exists" rather than "double-nullable
+is not yet designed").
 
-Tension cụ thể lộ ra khi recon: `crates/triet-mir/src/lib.rs:4030` (comment
-test `nullable_type_helpers_round_trip`) viết *"Edge case: 'Integer??' — can't
-happen (C6: T?? auto-flatten), but helper must be defined"*, và ngay dòng
-`:4032` test vẫn tự tay dựng `MirType::Nullable(Box::new(MirType::Nullable(
-Box::new(MirType::Integer))))` để chứng minh `is_nullable()`/
-`nullable_payload()` không panic trên hình dạng đó — tức là **MIR CÓ THỂ
-biểu diễn `T??`** dù comment khẳng định nó "không xảy ra được". Đối chiếu
+Concrete tension revealed during recon: `crates/triet-mir/src/lib.rs:4030` (test comment
+`nullable_type_helpers_round_trip`) noted *"Edge case: 'Integer??' — can't
+happen (C6: T?? auto-flatten), but helper must be defined"*, and on line
+`:4032` the test manually constructed `MirType::Nullable(Box::new(MirType::Nullable(
+Box::new(MirType::Integer))))` to prove `is_nullable()`/
+`nullable_payload()` do not panic on that shape — meaning **MIR CAN
+represent `T??`** despite the comment asserting it "cannot happen". Comparing with
 `crates/triet-typecheck/src/lib.rs` (`nullable_flatmap_flattens_nullable_body`,
-~dòng 89): auto-flatten **CHỈ xảy ra tại một điểm cụ thể** — toán tử `?+>`
-(flatMap) của `T?`, nơi body trả `U?` được flatten về `U?` (không phải
-`U??`) theo thiết kế của chính operator đó (ADR-0020 §3 ternary map family).
-Đây KHÔNG phải một bất biến toàn cục của type-system — nó là hành vi cục bộ
-của MỘT toán tử. `get()` trên container không đi qua `?+>`, nên không có gì
-tự động flatten hộ nó; nếu không refuse, typecheck sẽ hạ type `(T0?)?` xuống
-overload table và rơi vào hành vi không xác định (silent-flatten ở tầng nào
-đó, hoặc double-nullable sống sót tới MIR/JIT nơi ABI 1-bit-sentinel
-(`i64::MIN`, ADR-0041 PA-3c) không có chỗ cho 2 tầng null độc lập).
+~line 89): auto-flattening **ONLY occurs at one specific site** — the `?+>`
+(flatMap) operator on `T?`, where bodies returning `U?` are flattened to `U?`
+(not `U??`) per the operator's design (ADR-0020 §3 ternary map family).
+This is NOT a global type-system invariant — it is the local behavior of
+ONE operator. Container `get()` does not route through `?+>`, so nothing
+automatically flattens it; if not refused, typecheck lowers `(T0?)?` to the
+overload table and enters undefined behavior (silent-flattening in some layer,
+or double-nullables reaching MIR/JIT where 1-bit sentinel ABI
+(`i64::MIN`, ADR-0041 PA-3c) has no representation for 2 independent levels of null).
 
-## Quyết định
+## Decision
 
-**Refuse tường minh** double-nullable container reads tại typecheck
-(`E1051`, `crates/triet-typecheck/src/error.rs`), thay vì:
-(a) silent-flatten (mất phân biệt not-found vs stored-null — SAI kết quả), hoặc
-(b) ship một biểu diễn `T??` nửa vời chỉ đủ cho `get`-family mà chưa được
-kiểm chứng ở AST/MIR/JIT/match.
+**Explicitly refuse** double-nullable container reads at typecheck
+(`E1051`, `crates/triet-typecheck/src/error.rs`), rather than:
+(a) silent-flattening (losing distinction between not-found vs stored-null — WRONG result), or
+(b) shipping a half-baked `T??` representation sufficient only for `get`-family without
+verification across AST/MIR/JIT/match.
 
-Guard đặt trong `resolve_overload` (`crates/triet-typecheck/src/check/
-exprs.rs`), ngay sau guard heap-violation hiện có (ADR-0077 Slice B / ADR-
-0078 P1b) và trước aggregate-key arm (ADR-0083 §5): nếu `name == "get"` và
-container (`Vector<V>`/`HashMap<_,V>`, kể cả qua `&0` borrow) có `V =
+Guard placed in `resolve_overload` (`crates/triet-typecheck/src/check/
+exprs.rs`), immediately following the existing heap-violation guard (ADR-0077 Slice B / ADR-
+0078 P1b) and preceding the aggregate-key arm (ADR-0083 §5): if `name == "get"` and
+the container (`Vector<V>`/`HashMap<_,V>`, including via `&0` borrow) has `V =
 Nullable(_)` → push `TypeError::GetContainerNullableValueUnsupported` (E1051),
-`return Type::Unknown`. Guard KHÔNG chặn `contains` (chỉ trả `Trilean!`
-found/not-found, không có double-nullable nào phát sinh).
+`return Type::Unknown`. The guard DOES NOT block `contains` (which returns `Trilean!`
+found/not-found, without generating double-nullables).
 
-### Hình thức cụ thể
+### Concrete Form
 
 ```
 function f(m: &0 HashMap<Integer, Integer?>, k: Integer) -> Integer =
     get(m, k)  // E1051: get()/get_ref cannot return a double-nullable Integer?? value type
 ```
 
-Refuse xảy ra TẠI typecheck — không có construct nào chạm MIR/JIT (không có
-"refuse-gap" kiểu ADR-0065 §15/ADR-0085 — sound theo cấu trúc, không phải
-theo may mắn).
+Refusal occurs AT typecheck — no constructs reach MIR/JIT (avoiding "refusal gaps"
+like ADR-0065 §15 / ADR-0085 — sound by construction, not by luck).
 
-## Các phương án đã cân nhắc
+## Alternatives Considered
 
-| # | Phương án | Ưu | Nhược | Kết luận |
-|---|-----------|---|-------|----------|
-| 1 | Silent-flatten `(T?)? → T?` giống `?+>` | Không cần lỗi mới, "chạy được" ngay | **Mất thông tin**: không phân biệt được "key không tồn tại" vs "key tồn tại, giá trị null" — hai tình huống ngữ nghĩa khác nhau bị gộp làm một, kết quả SAI cho chương trình dùng `HashMap<K, V?>` để lưu "có thể vắng mặt" một cách tường minh | Bác bỏ — sai hơn là refuse |
-| 2 | Thiết kế đầy đủ `T??` (kiểu tuple `(present, present_inner, value)` hoặc tag 3-trạng-thái) ngay bây giờ | Giải quyết tận gốc | Đụng AST + typecheck + MIR layout + JIT ABI (sentinel hiện tại chỉ có 1 bit null) + match ergonomics — khối lượng một campaign riêng, chưa có ADR nào lock thiết kế 3-tầng | Defer — đúng như G quyết, không ship nửa mùa |
-| 3 | **Refuse tường minh (E1051), defer thiết kế** | An toàn ngay lập tức, lỗi đúng lý do, không đóng cửa thiết kế tương lai | Người dùng tạm thời không dùng được `get` trên container-giá-trị-nullable (workaround: sentinel value hoặc wrapper Struct có cờ "present" tường minh) | **Chọn** |
+| # | Alternative | Pros | Cons | Conclusion |
+|---|-------------|------|------|------------|
+| 1 | Silent-flatten `(T?)? → T?` like `?+>` | No new error required, "works" immediately | **Information loss**: cannot distinguish "key not found" vs "key present, value null" — two semantically distinct scenarios merged, producing WRONG results for programs using `HashMap<K, V?>` to explicitly model optional presence | Rejected — worse than refusing |
+| 2 | Fully design `T??` (tuple representation `(present, present_inner, value)` or 3-state tag) immediately | Resolves root cause | Touches AST + typecheck + MIR layout + JIT ABI (sentinel currently has only 1 bit for null) + match ergonomics — full standalone campaign, no ADR currently locks 3-state design | Deferred — as ruled by G, avoid half-baked shipping |
+| 3 | **Explicit refusal (E1051), deferring design** | Immediate safety, accurate error rationale, preserves future design options | Users temporarily cannot invoke `get` on nullable-valued containers (workarounds: sentinel values or wrapper Structs with explicit presence flags) | **CHOSEN** |
 
-## Hậu quả
+## Consequences
 
-### Tích cực
-- `get`/`get_ref` không bao giờ trả một type mà pipeline (MIR/JIT ABI) không
-  biểu diễn được đúng đắn — refuse xảy ra sớm nhất có thể (typecheck), trước
-  khi bất kỳ MIR nào được lower.
-- Lỗi đúng lý do (E1051 thay vì E1041 mơ hồ) — người dùng biết CHÍNH XÁC vì
-  sao và cách tránh (sentinel/wrapper Struct).
-- Không đóng cửa: khi `T??` được thiết kế đầy đủ (campaign riêng), guard này
-  chỉ cần gỡ bỏ/thu hẹp — không có code nào khác phụ thuộc vào sự vắng mặt
-  của `T??`.
+### Positive
+- `get`/`get_ref` never returns a type that the pipeline (MIR/JIT ABI) cannot
+  correctly represent — refusal occurs as early as possible (typecheck), before
+  any MIR is lowered.
+- Accurate diagnostic rationale (E1051 instead of ambiguous E1041) — users understand
+  EXACTLY why and how to adapt (sentinels / wrapper Structs).
+- Preserves future options: when `T??` is fully designed (dedicated campaign), this guard
+  is simply removed/narrowed — no external code depends on the absence of `T??`.
 
-### Tiêu cực
-- `HashMap<K, V?>` / `Vector<V?>` bị hạn chế: `get`/`get_ref` không dùng
-  được, phải `contains` trước rồi tính toán khác, hoặc đổi model dữ liệu.
+### Negative
+- `HashMap<K, V?>` / `Vector<V?>` restricted: `get`/`get_ref` unavailable,
+  requiring prior `contains` checks or alternative data modeling.
 
-### Rủi ro cần mitigate
-- Guard hiện tại chỉ bắt `Vector(Nullable(_))`/`HashMap(_, Nullable(_))` một
-  tầng nông — nếu tương lai `V` là aggregate CHỨA field `Nullable` (không
-  phải bản thân `V` là `Nullable`), guard này KHÔNG bắt (đó là phạm vi khác:
-  ADR-0082/0083 aggregate rules, không phải double-nullable). Không nhầm
-  lẫn hai lớp refuse khi review code liên quan.
+### Risks to Mitigate
+- Current guard only catches shallow 1-level `Vector(Nullable(_))`/`HashMap(_, Nullable(_))` —
+  if in the future `V` is an aggregate CONTAINING `Nullable` fields (rather than `V` itself
+  being `Nullable`), this guard DOES NOT catch it (that belongs to a different domain:
+  ADR-0082/0083 aggregate rules, not double-nullables). Do not conflate these two refusal layers
+  during code review.
 
-## Ngày hiệu lực
+## Effective Date
 
-- Không áp dụng version nào — đây là backlog/deferred, không phải quyết định
-  "locked" cho một tính năng đã ship. E1051 có hiệu lực ngay khi WO-
-  GetRefNullableRefuse merge (refuse là code thật, ADR chỉ ghi nhận lý do +
-  defer thiết kế đầy đủ).
-- Mở lại khi có campaign riêng cho `T??` semantics (AST/typecheck/MIR/JIT/
-  match đồng bộ) — ADR này là điểm neo tham chiếu, không phải thiết kế đó.
+- No version assigned — this is a backlog/deferral record, not a "locked" decision
+  for a shipped feature. E1051 took effect immediately upon merging WO-GetRefNullableRefuse
+  (refusal is active code; ADR documents rationale + design deferral).
+- Reopened upon dedicated campaign for `T??` semantics (synchronized AST/typecheck/MIR/JIT/
+  match) — this ADR serves as reference anchor, not the definitive design.
 
 ---
 
-## §AMEND-1 — Lane A: hàng rào `E1055` 2 tầng / 2 lớp nguồn + 9 răng cưa
+## §AMEND-1 — Lane A: 2-tier / 2-source-class `E1055` Fence + 9 Safeguards
 
-**Trạng thái:** Lane A ĐÓNG (O✅/G✅/Giang✅, 2026-07-27, `d9b659a`).
-**Lane B (thiết kế `T??` thật) HOÃN VÔ THỜI HẠN** — G chốt: khi chưa có
-use-case thật đòi phân biệt "key không tồn tại" vs "giá trị lưu là null",
-thiết kế repr 3-trạng-thái là xây cầu khi chưa có sông.
+**Status:** Lane A CLOSED (O✅/G✅/Giang✅, 2026-07-27, `d9b659a`).
+**Lane B (true `T??` design) DEFERRED INDEFINITELY** — Ruled by G: without real-world
+use cases requiring distinction between "key does not exist" vs "stored value is null",
+designing 3-state representations builds a bridge across an empty desert.
 
-### §88A.1 — Recon lật khung: thân bài ADR này CHỈ phủ `get`-family
+### §88A.1 — Recon Frame Shift: Main Body ONLY Covered `get`-family
 
-Thân bài trên chỉ nói về `get`/`get_ref`. O recon 20 probe trên binary
-release (2026-07-27) đo ra bức tranh rộng hơn: **`T??` viết TRỰC TIẾP** (ngoài
-`get`-family) chưa từng được ai đo. Kết quả: **KHÔNG có UB** — mọi đường
-fail-closed — nhưng chẩn đoán VỠ: cùng một khái niệm `T??` đẻ ra **5 mã lỗi
-khác nhau**, trong đó:
+The main body above addressed only `get`/`get_ref`. Recon across 20 probes on release
+binaries (2026-07-27) revealed a broader landscape: **DIRECTLY declared `T??`** (outside
+`get`-family) had never been measured. Findings: **NO UB occurred** — all paths
+failed closed — but diagnostics FRACTURED: the identical concept `T??` triggered **5 distinct
+error codes**, including:
 
-- 🔴 `struct S { v: Integer?? }` + match → **E1190** — mã **ICE**
-  ("please report this as a compiler bug") cho chương trình user hợp lệ cú
-  pháp. Vi phạm taxonomy ADR-0086 (E1190 dành riêng cho compiler bug).
-- ⚠️ local/param/return/`pop`/`pop_front`/`remove`/`!!` → message MIR verifier
-  nói *"heap-nullable… ADR-0065 §4 (B8) Struct?/Enum? Copy-only… [Fix 1]
-  Remove the heap field from the struct/enum"* — **sai hướng hoàn toàn**:
-  `Integer??` không có heap, không có struct. Vi phạm ADR-0027
-  machine-fixable.
-- ⚠️ `enum E { A(Integer??) }` → E1141 "đòi annotate" (sai nguyên nhân).
-- ⚠️ `Integer??~E` → E0001 parse (lexer `?~` compound token).
+- 🔴 `struct S { v: Integer?? }` + match → **E1190** — an **ICE**
+  ("please report this as a compiler bug") emitted for syntactically valid user code.
+  Violated ADR-0086 error taxonomy (E1190 reserved exclusively for internal compiler bugs).
+- ⚠️ local/param/return/`pop`/`pop_front`/`remove`/`!!` → MIR verifier message
+  stated *"heap-nullable… ADR-0065 §4 (B8) Struct?/Enum? Copy-only… [Fix 1]
+  Remove the heap field from the struct/enum"* — **entirely misleading**:
+  `Integer??` has no heap, no struct. Violated ADR-0027 machine-fixable principles.
+- ⚠️ `enum E { A(Integer??) }` → E1141 "requires type annotation" (incorrect rationale).
+- ⚠️ `Integer??~E` → E0001 parse error (lexer `?~` compound token).
 
-**Cơ chế đang giữ trước Lane A:** `is_lowerable_nullable_payload`
-(`crates/triet-mir/src/lib.rs:1796`) là một **allow-list** (scalar / heap /
-Enum / Struct / Reference); `Nullable(_)` không có tên trong đó nên `T??` rơi
-ra ngoài → refuse **by default**. Đây là **may mắn cấu trúc**, không phải hàng
-rào chủ động — và **0 fixture nào canh giữ** (grep `??` trong dòng code của
-toàn bộ corpus = 0 hit). Ai thêm arm `Nullable` vào allow-list đó — chính là
-việc đầu tiên Lane B sẽ làm — thì 7 đường lọt xuống JIT cùng lúc, **câm, gate
-vẫn xanh**. Đây là hình dạng SPOF-một-lớp đã bịt ở WO-SPOF-1.
+**Mechanism holding prior to Lane A:** `is_lowerable_nullable_payload`
+(`crates/triet-mir/src/lib.rs:1796`) was an **allow-list** (scalar / heap /
+Enum / Struct / Reference); `Nullable(_)` was absent, so `T??` fell through
+→ refused **by default**. This was **structural good fortune**, not an active fence —
+and **0 fixtures guarded it** (grepping `??` across the entire codebase = 0 hits).
+Adding a `Nullable` arm to that allow-list — the first step Lane B would take —
+would allow 7 pathways to reach the JIT simultaneously, **silently, with green test gates**.
+This was the exact single-layer SPOF pattern patched in WO-SPOF-1.
 
-### §88A.2 — HAI lớp nguồn sinh `T??` (lý do WO không thể "một điểm chạm")
+### §88A.2 — TWO Source Classes Generating `T??` (Why WO required multiple touchpoints)
 
-| Lớp | Nơi sinh `Nullable(Nullable(_))` | Phủ |
+| Class | Origin of `Nullable(Nullable(_))` | Coverage |
 |---|---|---|
-| **A — khai báo** | `resolve_type`, **HAI bản sao**: `check.rs:1365` + `check_resolved.rs:597` | local annotation · param · return · struct field · enum payload · `!!` trên local có annotation |
-| **B — suy diễn** | `check_call`, sau `return_type.substitute(&sub_map)` (`check/exprs.rs`) | `pop` / `pop_front` / `remove` trên container `<T?>` |
+| **A — Declarations** | `resolve_type`, **TWO copies**: `check.rs:1365` + `check_resolved.rs:597` | local annotations · params · returns · struct fields · enum payloads · `!!` on annotated locals |
+| **B — Inference** | `check_call`, following `return_type.substitute(&sub_map)` (`check/exprs.rs`) | `pop` / `pop_front` / `remove` on container `<T?>` |
 
-`let x = pop(v)` **không có annotation nào** để đi qua `resolve_type` — shape
-chỉ tồn tại SAU substitution. Guard đặt ở Lớp A sẽ bỏ lọt trọn đường này.
+`let x = pop(v)` **carries no annotations** to traverse `resolve_type` — the shape
+manifests only AFTER substitution. A guard placed solely in Class A completely misses this path.
 
-⚠️ **Bất biến khắc:** Lớp A có **2 bản sao** `resolve_type` — cùng hình dạng
-`is_fat_ret` 3-bản-sao (ADR-0065 §14.7). Ai đụng một bản PHẢI grep bản còn lại.
+⚠️ **Locked Invariant:** Class A contains **2 duplicate copies** of `resolve_type` — mirroring
+the 3-copy pattern of `is_fat_ret` (ADR-0065 §14.7). Touching one copy MANDATES grepping for the other.
 
-**Vị trí Lớp B — D bác gợi ý `env.rs` của WO và ĐÚNG:** `env.rs:374/394/506`
-chỉ khai báo `pop`/`pop_front`/`remove` MỘT LẦN lúc khởi tạo env, với `T`/`V`
-còn là `TypeParameter` trừu tượng — nó không biết `T` sẽ bind ra gì tại từng
-call-site. `check_call` là chokepoint DUY NHẤT nơi shape thật sự tồn tại.
-Guard **không name-gate**: bất kỳ generic function nào return `Nullable(T)` và
-bind `T` ra nullable đều bị bắt như nhau (nhất quán với Lớp A).
+**Class B Location — D rejected WO's suggestion of `env.rs` correctly:** `env.rs:374/394/506`
+declares `pop`/`pop_front`/`remove` ONCE during env initialization, with `T`/`V` remaining
+abstract `TypeParameter`s — unaware of what `T` binds to at specific call sites.
+`check_call` is the SOLE chokepoint where concrete types exist.
+The guard is **not name-gated**: any generic function returning `Nullable(T)` that binds
+`T` to a nullable is uniformly caught (consistent with Class A).
 
-### §88A.3 — Lớp MIR = tầng 2, và nó SẼ thành "code ma" nếu không có unit test
+### §88A.3 — MIR Layer = Tier 2 (Becomes phantom code without unit tests)
 
-Sau khi Lớp A+B chặn ở typecheck, **không còn đường `.tri` nào chạm tầng MIR**.
-Message tại `triet-mir/src/lib.rs` được sửa để mô tả đúng nested-nullable
-(không còn mượn lời ADR-0065 heap/Struct?), và bắt buộc kèm **unit test riêng**
-`nested_nullable_refused_with_correct_message` truyền thẳng
-`MirType::Nullable(Nullable(Integer))` vào helper. Tiền lệ: N1/N3 ở ADR-0083
-PA-A — N1 chặn mọi đường fixture nên N3 phải có răng riêng.
+Once Classes A+B block at typecheck, **no `.tri` pathways reach the MIR layer**.
+The message at `triet-mir/src/lib.rs` was updated to accurately describe nested-nullables
+(removing misleading ADR-0065 heap/Struct? references), with a mandatory **dedicated unit test**
+`nested_nullable_refused_with_correct_message` passing `MirType::Nullable(Nullable(Integer))`
+directly into the helper. Precedent: N1/N3 in ADR-0083 Option A — N1 blocks all fixture pathways,
+requiring N3 to maintain independent teeth.
 
-⚠️ **Bẫy sai-dương D tự phát hiện và tự sửa:** bản nháp message MIR có chứa
-chuỗi `"(E1055)"`; harness so bằng `.contains(code)` nên poison gỡ guard
-typecheck vẫn "xanh giả" (tầng MIR nổ, message tình cờ chứa "E1055"). D tự đào
-ra, bỏ chuỗi mã khỏi message runtime, chạy lại bằng harness thật. **Message
-runtime của tầng MIR KHÔNG được chứa chuỗi mã lỗi của tầng khác** — nếu không,
-mọi poison xuyên tầng đều vô hiệu hoá câm.
+⚠️ **False-Positive Trap Caught and Fixed by D:** the draft MIR message contained the
+string `"(E1055)"`; the test harness checked `.contains(code)`, causing poison tests removing
+the typecheck guard to falsely "pass green" (MIR layer triggered, message happened to contain "E1055").
+D discovered this independently, removed the error code string from the runtime message, and re-verified
+with the actual harness. **MIR runtime messages MUST NOT contain error code strings from other compiler tiers** —
+otherwise, cross-tier poison tests are rendered silently ineffective.
 
-### §88A.4 — ĐÍNH CHÍNH thân bài: `contains` KHÔNG "không bị chặn"
+### §88A.4 — CORRECTION to Main Body: `contains` WAS NOT "unblocked"
 
-Thân bài §Quyết định viết: *"Guard KHÔNG chặn `contains` (chỉ trả `Trilean!`
-found/not-found, không có double-nullable nào phát sinh)"* — **mô tả một hành
-vi không tồn tại**. Đo thật (`triet-driver run`, 2026-07-27):
+The main body §Decision stated: *"The guard DOES NOT block `contains` (which returns `Trilean!`
+found/not-found, without generating double-nullables)"* — **describing non-existent behavior**.
+Real measurement (`triet-driver run`, 2026-07-27):
 
 ```
-contains(m, 1)  với  m : HashMap<Integer, Integer?>
+contains(m, 1)  with  m : HashMap<Integer, Integer?>
 → E1041 NoMatchingOverload
    available overloads: (String, String) · (Vector<Integer>, Integer)
    · (HashMap<Integer, Integer>, Integer) · (HashMap<String, Integer>, String) · …
 ```
 
-`contains` **cũng không dùng được** với `V = Integer?` — nhưng vì overload
-table không khai báo `V` generic, chứ KHÔNG phải vì nó được cho qua. Không
-phải UB, không phải lỗ; là **nhãn tài liệu sai**. Ai đọc thân bài mà tưởng
-`contains` là workaround hợp lệ cho `HashMap<K,V?>` sẽ trượt.
+`contains` **was also unusable** with `V = Integer?` — because the overload table
+did not declare generic `V`, NOT because it was permitted through. Not UB,
+not a hole; purely a **documentation error**. Anyone reading the main body assuming
+`contains` served as a valid workaround for `HashMap<K,V?>` would fail.
 
-### §88A.5 — 9 răng cưa + giao thức verify 2 mũi poison
+### §88A.5 — 9 Safeguards + 2-Prong Poison Verification Protocol
 
-Fixtures **511–519** (7 đường trần, item `pop`-family tách 3 ca):
+Fixtures **511–519** (7 explicit pathways, `pop`-family split into 3 cases):
 `511` local · `512` param · `513` return · `514` pop · `515` pop_front ·
-`516` remove · `517` struct field (**cấm E1190**) · `518` enum payload
-(**cấm E1141**) · `519` `!!`.
+`516` remove · `517` struct field (**forbidding E1190**) · `518` enum payload
+(**forbidding E1141**) · `519` `!!`.
 
-**Giao thức verify BẮT BUỘC cho mọi thay đổi chạm hàng rào này** (G phê chuẩn
-sau khi O bác giao thức 1-mũi ban đầu của G — 1 mũi sẽ đẩy người verify vào
-bẫy "poison không đỏ" rồi buộc phải bịa mũi giả cho nổ):
+**MANDATORY verification protocol for all modifications touching this fence** (Approved
+by G after O rejected G's initial 1-prong proposal — 1 prong trapped verifiers into
+"poison not failing RED" scenarios requiring fabricated test failures):
 
-| Mũi | Poison | Kỳ vọng ĐÚNG |
+| Prong | Poison Modification | Expected Failure Pattern |
 |---|---|---|
-| 1a | tắt guard Lớp A | **6** fixture đỏ: 511·512·513·517·518·519; 514·515·516 **xanh** |
-| 1b | tắt guard Lớp B | **3** fixture đỏ: 514·515·516; 6 fixture kia **xanh** |
-| 2 | nới allow-list MIR | **chỉ unit test MIR** đỏ; **0 fixture** đỏ |
+| 1a | disable Class A guard | **6** fixtures fail RED: 511·512·513·517·518·519; 514·515·516 **pass GREEN** |
+| 1b | disable Class B guard | **3** fixtures fail RED: 514·515·516; other 6 fixtures **pass GREEN** |
+| 2 | relax MIR allow-list | **ONLY MIR unit test** fails RED; **0 fixtures** fail RED |
 
-O verify độc lập 2026-07-27, đủ cả 3 mũi + đặc hiệu hai chiều (6+3=9, không
-lớp nào đội lốt lớp kia); dưới mũi 1a, `517`/`518` **lộ lại đúng ICE cũ**
-(`unsupported match pattern` / `requires an expected type`) ⇒ guard mới chính
-là thứ giết E1190/E1141. Răng chứng minh ở **tầng harness** (đổi `// ERROR:`
-của 514 sang `E9999` → ra dòng FAIL expected/got, luật 15). Khôi phục bằng
-`cp`-snapshot + md5 khớp, KHÔNG `git checkout`.
+Verified by O independently on 2026-07-27 across all 3 prongs + bidirectional specificity
+(6+3=9, no cross-tier masking); under prong 1a, `517`/`518` **re-exposed the original ICEs**
+(`unsupported match pattern` / `requires an expected type`) ⇒ proving the new guard eliminated
+E1190/E1141. Safeguards proven at **harness layer** (modifying `// ERROR:` in 514 to `E9999`
+→ yields FAIL expected/got line, rule 15). Restored via `cp`-snapshot + matching md5, NO `git checkout`.
 
-**Control chống over-refuse (phải giữ nguyên mãi mãi):** struct `Integer?`
-MỘT tầng → `16` · `HashMap<K,Integer?>` insert-store → `5` · `?+>` flatMap
-175/212/213 xanh (`exprs.rs:361-364` giữ body nullable, **không bao giờ sinh
-`U??`**) · 465/466/467 **giữ E1051**, không bị E1055 cướp · 468 control dương.
+**Over-refusal Controls (must remain preserved indefinitely):** 1-level struct `Integer?`
+→ `16` · `HashMap<K,Integer?>` insert-store → `5` · `?+>` flatMap 175/212/213 GREEN
+(`exprs.rs:361-364` preserves nullable body, **never emitting `U??`**) · 465/466/467
+**retain E1051**, not intercepted by E1055 · 468 positive control.
 
-### §88A.6 — Ranh giới E-code (một E-code, một hợp đồng)
+### §88A.6 — Error Code Boundaries (One Error Code, One Contract)
 
-- **E1051** — `get`/`get_ref` trên container có element/value nullable.
-  GIỮ NGUYÊN, Lane A không đụng.
-- **E1055** `NestedNullableUnsupported` — nested `T??` ở **mọi vị trí khác**
-  (khai báo + suy diễn). Mã mới, cấp tại `triet-typecheck/src/error.rs`.
-- Cấm gộp hai mã; cấm để E1055 cướp chỗ E1051.
+- **E1051** — `get`/`get_ref` on containers with nullable elements/values.
+  REMAINS UNCHANGED, Lane A does not modify.
+- **E1055** `NestedNullableUnsupported` — nested `T??` across **all other positions**
+  (declarations + inferences). New code, registered in `triet-typecheck/src/error.rs`.
+- Merging the two codes is forbidden; E1055 must never displace E1051.
 
-### Ngày hiệu lực §AMEND-1
+### Effective Date §AMEND-1
 
-- Hiệu lực từ `d9b659a` (2026-07-27). Gate `0 · clean · 0 · 511 · 0 · CLEAN`
+- Effective from `d9b659a` (2026-07-27). Gate `0 · clean · 0 · 511 · 0 · CLEAN`
   (fixtures 502 → 511).
-- Lane B mở lại **chỉ khi** có use-case thật + ADR thiết kế repr đồng bộ
-  AST/typecheck/MIR/JIT/match. Ngày đó, việc đầu tiên là nới allow-list MIR —
-  và 9 răng cưa trên sẽ nổ đỏ nếu Lane B chưa làm đủ. Đó chính là mục đích
-  chúng tồn tại.
+- Lane B reopens **solely when** practical use cases arise + an ADR defines synchronized
+  AST/typecheck/MIR/JIT/match representations. When that occurs, the first step is relaxing
+  the MIR allow-list — and the 9 safeguards above will fail RED if Lane B is incomplete.
+  That is their explicit purpose.

@@ -1,33 +1,33 @@
 # ADR 0033 — AOT cache via `cranelift-object` (backend hybrid + relocation discipline)
 
-**Trạng thái:** **Locked** (v0.10.0.2, author sign-off received; loader approach locked v0.11.0.1; cache identity = canonical `impl_hash_mod` + per-module objects locked v0.11.0.2 — see 2026-05-31 Addenda below). Refines [ADR-0030 §13](0030-jit-cranelift-integration.md) — locks the 5 design constraints from §13.4 plus backend-hybrid shape so the AOT cache implementation (v0.11.x.jit.3) can ship against settled design. Second v0.10 ADR; depends on [ADR-0032](0032-builtin-shim-abi.md) (shim registry is the symbol resolution source of truth at cache load time).
+**Status:** **Locked** (v0.10.0.2, author sign-off received; loader approach locked v0.11.0.1; cache identity = canonical `impl_hash_mod` + per-module objects locked v0.11.0.2 — see 2026-05-31 Addenda below). Refines [ADR-0030 §13](0030-jit-cranelift-integration.md) — locks the 5 design constraints from §13.4 plus backend-hybrid shape so the AOT cache implementation (v0.11.x.jit.3) can ship against settled design. Second v0.10 ADR; depends on [ADR-0032](0032-builtin-shim-abi.md) (shim registry is the symbol resolution source of truth at cache load time).
 
 > **2026-05-31 Addendum — implementation DEFERRED to v0.11 (author sign-off).**
 >
-> ADR-0033's design is unchanged + sound, but **implementation (v0.10.x.jit.3) + the dependent gate-lift (v0.10.x.jit.4) defer to v0.11.** The §3 Path-A loader is a genuine cliff: `cranelift-object` emits a relocatable ELF `.o` (turnkey), but loading it back requires a **hand-rolled relocating loader** — parse the ELF (`object` crate gives this), then manually apply each relocation (`R_X86_64_PC32` / `PLT32` / `64` / GOT entries…) against a fresh `memmap2` RW→RX region, resolving `__triet_*` + libcall symbols via the registry. There is **no turnkey Rust crate** that takes a cranelift-object `.o` + a symbol resolver and produces executable code; `object` parses but does not relocate. A hand-rolled relocating loader is the most `unsafe`-heavy, platform-specific, error-prone code in the project, and a relocation bug is **memory corruption** (not a clean tier-down) — the worst failure mode, exactly the silent-miscompilation surface the project guards hardest.
+> ADR-0033's design is unchanged and sound, but **implementation (v0.10.x.jit.3) + the dependent gate-lift (v0.10.x.jit.4) defer to v0.11.** The §3 Path-A loader is a genuine cliff: `cranelift-object` emits a relocatable ELF `.o` (turnkey), but loading it back requires a **hand-rolled relocating loader** — parse the ELF (`object` crate provides this), then manually apply each relocation (`R_X86_64_PC32` / `PLT32` / `64` / GOT entries…) against a fresh `memmap2` RW$\rightarrow$RX region, resolving `__triet_*` + libcall symbols via the registry. There is **no turnkey Rust crate** that takes a cranelift-object `.o` + a symbol resolver and produces executable code; `object` parses but does not relocate. A hand-rolled relocating loader is the most `unsafe`-heavy, platform-specific, error-prone code in the project, and a relocation bug is **memory corruption** (not a clean tier-down) — the worst failure mode, exactly the silent-miscompilation surface the project guards hardest against.
 >
-> **Decision rationale (chậm mà chắc):** v0.10 already delivered the bulk of its value — the JIT builtin-shim layer (36/43 builtins, multi-call codegen, composite ABI, §4 option-2 error path, all VM↔JIT-divergence-free by delegation), NLL borrow enforcement (E2440/E2400/E2411/E2403), multi-thread Atomic (`Arc<Mutex>` + cross-thread share), and interpreter parity. The AOT cache is path-critical ONLY for v0.10.x.jit.4 (bootstrap byte-identical gate lift + ≥10× perf bench), and jit.4 *depends on* jit.3 — so the pair defers together. Attempting an `unsafe`-heavy relocating loader at the tail of an already-long window, where a bug corrupts memory rather than failing cleanly, trades the project's stability bar for a deferred-value win. The bootstrap byte-identical gate has been `#[ignore]`'d since v0.7; carrying it one more phase (lifted in v0.11 once the AOT cache lands) is consistent.
+> **Decision rationale (slow and steady):** v0.10 already delivered the bulk of its value — the JIT builtin-shim layer (36/43 builtins, multi-call codegen, composite ABI, §4 option-2 error path, all VM↔JIT-divergence-free by delegation), NLL borrow enforcement (E2440/E2400/E2411/E2403), multi-thread Atomic (`Arc<Mutex>` + cross-thread share), and interpreter parity. The AOT cache is path-critical ONLY for v0.10.x.jit.4 (bootstrap byte-identical gate lift + $\ge$ 10× perf bench), and jit.4 *depends on* jit.3 — so the pair defers together. Attempting an `unsafe`-heavy relocating loader at the tail of an already-long window, where a bug corrupts memory rather than failing cleanly, trades the project's stability bar for a deferred-value win. The bootstrap byte-identical gate has been `#[ignore]`'d since v0.7; carrying it one more phase (lifted in v0.11 once the AOT cache lands) is consistent.
 >
 > **v0.11 backlog (this ADR is the design; v0.11 implements):** Path-A relocating loader + §2 version-pinned manifest + §3 SHIM_TABLE/LIBCALL_TABLE resolution + §4 `dao store gc` integration + §5 per-triple separation + §7 atomic-install lifecycle + §8 silent-fallback recovery. Then v0.11 lifts `bootstrap_loop.rs::stage2_eq_stage3_main_tri_byte_identical` from `#[ignore]` (jit.4) once warm-cache bootstrap meets the < 10 min budget. v0.9's in-process per-process JIT (re-compile each run) remains the v0.10 behavior — correct, just not cached across processes.
 
-> **2026-05-31 Addendum (v0.11.0.1) — loader approach LOCKED: Path A (Triết owns its relocating loader). Author sign-off.**
+> **2026-05-31 Addendum (v0.11.0.1) — loader approach LOCKED: Path A (Triet owns its relocating loader). Author sign-off.**
 >
-> v0.11 opened with the JIT AOT cache as the prioritized workstream (author decision; lifts the bootstrap gate `#[ignore]`'d since v0.7 + the ≥10× perf win). The deferral Addendum above flagged the §3 Path-A loader as the cliff; v0.11.0.1 resolves **how** the `.o` becomes executable. Two approaches were weighed:
+> v0.11 opened with the JIT AOT cache as the prioritized workstream (author decision; lifts the bootstrap gate `#[ignore]`'d since v0.7 + the $\ge$ 10× perf win). The deferral Addendum above flagged the §3 Path-A loader as the cliff; v0.11.0.1 resolves **how** the `.o` becomes executable. Two approaches were weighed:
 >
-> - **Path A (chosen) — Triết owns a relocating loader.** Parse the cranelift-object `.o` (`object` crate), apply each relocation against a fresh `memmap2` RW→RX region, resolve `__triet_*` + libcall symbols via the `SHIM_TABLE`/`LIBCALL_TABLE` (§3 unchanged). No external runtime dependency.
-> - **Path B (rejected) — borrow the OS linker + `dlopen`.** Emit `.o` → invoke system `cc -shared` → `.so` → load via `libloading`, with `dao` built `-rdynamic` so shim symbols resolve through the host dynamic symbol table. Offloads relocation correctness to a battle-tested linker (lower short-term risk), but (a) makes the Triết perf path **depend on a C toolchain at runtime**, and (b) leans on `dlopen`/ELF dynamic linking — neither exists on the eventual balanced-ternary hardware target.
+> - **Path A (chosen) — Triet owns a relocating loader.** Parse the cranelift-object `.o` (`object` crate), apply each relocation against a fresh `memmap2` RW$\rightarrow$RX region, resolve `__triet_*` + libcall symbols via the `SHIM_TABLE`/`LIBCALL_TABLE` (§3 unchanged). No external runtime dependency.
+> - **Path B (rejected) — borrow the OS linker + `dlopen`.** Emit `.o` $\rightarrow$ invoke system `cc -shared` $\rightarrow$ `.so` $\rightarrow$ load via `libloading`, with `dao` built `-rdynamic` so shim symbols resolve through the host dynamic symbol table. Offloads relocation correctness to a battle-tested linker (lower short-term risk), but (a) makes the Triet perf path **depend on a C toolchain at runtime**, and (b) leans on `dlopen`/ELF dynamic linking — neither exists on the eventual balanced-ternary hardware target.
 >
-> **Why A — grounded in the OS-capable / from-scratch identity ([VISION](../../VISION.md) ternary trajectory):** On balanced-ternary hardware there is no C, no `ld`, no `dlopen` — Triết must be able to build everything from scratch, so an OS-capable language must **own its own loader** rather than borrow one. Honest precision: the *x86/ELF specifics* of Path A are themselves throwaway on ternary hardware (which uses neither ELF nor x86 relocations) — exactly as throwaway as Path B. What Path A buys that survives is **(1) no runtime C-toolchain dependency on the perf path today** (Triết stays self-contained, consistent with self-hosting identity), and **(2) the loader-ownership architecture + skill** that the ternary backend will need. Path B buys neither and is equally throwaway.
+> **Why A — grounded in the OS-capable / from-scratch identity ([VISION](../../VISION.md) ternary trajectory):** On balanced-ternary hardware there is no C, no `ld`, no `dlopen` — Triet must be able to build everything from scratch, so an OS-capable language must **own its own loader** rather than borrow one. Honest precision: the *x86/ELF specifics* of Path A are themselves throwaway on ternary hardware (which uses neither ELF nor x86 relocations) — exactly as throwaway as Path B. What Path A buys that survives is **(1) no runtime C-toolchain dependency on the perf path today** (Triet stays self-contained, consistent with self-hosting identity), and **(2) the loader-ownership architecture + skill** that the ternary backend will need. Path B buys neither and is equally throwaway.
 >
-> **Honest cost of A (the reason the safety regimen below is mandatory):** a relocation that is *correct-looking but patches the wrong address* is a silent miscompilation → memory corruption, NOT a clean tier-down. Runtime guards (§8 silent-fallback) catch only *detected* failures (parse error, version mismatch, unknown reloc/symbol) — they cannot catch a wrong-but-valid patch. The only real safety net for that residual risk is **test coverage**. v0.10 deferred A about *timing* (don't rush the project's highest-risk unsafe at a window tail), not about rejecting it; v0.11 is the dedicated phase where it earns correctness via the regimen.
+> **Honest cost of A (the reason the safety regimen below is mandatory):** a relocation that is *correct-looking but patches the wrong address* is a silent miscompilation $\rightarrow$ memory corruption, NOT a clean tier-down. Runtime guards (§8 silent-fallback) catch only *detected* failures (parse error, version mismatch, unknown reloc/symbol) — they cannot catch a wrong-but-valid patch. The only real safety net for that residual risk is **test coverage**. v0.10 deferred A about *timing* (don't rush the project's highest-risk unsafe at a window tail), not about rejecting it; v0.11 is the dedicated phase where it earns correctness via the regimen.
 >
-> **This Addendum supersedes §3's framing only** ("no turnkey crate → cliff → defer"): §3's hand-rolled loader is now the **chosen** mechanism, and §3's `SHIM_TABLE`/`LIBCALL_TABLE` symbol-resolution design stays normative as-written (it is loader-approach-agnostic and works unchanged for Path A). All other sections (§1, §2, §4–§10) are unchanged.
+> **This Addendum supersedes §3's framing only** ("no turnkey crate $\rightarrow$ cliff $\rightarrow$ defer"): §3's hand-rolled loader is now the **chosen** mechanism, and §3's `SHIM_TABLE`/`LIBCALL_TABLE` symbol-resolution design stays normative as-written (it is loader-approach-agnostic and works unchanged for Path A). All other sections (§1, §2, §4–§10) are unchanged.
 >
 > **Four safety constraints — NORMATIVE for v0.11.x.jit.3:**
 > 1. **`CodeLoader` trait abstraction.** The loader sits behind a `trait CodeLoader` (`load(&self, object_bytes, symbol_resolver) -> Result<LoadedCode, JitError>`). v0.11 ships the ELF/x86_64 impl; the eventual ternary backend (and any other arch) slots in a sibling impl without touching the dispatcher. Tests use a mock/identity loader. This both contains the binary-ELF specifics (which are throwaway on ternary) behind a stable boundary, and is the architectural muscle the ternary target needs.
-> 2. **ELF + x86_64 only, POSIX-first** (per [ADR-0018](0018-capability-loader-semantics.md) precedent). Mach-O (macOS) / COFF (Windows) / aarch64 → loader returns `Unsupported` → dispatcher tier-downs to in-process JIT then VM. An unsupported target is a clean cache-miss, never a corruption.
-> 3. **Bounded relocation set + refuse-on-unknown.** cranelift-object emits a finite relocation set for a single object with external symbol refs (`R_X86_64_PC32`/`PLT32`/`GOTPCREL64`/`64`/… — the exact set verified empirically in jit.3 against the actual emitter, not assumed). Handle exactly those; **any** unknown relocation type or unresolved symbol → refuse-load → silent fallback per §8. Never guess-patch. The bounded set is what makes A's unsafe surface tractable and exhaustively testable rather than an open-ended linker.
-> 4. **Test regimen as the real safety net** (since runtime guards can't catch wrong-but-valid patches): **(a)** round-trip parity gate — every function executed via Path-A cache must equal the VM result on a corpus (extends §9.1 to assert *value equality*, not just cache-hit counters); **(b)** `proptest` fuzz on the relocator — random valid relocation inputs, assert patched bytes match an independent reference computation; **(c)** W^X discipline — mmap RW, patch, `mprotect`→RX, never RWX simultaneously (per [ADR-0030 §6](0030-jit-cranelift-integration.md)).
+> 2. **ELF + x86_64 only, POSIX-first** (per [ADR-0018](0018-capability-loader-semantics.md) precedent). Mach-O (macOS) / COFF (Windows) / aarch64 $\rightarrow$ loader returns `Unsupported` $\rightarrow$ dispatcher tiers down to in-process JIT then VM. An unsupported target is a clean cache-miss, never a corruption.
+> 3. **Bounded relocation set + refuse-on-unknown.** cranelift-object emits a finite relocation set for a single object with external symbol refs (`R_X86_64_PC32`/`PLT32`/`GOTPCREL64`/`64`/… — the exact set verified empirically in jit.3 against the actual emitter, not assumed). Handle exactly those; **any** unknown relocation type or unresolved symbol $\rightarrow$ refuse-load $\rightarrow$ silent fallback per §8. Never guess-patch. The bounded set is what makes A's unsafe surface tractable and exhaustively testable rather than an open-ended linker.
+> 4. **Test regimen as the real safety net** (since runtime guards can't catch wrong-but-valid patches): **(a)** round-trip parity gate — every function executed via Path-A cache must equal the VM result on a corpus (extends §9.1 to assert *value equality*, not just cache-hit counters); **(b)** `proptest` fuzz on the relocator — random valid relocation inputs, assert patched bytes match an independent reference computation; **(c)** W^X discipline — mmap RW, patch, `mprotect`$\rightarrow$RX, never RWX simultaneously (per [ADR-0030 §6](0030-jit-cranelift-integration.md)).
 >
 > **Unsafe surface:** Path A adds the relocation patcher + `mmap`/`mprotect` unsafe blocks to `triet-jit` (already `unsafe_code = "deny"` per [ADR-0032 §5](0032-builtin-shim-abi.md); each block `// SAFETY:`-documented; `release-check.sh` counts them). This is the project's highest-risk unsafe — justified by the OS-capable/from-scratch identity, contained by the `CodeLoader` boundary + bounded reloc set + the §4-constraint test regimen.
 
@@ -37,38 +37,38 @@
 >
 > **Two options were weighed:**
 >
-> - **Content-hash key (rejected).** `triet-jit` computes its own `BLAKE3(serialized IR)` as an opaque cache key, one object per program. Simple + keeps `triet-jit` independent of `triet-pack`. **But** it introduces a *second, parallel content-addressed identity space* disjoint from Triết's canonical 3-level hash tree (`term`/`mod`/`pkg` `impl_hash`, [ADR-0014](0014-hash-scheme-refinement.md)). The store's mark-sweep GC ([ADR-0015 §6](0015-package-store-layout.md)) marks liveness by `impl_hash_mod` (`live_mods`); a content-hash key is never in that set, so `dao store gc` would **sweep live JIT caches** (or, dually, lack a correct liveness signal for them). The "gc reclaims it, we just recompile" defence is *app-tier* reasoning — acceptable for a throwaway dev cache, **wrong for an OS-capable language** where the on-disk code store is real infrastructure and recompilation may be impossible in a boot/kernel context. Two identity spaces for "what is this compiled code" is exactly the latent-inconsistency / *guess-over-refuse* surface the project guards hardest ([VISION §6](../../VISION.md)).
+> - **Content-hash key (rejected).** `triet-jit` computes its own `BLAKE3(serialized IR)` as an opaque cache key, one object per program. Simple + keeps `triet-jit` independent of `triet-pack`. **But** it introduces a *second, parallel content-addressed identity space* disjoint from Triet's canonical 3-level hash tree (`term`/`mod`/`pkg` `impl_hash`, [ADR-0014](0014-hash-scheme-refinement.md)). The store's mark-sweep GC ([ADR-0015 §6](0015-package-store-layout.md)) marks liveness by `impl_hash_mod` (`live_mods`); a content-hash key is never in that set, so `dao store gc` would **sweep live JIT caches** (or, dually, lack a correct liveness signal for them). The "gc reclaims it, we just recompile" defense is *app-tier* reasoning — acceptable for a throwaway dev cache, **wrong for an OS-capable language** where the on-disk code store is real infrastructure and recompilation may be impossible in a boot/kernel context. Two identity spaces for "what is this compiled code" is exactly the latent-inconsistency / *guess-over-refuse* surface the project guards hardest against ([VISION §6](../../VISION.md)).
 >
 > - **Canonical `impl_hash_mod` key, per-module objects (chosen).** The cache is keyed by the **same** `impl_hash_mod` the store + GC already use, one object **per module** — exactly as §4 wrote ("one `.o` per module"). GC alignment is then **correct by construction**: a `jit/<triple>/<hex(impl_hash_mod)>/` dir is live iff its `impl_hash_mod ∈ live_mods`, the identical predicate the `mod/` sweep uses (Step 2 already implemented this). One identity, one GC story, no parallel hash.
 >
-> **Why chosen — grounded in the OS-capable / `chậm mà chắc` identity:** the JIT/AOT cache is just another derived artifact in the **one unified content-addressed store**; it must be a first-class citizen of that store's identity + GC, not a sidecar with its own bookkeeping. The real gap was never "which hash" — it was that the run pipeline lacks the canonical module identity the store already defines. The principled fix is to *fill that gap with the canonical identity*, not to paper over it with a parallel one.
+> **Why chosen — grounded in the OS-capable / `slow-and-steady` identity:** the JIT/AOT cache is just another derived artifact in the **one unified content-addressed store**; it must be a first-class citizen of that store's identity + GC, not a sidecar with its own bookkeeping. The real gap was never "which hash" — it was that the run pipeline lacks the canonical module identity the store already defines. The principled fix is to *fill that gap with the canonical identity*, not to paper over it with a parallel one.
 >
 > **`triet-jit` stays independent of `triet-pack` (author's earlier call upheld).** The dispatcher receives the cache key as **opaque bytes** + an injected `trait AotCacheStore`; it never computes `impl_hash_mod` and never names `triet-pack`. The **caller** (the CLI / run pipeline, which already depends on `triet-pack`) computes `impl_hash_mod` via `compute_module_impl_hash` and supplies it. Dependency arrow unchanged.
 >
 > **Refuse-over-guess on the loose-run path:** computing `impl_hash_mod` requires the module's ABI metadata, which the packaging pipeline produces but a bare `dao run file.tri` may not. Where the canonical hash is **not** available, the run is simply **not cached** (clean gate, Path B fresh compile each run) — we never fabricate a key. The path that actually needs warm cache for jit.4 — the self-host **bootstrap**, which compiles packaged modules — has `impl_hash_mod` naturally.
 >
-> **Entailment — per-module objects require a load-time linker (accepted, author sign-off).** Splitting one object per module means a function calling across module boundaries (`CallCrossModule`/`WitnessCall`) references a symbol *defined in another module's separately-loaded object* — an **undefined external** in this module's `.o`, alongside the `__triet_*` shims. So the loader grows from "resolve shims for one object" (Step 3) to a **two-phase cross-module linker**: (1) map every module's `.text` + collect all defined function symbols into a global table, (2) patch each module's relocations resolving Triết cross-module symbols against that global table ∪ the shim table, then `make_exec`. This is deliberately taken on (not worked around with coarser package-level objects): an OS-capable language **must own its own loader + dynamic linker** — exactly what `ld.so` does — and the relocation machinery is unchanged (same `PLT32`/`GOTPCREL` set, just a module-spanning symbol table + map-then-patch ordering). Defined functions are emitted `Export` (globally referenceable); cross-module callees are declared `Import`; the mangled symbol `{name}__f{func_id}` is globally unique (program-global `FuncId`) so cross-module references match by name. Fine-grained invalidation is preserved: a changed module re-compiles only its own object, and the linker re-resolves addresses fresh on every load.
+> **Entailment — per-module objects require a load-time linker (accepted, author sign-off).** Splitting one object per module means a function calling across module boundaries (`CallCrossModule`/`WitnessCall`) references a symbol *defined in another module's separately-loaded object* — an **undefined external** in this module's `.o`, alongside the `__triet_*` shims. So the loader grows from "resolve shims for one object" (Step 3) to a **two-phase cross-module linker**: (1) map every module's `.text` + collect all defined function symbols into a global table, (2) patch each module's relocations resolving Triet cross-module symbols against that global table $\cup$ the shim table, then `make_exec`. This is deliberately taken on (not worked around with coarser package-level objects): an OS-capable language **must own its own loader + dynamic linker** — exactly what `ld.so` does — and the relocation machinery is unchanged (same `PLT32`/`GOTPCREL` set, just a module-spanning symbol table + map-then-patch ordering). Defined functions are emitted `Export` (globally referenceable); cross-module callees are declared `Import`; the mangled symbol `{name}__f{func_id}` is globally unique (program-global `FuncId`) so cross-module references match by name. Fine-grained invalidation is preserved: a changed module re-compiles only its own object, and the linker re-resolves addresses fresh on every load.
 >
 > **Supersedes:** Step 1's per-**program** `emit_object` is refactored to per-**module** emission + the load-time linker (jit.4a); §4/§7 are now read with this Addendum (key = `impl_hash_mod`, granularity = module). All other sections unchanged.
 >
-> **Realized-unsafe note (corrects the v0.11.0.1 "Unsafe surface" prediction):** the Step 3 loader turned out to need **zero `unsafe`** — memmap2's typed safe API (`map_anon` → patch via plain slice writes → `make_exec`) gives W^X by construction, and the only `unsafe` is the pre-existing transmute-fn-pointer-and-call at the dispatch site ([`dispatch_integer`]). The relocation patcher itself is safe Rust. The bounded-reloc + `CodeLoader`-boundary + test-regimen containment still stands; the surface is just smaller than predicted.
+> **Realized-unsafe note (corrects the v0.11.0.1 "Unsafe surface" prediction):** the Step 3 loader turned out to need **zero `unsafe`** — memmap2's typed safe API (`map_anon` $\rightarrow$ patch via plain slice writes $\rightarrow$ `make_exec`) gives W^X by construction, and the only `unsafe` is the pre-existing transmute-fn-pointer-and-call at the dispatch site ([`dispatch_integer`]). The relocation patcher itself is safe Rust. The bounded-reloc + `CodeLoader`-boundary + test-regimen containment still stands; the surface is just smaller than predicted.
 
-**Issue:** v0.9 ships in-process JIT only — every `dao run` re-compiles every hot function from scratch (~1-3s per function × ≥100-call-threshold-exceeded set). For self-host bootstrap (~3000 functions), cold-start cost is prohibitive: 9000-9000s ≈ 2.5h on first compile. [ADR-0030 §13.5](0030-jit-cranelift-integration.md) deferred AOT cache to v0.10 because the backend swap (`cranelift-jit` → `cranelift-object`) is structural, not additive. v0.10 closes that.
+**Issue:** v0.9 ships in-process JIT only — every `dao run` re-compiles every hot function from scratch (~1-3s per function $\times$ $\ge$ 100-call-threshold-exceeded set). For self-host bootstrap (~3000 functions), cold-start cost is prohibitive: 3000-9000s $\approx$ 2.5h on first compile. [ADR-0030 §13.5](0030-jit-cranelift-integration.md) deferred AOT cache to v0.10 because the backend swap (`cranelift-jit` $\rightarrow$ `cranelift-object`) is structural, not additive. v0.10 closes that.
 
-[ADR-0030 §14](0030-jit-cranelift-integration.md) further chained `.7` (Stage 2 ≡ Stage 3 byte-identical gate lift) and `.8` (perf bench ≥10× v0.3 baseline) to AOT cache — without persistence, bootstrap-loop measurement is dominated by JIT compile cost, masking the actual JIT-vs-VM execution delta.
+[ADR-0030 §14](0030-jit-cranelift-integration.md) further chained `.7` (Stage 2 ≡ Stage 3 byte-identical gate lift) and `.8` (perf bench $\ge$ 10× v0.3 baseline) to AOT cache — without persistence, bootstrap-loop measurement is dominated by JIT compile cost, masking the actual JIT-vs-VM execution delta.
 
 The 5 constraints ADR-0030 §13.4 surfaced as needing a coherent design pass:
 
 1. **Cranelift version pinning** — cache invalidates on Cranelift bump; how to detect mismatch + recover?
-2. **Libcall symbol resolution at load** — shim symbols (`__triet_*` per [ADR-0032 §6](0032-builtin-shim-abi.md)) and Cranelift internal libcalls (`__truncdfsf2` etc.) need re-binding to host process addresses at AOT load time. Mechanism: `libloading`/`dlsym` vs direct registry lookup?
+2. **Libcall symbol resolution at load** — shim symbols (`__triet_*` per [ADR-0032 §6](0032-builtin-shim-abi.md)) and Cranelift internal libcalls (`__truncdfsf2` etc.) need re-binding to host process addresses at AOT load time. Mechanism: `libloading`/`dlsym` vs. direct registry lookup?
 3. **`dao store gc` mark-and-sweep root tracking** — AOT cache directories are children of `impl_hash`; how do they participate in [ADR-0015 §6](0015-package-store-layout.md) GC?
 4. **Cross-machine portability** — per-`target_triple` separation per [ADR-0030 §13.3](0030-jit-cranelift-integration.md); on host-mismatch, refuse or fallback?
-5. **Determinism preservation** — cache hit/miss state across runs vs [ADR-0007](0007-ir-design.md) IR determinism contract. How is non-determinism scoped?
+5. **Determinism preservation** — cache hit/miss state across runs vs. [ADR-0007](0007-ir-design.md) IR determinism contract. How is non-determinism scoped?
 
-Open questions ADR-0033 phải lock cùng:
+Open questions ADR-0033 must lock together:
 
 6. **Backend hybrid shape** — keep `cranelift-jit` for fresh compile + add `cranelift-object` for serialize, or fully swap?
-7. **Cache write lifecycle** — write-on-compile (synchronous) vs write-on-shutdown (batched)?
+7. **Cache write lifecycle** — write-on-compile (synchronous) vs. write-on-shutdown (batched)?
 8. **Cache corruption recovery** — partial writes, truncated .o files, manifest/object mismatch?
 9. **Test gates** — minimum to ship v0.10.x.jit.3 safely.
 10. **Self-host port plan** per [ADR-0029 §5](0029-self-host-port-policy.md) — Layer classification?
@@ -77,19 +77,19 @@ Open questions ADR-0033 phải lock cùng:
 
 ## §1 — Backend hybrid: `cranelift-jit` for fresh, `cranelift-object` for persist
 
-**Decision:** v0.10 adds `cranelift-object` alongside the v0.9 `cranelift-jit` dep — NOT a full swap. Two execution paths share the same Triết IR translator (per [ADR-0030 §3](0030-jit-cranelift-integration.md)):
+**Decision:** v0.10 adds `cranelift-object` alongside the v0.9 `cranelift-jit` dependency — NOT a full swap. Two execution paths share the same Triet IR translator (per [ADR-0030 §3](0030-jit-cranelift-integration.md)):
 
 - **Path A — Cache hit:** AOT load via `cranelift-object` artifact + `object` crate ELF parser + custom relocation patcher. Zero codegen cost; just mmap + relocation + symbol resolve.
 - **Path B — Cache miss:** Fresh `cranelift-jit` compile (existing v0.9 path). On success, **also** emit the same IR through `cranelift-object` and persist `functions.o` + `manifest.bin` to `~/.triet/store/jit/{target_triple}/{impl_hash}/`. Next run's cache hit comes from this write.
 
 **Why hybrid, not full swap to `cranelift-object`:**
 
-- **`cranelift-jit` is faster for the fresh-compile path** because it skips ELF emission + relocation table generation — just produces mmap'd RX pages directly. Cache-miss cost matters: bootstrap first-run still happens, and any added per-function overhead multiplies by ~3000 functions.
-- **`cranelift-object` is mandatory for serialize** because `cranelift-jit`'s output is in-process-only (raw mmap pointers, no relocation table). Per [ADR-0030 §13.1](0030-jit-cranelift-integration.md) original analysis.
-- **Compile twice on cache miss isn't redundant in practice** — Cranelift's IR-to-codegen pipeline is the dominant cost; emitting both an in-process mmap (cranelift-jit) and an .o file (cranelift-object) from the same IR reuses the codegen stage. We pay the ELF/relocation overhead once on cache miss; cache hit on next run skips fresh compile entirely. Net: cache-miss is ~10-20% slower than v0.9 pure-jit (acceptable), cache-hit is ~100× faster (the win).
+- **`cranelift-jit` is faster for the fresh-compile path** because it skips ELF emission + relocation table generation — producing mmap'd RX pages directly. Cache-miss cost matters: bootstrap first-run still happens, and any added per-function overhead multiplies across ~3000 functions.
+- **`cranelift-object` is mandatory for serialization** because `cranelift-jit` output is in-process-only (raw mmap pointers, no relocation table). Per [ADR-0030 §13.1](0030-jit-cranelift-integration.md) original analysis.
+- **Compiling twice on cache miss is not redundant in practice** — Cranelift's IR-to-codegen pipeline is the dominant cost; emitting both an in-process mmap (cranelift-jit) and an .o file (cranelift-object) from the same IR reuses the codegen stage. We pay the ELF/relocation overhead once on cache miss; cache hits on subsequent runs skip fresh compilation entirely. Net: cache misses are ~10-20% slower than v0.9 pure-jit (acceptable), while cache hits are ~100× faster (the win).
 
 **Alternative considered — full swap to `cranelift-object` + always-relocate:**
-- Pros: single backend, simpler dep tree.
+- Pros: single backend, simpler dependency tree.
 - Cons: every fresh JIT pays relocation patch overhead, even for one-shot programs that never benefit from cache. Slower v0.9-equivalent fresh path; bootstrap first-run regression.
 - Rejected per project "don't slow the existing path for a deferred win" stance.
 
@@ -123,15 +123,15 @@ struct AotCacheManifest {
 
 **On load (Path A):** before patching relocations, read `manifest.bin` and check:
 
-1. `cranelift_version` exact-string-match against current `cranelift_codegen::VERSION`. Mismatch → refuse-load + fall back to Path B fresh compile (overwrites stale .o on success).
-2. `shim_abi_version` exact-integer-match against `triet_jit::SHIM_ABI_VERSION` constant. Mismatch → refuse-load + fall back to Path B.
-3. `target_triple` exact-string-match against current host triple per §5. Mismatch → refuse-load (should never happen — path enforces this, but defense-in-depth).
+1. `cranelift_version` exact-string-match against current `cranelift_codegen::VERSION`. Mismatch $\rightarrow$ refuse-load + fall back to Path B fresh compile (overwriting stale .o on success).
+2. `shim_abi_version` exact-integer-match against `triet_jit::SHIM_ABI_VERSION` constant. Mismatch $\rightarrow$ refuse-load + fall back to Path B.
+3. `target_triple` exact-string-match against current host triple per §5. Mismatch $\rightarrow$ refuse-load (should never happen — path enforces this, but defense-in-depth).
 
-**Failure mode unified:** any mismatch → silent fallback to Path B fresh compile. NOT user-visible error. NEW .o overwrites stale (per [ADR-0015 §3](0015-package-store-layout.md) atomic install pattern — tmp/ + rename).
+**Failure mode unified:** any mismatch $\rightarrow$ silent fallback to Path B fresh compile. NOT a user-visible error. NEW .o overwrites stale files (per [ADR-0015 §3](0015-package-store-layout.md) atomic install pattern — tmp/ + rename).
 
 **Why version-in-manifest, not version-in-path:**
 
-- Version-in-path (e.g., `jit/{cranelift_ver}/{triple}/{impl_hash}/`) means concurrent Triết toolchain versions on the same machine accumulate stale caches indefinitely. GC would need version-awareness.
+- Version-in-path (e.g., `jit/{cranelift_ver}/{triple}/{impl_hash}/`) means concurrent Triet toolchain versions on the same machine accumulate stale caches indefinitely. GC would need version-awareness.
 - Version-in-manifest gives a clean upgrade path: new toolchain reads old cache, sees mismatch, overwrites in place. Old cache directories don't accumulate.
 - `dao store gc` (§4) still sweeps `jit/{triple}/{impl_hash}/` for any `impl_hash` not in live module set, version-agnostic.
 
@@ -166,18 +166,18 @@ for (sym, reloc_addr) in obj.dynamic_relocations() {
 
 **Why direct lookup, not `dlsym`:**
 
-- **`dlsym(RTLD_DEFAULT, "__triet_println")`** requires the symbol to be exported in the host binary's dynamic symbol table. Rust's `#[unsafe(no_mangle)]` exports to the static symbol table but NOT the dynamic table by default — needs `-rdynamic` (`-Wl,--export-dynamic` on Linux) or per-symbol `#[unsafe(export_name = ...)]` + linker flags. Build-system fragility, OS-specific quirks.
+- **`dlsym(RTLD_DEFAULT, "__triet_println")`** requires the symbol to be exported in the host binary's dynamic symbol table. Rust's `#[unsafe(no_mangle)]` exports to the static symbol table but NOT the dynamic table by default — needing `-rdynamic` (`-Wl,--export-dynamic` on Linux) or per-symbol `#[unsafe(export_name = ...)]` + linker flags. Build-system fragility, OS-specific quirks.
 - **`dlsym` on Windows** requires `GetProcAddress(GetModuleHandle(NULL), ...)`, with different symbol-name decoration rules.
 - **Static `SHIM_TABLE`** (ADR-0032 §6) already exists for the fresh-compile Path B. Reusing it for Path A keeps one source of truth and works portably on Linux/macOS/Windows without build-flag plumbing.
 
-**`LIBCALL_TABLE` for Cranelift internal libcalls.** Cranelift's codegen emits calls to runtime helpers like `__truncdfsf2` (f64→f32 truncation) when implementing certain operations. These come from a small fixed set (~20 functions in `cranelift_codegen::ir::LibCall`). Triết wires them via `JITBuilder::symbol()` at fresh-JIT time (Path B); for Path A, parallel table maps the same names to the same Rust function pointers (typically the compiler-builtins crate's exports, or libc equivalents).
+**`LIBCALL_TABLE` for Cranelift internal libcalls.** Cranelift's codegen emits calls to runtime helpers like `__truncdfsf2` (f64$\rightarrow$f32 truncation) when implementing certain operations. These come from a small fixed set (~20 functions in `cranelift_codegen::ir::LibCall`). Triet wires them via `JITBuilder::symbol()` at fresh-JIT time (Path B); for Path A, parallel table maps the same names to the same Rust function pointers (typically the compiler-builtins crate's exports, or libc equivalents).
 
 **Concrete list (v0.10):**
 
 ```rust
 pub(crate) static LIBCALL_TABLE: &[(&str, *const u8)] = &[
-    // From cranelift_codegen::ir::LibCall variants — subset Triết IR actually uses.
-    // Triết doesn't use floating-point at v0.10, so this list is small.
+    // From cranelift_codegen::ir::LibCall variants — subset Triet IR actually uses.
+    // Triet doesn't use floating-point at v0.10, so this list is small.
     // Sticky for v0.10; revisit when v0.11+ adds f64/f32 numerics.
     ("Probestack", probestack_handler as *const u8),
     // (extensible; documented in shims.rs)
@@ -186,7 +186,7 @@ pub(crate) static LIBCALL_TABLE: &[(&str, *const u8)] = &[
 
 **Symbol-name discipline at write time:** `cranelift-object`'s `ObjectModule::declare_function` accepts a `Linkage` parameter. v0.10 uses `Linkage::Import` for all `__triet_*` and libcall symbols, which marks them as relocation targets in the output .o. Path A's patcher fills these via the table lookup above.
 
-**Rejected — `libloading::Library::new("libtriet_shims.so")`:** would require shipping a separate dynamic library for shims. Distribution complexity (versioning, locating, signing). The shims are part of `triet-jit` static binary; there's no reason to externalize them.
+**Rejected — `libloading::Library::new("libtriet_shims.so")`:** would require shipping a separate dynamic library for shims. Distribution complexity (versioning, locating, signing). The shims are part of `triet-jit` static binary; there is no reason to externalize them.
 
 ---
 
@@ -214,7 +214,7 @@ if corrupt_pkgs.is_empty() {
 **`sweep_jit_tree`** walks `jit/<triple>/<hash>/` two levels deep:
 
 - Top level: each child is a target_triple directory (`x86_64-unknown-linux-gnu`, `aarch64-apple-darwin`, etc.). Walk all — multi-arch caches coexist if user runs on different machines sharing `~/.triet/store/` via NFS/sync.
-- Second level: each child is a hash directory. If hex-decode → 32-byte `impl_hash` NOT in `live_mods` set → remove with `remove_path` (existing helper).
+- Second level: each child is a hash directory. If hex-decode $\rightarrow$ 32-byte `impl_hash` NOT in `live_mods` set $\rightarrow$ remove with `remove_path` (existing helper).
 - Malformed entries (non-hex names, depth mismatch) best-effort skip per existing pattern.
 
 **`GcReport` extension:**
@@ -230,14 +230,14 @@ pub struct GcReport {
 }
 ```
 
-**Conservative-on-corruption rule applies uniformly.** If `corrupt_pkgs` non-empty during mark, skip jit sweep along with mod + term sweeps. Same rationale: we can't be sure which JIT artifacts are still reachable.
+**Conservative-on-corruption rule applies uniformly.** If `corrupt_pkgs` non-empty during mark, skip jit sweep along with mod + term sweeps. Same rationale: we cannot be sure which JIT artifacts are still reachable.
 
 **Why `impl_hash` keyed, not `iface_hash` keyed:**
 
-- AOT cache contains compiled native code, which depends on impl details (function bodies). `iface_hash` (interface only per [ADR-0011](0011-abi-metadata-format.md)) can stay stable across body changes → cache would silently serve stale code on body-only changes.
-- `impl_hash` per [ADR-0014](0014-hash-scheme-refinement.md) changes on any body byte change → cache invalidation aligns with semantic invalidation. Module-level granularity (one .o per module) batches related functions for cache locality + amortizes manifest overhead.
+- AOT cache contains compiled native code, which depends on impl details (function bodies). `iface_hash` (interface only per [ADR-0011](0011-abi-metadata-format.md)) can stay stable across body changes $\rightarrow$ cache would silently serve stale code on body-only changes.
+- `impl_hash` per [ADR-0014](0014-hash-scheme-refinement.md) changes on any body byte change $\rightarrow$ cache invalidation aligns with semantic invalidation. Module-level granularity (one .o per module) batches related functions for cache locality + amortizes manifest overhead.
 
-**Rejected — per-function jit cache (`jit/{triple}/{func_hash}/`):** function-level hashes don't exist in Triết's hash tree. Adding them would inflate the hash table without payoff — modules are the natural unit of cache invalidation since IR is already module-batched.
+**Rejected — per-function jit cache (`jit/{triple}/{func_hash}/`):** function-level hashes do not exist in Triet's hash tree. Adding them would inflate the hash table without payoff — modules are the natural unit of cache invalidation since IR is already module-batched.
 
 ---
 
@@ -260,32 +260,32 @@ let host_triple_str = host_isa.triple().to_string();
 - GC traversal (§4) walks `jit/<triple>/<hash>/` two levels uniformly; per-arch separation is structural, not encoded in metadata.
 - `manifest.bin` STILL records `target_triple` (§2) for defense-in-depth — catches the case where someone moves a `{impl_hash}/` dir between triple parents manually.
 
-**No cross-arch loading attempted.** Triết does NOT try to "find a cache from another arch and rebuild from there" — fresh compile is cheaper than cross-arch translation. ARM cache on x86 host = ignored, treated as cache miss.
+**No cross-arch loading attempted.** Triet does NOT try to "find a cache from another arch and rebuild from there" — fresh compile is cheaper than cross-arch translation. ARM cache on x86 host = ignored, treated as cache miss.
 
 **Multi-machine NFS share scenarios:**
 
-- Two Linux x86_64 machines sharing `~/.triet/store/` → both write to `jit/x86_64-unknown-linux-gnu/` → cache hits both ways. Cranelift version check (§2) ensures correctness if machines have different toolchain versions.
-- Linux x86_64 + macOS aarch64 sharing store → separate subtrees (`x86_64-unknown-linux-gnu/` vs `aarch64-apple-darwin/`) → no conflict. Each gets cold cache miss on first run; subsequent runs hit own subtree.
+- Two Linux x86_64 machines sharing `~/.triet/store/` $\rightarrow$ both write to `jit/x86_64-unknown-linux-gnu/` $\rightarrow$ cache hits both ways. Cranelift version check (§2) ensures correctness if machines have different toolchain versions.
+- Linux x86_64 + macOS aarch64 sharing store $\rightarrow$ separate subtrees (`x86_64-unknown-linux-gnu/` vs `aarch64-apple-darwin/`) $\rightarrow$ no conflict. Each gets cold cache miss on first run; subsequent runs hit own subtree.
 
 **Rejected — universal IR cache (cache the optimized Cranelift IR before codegen, target-specific codegen on each machine):**
 - Pros: cache shareable across arch.
-- Cons: adds an IR layer between Triết IR and machine code; we'd cache Cranelift's intermediate, which isn't a stable serialization format (Cranelift doesn't promise IR stability across versions). Defers value to architecture-portability concern that doesn't matter for single-developer-machine usage.
+- Cons: adds an IR layer between Triet IR and machine code; we'd cache Cranelift's intermediate, which is not a stable serialization format (Cranelift does not promise IR stability across versions). Defers value to architecture-portability concern that does not matter for single-developer-machine usage.
 - Rejected for v0.10. Defer post-v1.0 if multi-arch dev becomes common.
 
 ---
 
 ## §6 — Determinism preservation: cache state is NOT in the contract
 
-**Decision:** Per [ADR-0007](0007-ir-design.md) the determinism contract is **IR-level**: same `.tri` source → same `.triv` bytes. Cache hit/miss state is **runtime-state** — varies across runs (cold first run misses, warm subsequent runs hit) and is NOT subject to determinism guarantees. Bootstrap byte-identical gates (per [ADR-0030 §9](0030-jit-cranelift-integration.md)) compare `.khi` artifact bytes, NOT cache contents or execution time.
+**Decision:** Per [ADR-0007](0007-ir-design.md) the determinism contract is **IR-level**: same `.tri` source $\rightarrow$ same `.triv` bytes. Cache hit/miss state is **runtime-state** — varies across runs (cold first run misses, warm subsequent runs hit) and is NOT subject to determinism guarantees. Bootstrap byte-identical gates (per [ADR-0030 §9](0030-jit-cranelift-integration.md)) compare `.khi` artifact bytes, NOT cache contents or execution time.
 
 **Concretely:**
 
 | Property | Deterministic? | Where verified |
 |---|---|---|
-| `.tri` source → `.triv` IR bytes | YES — strict | `bootstrap_determinism` test (existing) |
-| `.tri` source → Stage 2 ≡ Stage 3 `.khi` bytes | YES — strict | `stage2_eq_stage3_main_tri_byte_identical` (v0.10.x.jit.4 gate lift target) |
-| `.tri` source → JIT'd machine code bytes | NO — varies across Cranelift versions, target arch | Not gated; documented per §2 |
-| `.tri` source → cache hit/miss on Nth run | NO — runtime state | Not gated; documented per this §6 |
+| `.tri` source $\rightarrow$ `.triv` IR bytes | YES — strict | `bootstrap_determinism` test (existing) |
+| `.tri` source $\rightarrow$ Stage 2 ≡ Stage 3 `.khi` bytes | YES — strict | `stage2_eq_stage3_main_tri_byte_identical` (v0.10.x.jit.4 gate lift target) |
+| `.tri` source $\rightarrow$ JIT'd machine code bytes | NO — varies across Cranelift versions, target arch | Not gated; documented per §2 |
+| `.tri` source $\rightarrow$ cache hit/miss on Nth run | NO — runtime state | Not gated; documented per this §6 |
 | Same machine, same toolchain version, two runs | Cache hit on run 2 (statistically) | Implicit; not strict-tested (timing-dependent) |
 | User-observable output (stdout, stderr, exit code) | YES — strict | Existing program-level tests |
 
@@ -296,9 +296,9 @@ let host_triple_str = host_isa.triple().to_string();
 - Perf benchmark (`.5` or v0.10.x.jit.4 sub-task) measures execution speed; cache state IS part of the measurement (we WANT to measure warm-cache speed). Bench scenarios:
   - "Cold cache" run: `rm -rf ~/.triet/store/jit/` before measure — captures fresh-compile cost.
   - "Warm cache" run: measure after at least one prior run — captures cache-hit cost.
-  - Both reported; "warm cache" is the primary target for ≥10× v0.3 baseline claim.
+  - Both reported; "warm cache" is the primary target for $\ge$ 10× v0.3 baseline claim.
 
-**Test gate impact:** `.4` (Stage 2 ≡ Stage 3 byte-identical lift per ADR-0030 §9) uses `cmp` on `.khi` files. Cache state doesn't affect `.khi` output. Gate stays clean.
+**Test gate impact:** `.4` (Stage 2 ≡ Stage 3 byte-identical lift per ADR-0030 §9) uses `cmp` on `.khi` files. Cache state does not affect `.khi` output. Gate stays clean.
 
 **Documentation surface:** `JitDispatcher::cache_state()` returns `Option<CacheStats { hits, misses, evictions }>` for observability — useful for profiling, NOT for correctness assertion. Test code should never depend on `cache_state().hits > 0`.
 
@@ -337,41 +337,41 @@ fn compile_and_cache(&mut self, func_id: FuncId, ir: &IrProgram)
 **Why synchronous, not lazy/batched:**
 
 - Synchronous keeps the cache eventually-consistent with no `Drop`-time work. Lazy write at `JitDispatcher::drop` would lose state on process crash or `kill -9`; we'd re-pay the compile cost on the next run anyway.
-- Per-function write is small (~1-50 KB .o file). Atomic-install overhead is one mkdir + N writes + one rename ≈ <1ms. Negligible compared to the ~1-3s JIT compile.
+- Per-function write is small (~1-50 KB .o file). Atomic-install overhead is one mkdir + N writes + one rename $\approx$ <1ms. Negligible compared to the ~1-3s JIT compile.
 - Async write to a background thread adds threading complexity (lock-free dispatcher state, write ordering) — premature for v0.10 single-thread VM scope (per [ADR-0026 v2](0026-actor-boundary-send-rules.md) BYOS).
 
 **Write failure handling:**
 
-- If atomic install fails (disk full, permission denied), log a warning + continue execution with the in-process compiled code. Cache write is best-effort: failure doesn't propagate to the user's program. Next run pays compile cost again.
+- If atomic install fails (disk full, permission denied), log a warning + continue execution with the in-process compiled code. Cache write is best-effort: failure does not propagate to the user's program. Next run pays compile cost again.
 - This matches ADR-0015's `dao install` failure semantics — cache is supplementary.
 
 **Idempotency:** if two `dao run` processes JIT-compile the same module concurrently and race to write, atomic-rename ensures only one wins; the other's tmp dir gets cleaned by the next `dao store gc`'s tmp/ sweep (per `store.rs:474`).
 
 **Rejected — write-on-shutdown via `Drop`:**
 - Lost on crash; race conditions with multi-process invocations; complicates shutdown ordering.
-- Defer per §7 if profile shows synchronous write becomes a bottleneck (unlikely at <1ms/function).
+- Defer per §7 if profiling shows synchronous write becomes a bottleneck (unlikely at <1ms/function).
 
 ---
 
 ## §8 — Cache corruption recovery: refuse-and-recompile
 
-**Decision:** Any failure during Path A AOT load — corrupt manifest, version mismatch (§2), missing symbols (§3), ELF parse error, RW→RX mprotect failure — triggers **silent fallback to Path B** (fresh compile). The stale cache directory gets overwritten on the next successful Path B persist. No user-visible error; log at `tracing::warn` level for observability.
+**Decision:** Any failure during Path A AOT load — corrupt manifest, version mismatch (§2), missing symbols (§3), ELF parse error, RW$\rightarrow$RX mprotect failure — triggers **silent fallback to Path B** (fresh compile). The stale cache directory gets overwritten on the next successful Path B persist. No user-visible error; log at `tracing::warn` level for observability.
 
 **Failure modes covered:**
 
 | Failure | Trigger | Recovery |
 |---|---|---|
-| `manifest.bin` truncated/missing | Disk corruption, killed mid-write | Path A errors → Path B + overwrite |
-| `cranelift_version` mismatch | Toolchain upgrade | Path A refuses → Path B + overwrite |
-| `shim_abi_version` mismatch | ADR-0032 ABI bump | Path A refuses → Path B + overwrite |
-| `functions.o` truncated | Disk corruption | `object::File::parse` errors → Path B + overwrite |
-| Unresolved symbol in `__triet_*` | SHIM_TABLE entry removed (would be a v0.10+ ABI break already covered by §2) | Path A errors → Path B + overwrite, on assumption ABI was just bumped |
-| `target_triple` mismatch | Manual file copy across machines | Path A refuses → Path B + overwrite |
-| RW→RX mprotect fails | Hardened userspace (grsecurity, SELinux) | Path A errors → Path B fresh JIT → also fails per ADR-0030 §6 W^X note → tier-down to VM permanently |
+| `manifest.bin` truncated/missing | Disk corruption, killed mid-write | Path A errors $\rightarrow$ Path B + overwrite |
+| `cranelift_version` mismatch | Toolchain upgrade | Path A refuses $\rightarrow$ Path B + overwrite |
+| `shim_abi_version` mismatch | ADR-0032 ABI bump | Path A refuses $\rightarrow$ Path B + overwrite |
+| `functions.o` truncated | Disk corruption | `object::File::parse` errors $\rightarrow$ Path B + overwrite |
+| Unresolved symbol in `__triet_*` | SHIM_TABLE entry removed (would be a v0.10+ ABI break already covered by §2) | Path A errors $\rightarrow$ Path B + overwrite, on assumption ABI was just bumped |
+| `target_triple` mismatch | Manual file copy across machines | Path A refuses $\rightarrow$ Path B + overwrite |
+| RW$\rightarrow$RX mprotect fails | Hardened userspace (grsecurity, SELinux) | Path A errors $\rightarrow$ Path B fresh JIT $\rightarrow$ also fails per ADR-0030 §6 W^X note $\rightarrow$ tier-down to VM permanently |
 
 **Why silent fallback, not user-visible error:**
 
-- Cache is supplementary — user's program correctness doesn't depend on it.
+- Cache is supplementary — user's program correctness does not depend on it.
 - A "cache corrupt" error message during `dao run foo.tri` would confuse non-engineer users (the explicit author audience per CLAUDE.md "Author–AI collaboration model").
 - Path B fresh compile + overwrite IS the self-heal action; no manual intervention required.
 - Log message at warn level (`tracing::warn!("AOT cache miss for {impl_hash}: {reason}; falling back to fresh JIT")`) lets ops folks/CI investigate without blocking execution.
@@ -384,7 +384,7 @@ fn compile_and_cache(&mut self, func_id: FuncId, ir: &IrProgram)
 - `ELF parse failed: {object_error}`
 - `mprotect RW→RX denied: {os_error}`
 
-These power post-mortem analysis; structured enough to grep + count for release-check.sh patterns if needed.
+These power post-mortem analysis; structured enough to grep + count for `release-check.sh` patterns if needed.
 
 **Rejected — strict mode (`TRIET_JIT_STRICT_CACHE=1` env var) that errors on cache miss:** could be added as v0.11 escape hatch for CI scenarios that want to test cache reliability. Not v0.10 scope.
 
@@ -463,7 +463,7 @@ fn gc_sweeps_orphan_jit_directories() {
 }
 ```
 
-Plus a conservative-mode test: corrupt manifest → jit sweep skipped along with mod/term.
+Plus a conservative-mode test: corrupt manifest $\rightarrow$ jit sweep skipped along with mod/term.
 
 ### 9.4 — Cross-arch directory isolation
 
@@ -506,7 +506,7 @@ Gate lifted in v0.10.x.jit.4 separate sub-task; ADR-0033 §9.5 documents the dep
 
 **Same-phase port required:** **No.** Per [ADR-0029 §3 Layer C independent](0029-self-host-port-policy.md). The self-host compiler at `compiler/*.tri` emits `.khi` containing `Instruction::*` opcodes — AOT cache consumes those at runtime, just like Path B JIT does. Self-host source unchanged.
 
-**Bootstrap interaction:** This is what unlocks the Stage 2/3 byte-identical gate per §9.5. Self-host source code does NOT change; the same Stage 2 / Stage 3 self-compile runs with warm cache after first iteration → completes in <10 min target.
+**Bootstrap interaction:** This is what unlocks the Stage 2/3 byte-identical gate per §9.5. Self-host source code does NOT change; the same Stage 2 / Stage 3 self-compile runs with warm cache after first iteration $\rightarrow$ completes in <10 min target.
 
 ---
 
@@ -523,77 +523,77 @@ ADR-0033 unblocks:
 
 ## §12 — Decision rationale + connection to ADR-0030
 
-[ADR-0030 §13.6](0030-jit-cranelift-integration.md) deferred AOT cache to v0.10 because shipping it incrementally on top of `cranelift-jit` would have meant either (a) committing to a JIT-only architecture without persistence (which §13.5 already showed is a dead end for bootstrap), or (b) implementing skeleton-cache with v0.9's backend then redoing for v0.10 — exactly the "ship temporary code" anti-pattern author rejected. ADR-0033 is the result of that thought — backend hybrid + relocation discipline locked together so v0.10.x.jit.3 ships against settled design.
+[ADR-0030 §13.6](0030-jit-cranelift-integration.md) deferred AOT cache to v0.10 because shipping it incrementally on top of `cranelift-jit` would have meant either (a) committing to a JIT-only architecture without persistence (which §13.5 already showed is a dead end for bootstrap), or (b) implementing skeleton-cache with v0.9's backend then redoing for v0.10 — exactly the "ship temporary code" anti-pattern author rejected. ADR-0033 is the result of that process — backend hybrid + relocation discipline locked together so v0.10.x.jit.3 ships against settled design.
 
 **Author-facing summary** (per CLAUDE.md "present tradeoffs in terms the author cares about"):
 
 - **§1 Backend hybrid** = "keep the fast v0.9 fresh-compile path; add a side-channel that writes the same code to disk for next time". One IR, two emission targets.
-- **§2 Version pinning** = "cache invalidates cleanly when Triết or Cranelift upgrades; new compile overwrites stale .o in place". No accumulating dead directories.
+- **§2 Version pinning** = "cache invalidates cleanly when Triet or Cranelift upgrades; new compile overwrites stale .o in place". No accumulating dead directories.
 - **§3 No `dlsym`** = "symbols come from the same `SHIM_TABLE` ADR-0032 already locked; works portably on Linux/macOS/Windows without build-flag plumbing".
 - **§4 GC integration** = "JIT cache lives under `~/.triet/store/jit/`; `dao store gc` sweeps it alongside pkg/mod/term — same mark-and-sweep, one more sweep walk".
 - **§5 Per-arch directories** = "different machine architecture? different subdirectory. No cross-pollination risk".
 - **§6 Determinism preserved** = "cache state doesn't affect program output — only timing. Bootstrap byte-identical gate stays clean".
-- **§7–§8 Best-effort cache** = "any failure → fresh compile + overwrite. Cache never blocks a user program from running".
+- **§7–§8 Best-effort cache** = "any failure $\rightarrow$ fresh compile + overwrite. Cache never blocks a user program from running".
 
-Per [feedback_implementer_choice.md] precedent: 5 constraints are implementation-internal; author delegated 2026-05-30. ADR-0033 records the choice + reasoning so future-AI can reconstruct.
+Per [feedback_implementer_choice.md] precedent: 5 constraints are implementation-internal; author delegated on 2026-05-30. ADR-0033 records the choice and reasoning so future developers and AI agents can reconstruct them.
 
 ---
 
-## Hệ quả
+## Consequences
 
-**Possible (positive):**
+**Positive Outcomes:**
 
 - v0.10.x.jit.3 unblocked — mechanical execution against a locked design.
 - Self-host bootstrap warm-cache runs in <10 min (vs. ~2.5h cold without cache) per [ADR-0030 §13.5](0030-jit-cranelift-integration.md).
 - Stage 2 ≡ Stage 3 byte-identical gate lifted v0.10.x.jit.4 (chained via §9.5) — closes [ADR-0019 §7 Addendum](0019-self-hosting-compiler-bootstrap.md) perf gate that has waited since v0.7.
-- Perf bench (v0.10.x.jit.4) can measure warm-cache execution speed honestly — ≥10× v0.3 baseline target per ROADMAP §v0.9 carries forward to v0.10.
+- Perf bench (v0.10.x.jit.4) can measure warm-cache execution speed honestly — $\ge$ 10× v0.3 baseline target per ROADMAP §v0.9 carries forward to v0.10.
 - Multi-arch dev shares `~/.triet/store/` cleanly (per-triple subtrees coexist without conflict).
 - AOT cache participates in existing GC infrastructure — no new ops procedures.
 
-**Constrained (cost):**
+**Constraints & Costs:**
 
 - `triet-jit` adds ~800 LOC for AOT path (Path A loader + manifest type + relocation patcher + GC hook).
 - 3 new deps: `cranelift-object`, `object`, `memmap2`. Workspace `Cargo.lock` grows.
 - Path B compile cost ~10-20% slower than v0.9 (emits .o alongside in-process mmap). Acceptable; amortized by warm-cache hits on subsequent runs.
-- Cache disk usage: ~3000 functions × ~10-50 KB per .o = ~30-150 MB self-host cache footprint. GC keeps this bounded to live modules.
-- One new unsafe block in Path A (mprotect RW→RX). SAFETY-documented per [ADR-0032 §5](0032-builtin-shim-abi.md). Workspace `unsafe_code = "forbid"` stays elsewhere.
+- Cache disk usage: ~3000 functions $\times$ ~10-50 KB per .o = ~30-150 MB self-host cache footprint. GC keeps this bounded to live modules.
+- One new unsafe block in Path A (mprotect RW$\rightarrow$RX). SAFETY-documented per [ADR-0032 §5](0032-builtin-shim-abi.md). Workspace `unsafe_code = "forbid"` stays elsewhere.
 
-**Costly (need verify in v0.10.x.jit.3):**
+**Risks & Verification Needs in v0.10.x.jit.3:**
 
-- `cranelift-object` API stability — Cranelift versions 0.108→0.132 have had occasional ObjectModule API churn. Pin Cranelift version in workspace `Cargo.toml`; bump triggers cache invalidation per §2.
+- `cranelift-object` API stability — Cranelift versions 0.108$\rightarrow$0.132 have had occasional ObjectModule API churn. Pin Cranelift version in workspace `Cargo.toml`; bump triggers cache invalidation per §2.
 - Relocation patcher correctness — manual ELF/Mach-O/COFF relocation handling is error-prone. v0.10 ships ELF-only (Linux/POSIX); Mach-O (macOS) + COFF (Windows) defer to v0.11 cross-platform completion if author prioritizes. Document as POSIX-first per [ADR-0018](0018-capability-loader-semantics.md) precedent.
 - Atomic-install concurrency — multiple `dao run` processes racing on cache write. Existing `Store` atomic-rename pattern is correct; verify under stress test in §9.
 
 ---
 
-## Không làm (explicitly rejected)
+## Rejected Alternatives
 
 - **Full swap to `cranelift-object` (drop `cranelift-jit`)** — slows fresh-compile path; bootstrap first-run regression. Rejected per §1.
 - **Version-in-path cache directories** (`jit/{cranelift_ver}/{triple}/{impl_hash}/`) — accumulates stale directories indefinitely; GC complexity. Rejected per §2.
 - **`libloading`/`dlsym` for shim resolution** — requires `-rdynamic` build flag, OS-specific decoration rules, fragile. Rejected per §3.
-- **Universal IR cache (cache Cranelift IR pre-codegen, target-codegen per machine)** — defers value to cross-arch dev scenario that doesn't justify v0.10 scope. Rejected per §5.
+- **Universal IR cache (cache Cranelift IR pre-codegen, target-codegen per machine)** — defers value to cross-arch dev scenario that does not justify v0.10 scope. Rejected per §5.
 - **Lazy/batched cache write at process Drop** — lost on crash; race conditions; threading complexity. Rejected per §7.
 - **User-visible "cache corrupt" errors** — cache is supplementary; correctness-equivalent recovery via Path B exists. Rejected per §8.
 - **Strict cache mode env var (`TRIET_JIT_STRICT_CACHE`)** — defer to v0.11+ if CI use case materializes. Rejected for v0.10 scope.
-- **Per-function jit cache granularity** — function-level hashes don't exist in Triết's hash tree. Rejected per §4.
+- **Per-function jit cache granularity** — function-level hashes do not exist in Triet's hash tree. Rejected per §4.
 - **Async write to background thread** — premature; <1ms write cost vs. ~1-3s compile cost. Rejected per §7.
 - **Mach-O + COFF relocation support v0.10** — POSIX/ELF first per [ADR-0018](0018-capability-loader-semantics.md) precedent; defer cross-platform to v0.11 if author prioritizes.
 
 ---
 
-## Prior art
+## Prior Art
 
-| Source | What we copy | What we change |
+| Source | What We Adopted | What We Changed |
 |---|---|---|
-| `cranelift-object` (Bytecode Alliance) | ELF/.o emission API; relocation table generation | Triết: paired with `cranelift-jit` rather than as sole backend |
-| `object` crate | ELF parse + symbol enumeration + relocation read | Triết: custom patcher rather than generic linker |
-| Rust `rustc` incremental compilation cache | Per-`crate_hash` cache directory + version invalidation | Triết: per-`impl_hash` (module-level) cache + GC-integrated |
-| WasmTime/`wasmer-jit` AOT cache | Object-file persistence + relocation patching | Triết: smaller scope — no Wasm linker, single-target output |
-| Java AOT class data sharing (CDS) | Pre-compiled artifact reuse across JVM invocations | Triết: simpler — no class loading, single binary linkable .o |
-| Nix store CAS | Content-addressed storage with hash invalidation + GC | Triết: reuses existing `~/.triet/store/` infrastructure per ADR-0015 |
-| Ccache (C/C++ compiler cache) | Compiler-output cache keyed on input hash + tool version | Triết: similar version-pinning discipline (§2); narrower scope (one tool) |
+| `cranelift-object` (Bytecode Alliance) | ELF/.o emission API; relocation table generation | Triet: paired with `cranelift-jit` rather than as sole backend |
+| `object` crate | ELF parse + symbol enumeration + relocation read | Triet: custom patcher rather than generic linker |
+| Rust `rustc` incremental compilation cache | Per-`crate_hash` cache directory + version invalidation | Triet: per-`impl_hash` (module-level) cache + GC-integrated |
+| WasmTime/`wasmer-jit` AOT cache | Object-file persistence + relocation patching | Triet: smaller scope — no Wasm linker, single-target output |
+| Java AOT class data sharing (CDS) | Pre-compiled artifact reuse across JVM invocations | Triet: simpler — no class loading, single binary linkable .o |
+| Nix store CAS | Content-addressed storage with hash invalidation + GC | Triet: reuses existing `~/.triet/store/` infrastructure per ADR-0015 |
+| Ccache (C/C++ compiler cache) | Compiler-output cache keyed on input hash + tool version | Triet: similar version-pinning discipline (§2); narrower scope (one tool) |
 
-**What we invented:**
+**Novel Contributions in Triet:**
 
 - **Backend hybrid (Path A `cranelift-object` + Path B `cranelift-jit` sharing one IR translator)** — keeps fresh-compile fast while enabling persistence. Two backends, one codegen pipeline.
 - **Shim-registry-as-symbol-table** — `SHIM_TABLE` (ADR-0032 §6) doubles as Path A symbol resolver. No separate symbol export step; no `dlsym` dependency.
@@ -602,14 +602,14 @@ Per [feedback_implementer_choice.md] precedent: 5 constraints are implementation
 
 ---
 
-## Tham chiếu
+## References
 
 - [ADR-0007](0007-ir-design.md) — IR determinism contract (§6 cache state is NOT in the contract).
 - [ADR-0011](0011-abi-metadata-format.md) — ABI metadata + `iface_hash` (§4 explains why `impl_hash` is the cache key, not iface).
 - [ADR-0013](0013-semver-linking-policy.md) — Semver linking discipline (§2 SHIM_ABI_VERSION inherits the spirit).
-- [ADR-0014](0014-hash-scheme-refinement.md) — 3-cấp hash tree (§4 module-level `impl_hash` is the cache key).
+- [ADR-0014](0014-hash-scheme-refinement.md) — 3-level hash tree (§4 module-level `impl_hash` is the cache key).
 - [ADR-0015 §3 + §6](0015-package-store-layout.md) — Atomic install pattern (§7); mark-and-sweep GC (§4 extension).
-- [ADR-0018](0018-capability-loader-semantics.md) — POSIX-first precedent (§Hệ quả costly note for Mach-O/COFF defer).
+- [ADR-0018](0018-capability-loader-semantics.md) — POSIX-first precedent (§Consequences risks note for Mach-O/COFF defer).
 - [ADR-0019 §7 Addendum](0019-self-hosting-compiler-bootstrap.md) — Perf gate chain (§9.5 unlocks via .4).
 - [ADR-0026 v2](0026-actor-boundary-send-rules.md) — BYOS single-threaded v0.10 (§7 rationale for synchronous write).
 - [ADR-0029 §3 + §5](0029-self-host-port-policy.md) — Layer C runtime independent (§10 no same-phase port); Self-host port plan template (§10 format).

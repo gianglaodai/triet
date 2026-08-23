@@ -1,25 +1,25 @@
 # ADR 0020 — Outcome error handling (`T~E` / `T?~E` — trit-encoded fallibility)
 
-**Trạng thái:** Quyết định. Áp dụng cho v0.7.4.3-error + tất cả new code từ v0.7.4.3 trở đi. Closes [ADR-0019 Addendum §A7](0019-self-hosting-compiler-bootstrap.md#a7--deferred-items-log-technical-debt-surfaced-by-v073) deferred item *"Error handling primitive — recovery / try-catch / supervisor"*. Foundational design — affects SPEC §2.5 (nullable + new fallible primitive), ADR-0003 (Iterator), std.result existing enum, capability resolver return types, and the entire self-host compiler error paths.
+**Status:** Decided. Applicable to v0.7.4.3-error + all new code from v0.7.4.3 onward. Closes [ADR-0019 Addendum §A7](0019-self-hosting-compiler-bootstrap.md#a7--deferred-items-log-technical-debt-surfaced-by-v073) deferred item *"Error handling primitive — recovery / try-catch / supervisor"*. Foundational design — affects SPEC §2.5 (nullable + new fallible primitive), ADR-0003 (Iterator), std.result existing enum, capability resolver return types, and the entire self-host compiler error paths.
 
-**Issue:** Triết v0.6 ships với 4 cơ chế xử lý "absence/failure":
+**Issue:** Triet v0.6 ships with 4 mechanisms for handling "absence/failure":
 
-| Cơ chế | Style | Ví dụ |
+| Mechanism | Style | Example |
 |---|---|---|
 | `T?` nullable primitive | Imperative-friendly (`?.`/`?:`/`!!`) | `find_user(id) -> User?` |
 | `Result<T, E>` enum (std.result) | Functional (Rust-style match) | `parse_config(s) -> Result<Config, ParseError>` |
 | `Trilean::Unknown` | Ł3 semantic uncertainty | `capability_resolve(req) -> Trilean` |
 | Runtime panic (`VmError` E22XX) | Non-recoverable bug-tier | `divide(a, 0)` → E2204 |
 
-Author 2026-05-17 surfaced philosophical concern: `Result<T, E>` borrowed from Rust **ép** functional programming style (`.map()`/`.and_then()`/`match` ceremony). Authors who prefer imperative style (Java-sensibility) chỉ có pattern match — verbose ở các call site đơn giản. Discussion explored Go-style `(value, error)` (rejected — `if err != nil` boilerplate + zero-value pitfall + ambiguous invariant) và considered Zig error union, Swift throws, effect systems (Koka).
+On 2026-05-17, the author raised a philosophical concern: `Result<T, E>` borrowed from Rust **forces** a functional programming style (`.map()`/`.and_then()`/`match` ceremony). Developers who prefer an imperative style (Java sensibility) only had pattern matching — which is verbose for simple call sites. Discussions explored Go-style `(value, error)` (rejected due to `if err != nil` boilerplate, zero-value pitfalls, and ambiguous invariants), Zig error unions, Swift throws, and effect systems (Koka).
 
-Final design picks **trit-encoded outcome type** parallel với existing `T?` primitive: single-trit discriminator over 2 or 3 states, syntax-level imperative ergonomics, type-system safety, balanced ternary identity anchored.
+The final design selects a **trit-encoded outcome type** parallel to the existing `T?` primitive: a single-trit discriminator over 2 or 3 states, syntax-level imperative ergonomics, type-system safety, and anchored in balanced ternary identity.
 
-This ADR locks the design fully — type system, wire format, syntax, operators, methods, pattern match, and coexistence with existing `Result<T, E>` — so all downstream sub-tasks v0.7.4.3+ can adopt idiomatic patterns without further redesign.
+This ADR locks the design fully — type system, wire format, syntax, operators, methods, pattern matching, and coexistence with the existing `Result<T, E>` — so that all downstream sub-tasks v0.7.4.3+ can adopt idiomatic patterns without further redesign.
 
 ## §1 — Type syntax: `T~E` (2-state) and `T?~E` (3-state)
 
-**Lock:** Triết gains two new primitive type forms — `T~E` (binary outcome) and `T?~E` (ternary outcome with null state). Both encoded by a **single trit discriminator** + payload union, mirroring existing `T?` nullable structure.
+**Lock:** Triet gains two new primitive type forms — `T~E` (binary outcome) and `T?~E` (ternary outcome with null state). Both are encoded by a **single trit discriminator** + payload union, mirroring the existing `T?` nullable structure.
 
 ### 1.1 — `T~E` semantics
 
@@ -31,7 +31,7 @@ T~E  ::=  Trit discriminator  +  payload union of { T, E }
     Trit::Negative  → payload is E (failure)
 ```
 
-Mathematical alignment: balanced ternary `{-1, 0, +1}` directly encodes the outcome — positive is success, negative is failure, zero is the **reserved state** (covered §6).
+Mathematical alignment: balanced ternary `{-1, 0, +1}` directly encodes the outcome — positive is success, negative is failure, and zero is the **reserved state** (covered in §6).
 
 ### 1.2 — `T?~E` semantics
 
@@ -47,9 +47,9 @@ The `?` modifier here is **outcome-level**, not type-level. It promotes the Zero
 
 ### 1.3 — Lexer compound token `?~` (CRITICAL)
 
-The marker for ternary outcome is a **lexer-level compound token** `?~` — emitted as a single token when `?` and `~` appear adjacent without whitespace. This is the same compound-token discipline as `~+`, `~-`, `~0` (§2) và `~+>`, `~0>`, `~->` (§3): no whitespace-within is allowed.
+The marker for ternary outcome is a **lexer-level compound token** `?~` — emitted as a single token when `?` and `~` appear adjacent without whitespace. This follows the same compound-token discipline as `~+`, `~-`, `~0` (§2) and `~+>`, `~0>`, `~->` (§3): no whitespace-within is allowed.
 
-**Lexer rule cho ternary map operators:** mỗi `~+` / `~0` / `~-` (constructor tokens từ §2) look ahead 1 char. Nếu `>` adjacent (no whitespace), emit 3-char compound `~+>` / `~0>` / `~->` — đây là arm-specific map operator (postfix). Nếu không có `>` hoặc có whitespace trước, emit constructor token (prefix). Position context cũng đảm bảo không ambiguity: constructor đứng trước expression payload (prefix), map operator đứng sau expression (postfix). `~->` không xung đột với function return arrow `->` vì `->` đứng sau `)` của param list, còn `~->` đứng sau expression — lexer phân biệt qua preceding token.
+**Lexer rule for ternary map operators:** each `~+` / `~0` / `~-` (constructor tokens from §2) looks ahead 1 character. If `>` is adjacent (no whitespace), emit the 3-character compound `~+>` / `~0>` / `~->` — this is an arm-specific map operator (postfix). If `>` is absent or preceded by whitespace, emit the constructor token (prefix). Positional context also guarantees no ambiguity: constructors precede expression payloads (prefix), while map operators follow expressions (postfix). `~->` does not conflict with function return arrow `->` because `->` follows `)` in parameter lists, whereas `~->` follows expressions — the lexer disambiguates via preceding tokens.
 
 ```text
 LexerToken    ::=  ...
@@ -67,22 +67,22 @@ TypeExpr      ::=  BaseType '?~' ErrorType       # T?~E ternary outcome
 ```
 
 The lexer emits exactly one of:
-- `?~` compound (when `?~` adjacent, no whitespace): used for `T?~E`.
-- `?` and `~` as separate tokens (when whitespace between them): the parser will NOT recombine. In type position, `T ? ~ E` (with whitespace between `?` and `~`) is a **syntax error** because dangling `~ E` is not a valid type-position suffix.
+- `?~` compound (when `?~` is adjacent, no whitespace): used for `T?~E`.
+- `?` and `~` as separate tokens (when whitespace is between them): the parser will NOT recombine them. In type position, `T ? ~ E` (with whitespace between `?` and `~`) is a **syntax error** because a dangling `~ E` is not a valid type-position suffix.
 
-This rules out three classes of bug:
+This rules out three classes of bugs:
 
 1. **Parser ambiguity** with future operators that happen to start with `?` or `~`.
-2. **Whitespace-sensitive parse divergence** (some compilers parse `T ? ~ E` differently from `T?~E` — Triết explicitly does not).
-3. **Three-token-lookahead in the parser** — `?~` is single-token compound, parser stays predictive LL(1).
+2. **Whitespace-sensitive parse divergence** (some compilers parse `T ? ~ E` differently from `T?~E` — Triet explicitly does not).
+3. **Three-token-lookahead in the parser** — `?~` is a single-token compound, so the parser stays predictive LL(1).
 
-Style guide permits both `T?~E` (no spaces, terse) and `T ?~ E` (space outside compound, readable). The lexer treats both as identical. Author 2026-05-17 directive: "compound token, dính liền không khoảng trắng" — locked.
+The style guide permits both `T?~E` (no spaces, terse) and `T ?~ E` (space outside compound, readable). The lexer treats both as identical. Author 2026-05-17 directive: "compound token, contiguous without whitespace" — locked.
 
-If a caller genuinely wants "outcome of nullable success" (vanishingly rare in practice — null can flow through outcome's Zero state instead), they use `std.result::Result<T?, E>` (the v0.4 legacy enum, see §8 coexistence).
+If a caller genuinely wants "outcome of nullable success" (vanishingly rare in practice — null can flow through the outcome's Zero state instead), they use `std.result::Result<T?, E>` (the v0.4 legacy enum, see §8 coexistence).
 
 ### 1.4 — `T~E?` rejected
 
-`T~E?` parses as `T~(E?)` — "fallible operation with nullable error". Semantically meaningless: if the operation fails, an error must be present. Compile-time refused:
+`T~E?` parses as `T~(E?)` — "fallible operation with nullable error". Semantically meaningless: if the operation fails, an error must be present. Refused at compile time:
 
 ```text
 E1024 NullableErrorInOutcomeType
@@ -133,7 +133,7 @@ function complex(input: String) -> (Integer~ParseError)~IoError {
 
 ### 2.1 — The three constructor forms
 
-| Constructor | Trit state | Payload | Valid for |
+| Constructor | Trit State | Payload | Valid For |
 |---|---|---|---|
 | `~+ expr` | Trit::Positive | `expr` (must match T) | `T~E` and `T?~E` |
 | `~0` | Trit::Zero | none | `T?~E` only |
@@ -153,7 +153,7 @@ return ~+ -1             // GOOD — `~+` constructs outcome, `-1` is the negati
 return ~+-1              // CONFUSING (parser accepts but rejected by `dao fmt`)
 ```
 
-Lexer treats `~+`, `~-`, `~0` as compound prefix tokens — whitespace inside compound is forbidden (`~ +` is not the same as `~+`). Style guide enforces space *after* the compound prefix.
+Lexer treats `~+`, `~-`, `~0` as compound prefix tokens — whitespace inside the compound is forbidden (`~ +` is not the same as `~+`). Style guide enforces a space *after* the compound prefix.
 
 Rationale: the example `return ~+ -1` would be hard to read without the space. Mandatory space costs nothing and dramatically improves readability when the success payload is itself signed or includes operators.
 
@@ -183,7 +183,7 @@ The compiler infers the payload type from the constructor argument and matches i
 
 - `~+ value` — `typeof(value)` must be compatible with `T` in declared `T~E` / `T?~E`.
 - `~- error` — `typeof(error)` must be compatible with `E`.
-- `~0` — only valid when the declared return type allows null state (i.e., `T?~E`). Otherwise → E1025.
+- `~0` — only valid when the declared return type allows the null state (i.e., `T?~E`). Otherwise $\rightarrow$ E1025.
 
 ```text
 E1025 NullStateInBinaryOutcome
@@ -206,32 +206,32 @@ E1025 NullStateInBinaryOutcome
 
 ## §3 — Ternary operator family: `~+>` / `~0>` / `~->`
 
-**Lock (author 2026-05-26):** Three postfix operators, mỗi cái target **đúng 1 trit state** của outcome discriminator. Đối xứng hoàn hảo với constructor family `~+` / `~0` / `~-` từ §2. **No operator for force-unwrap** — dangerous extraction is method-only (§4) per `feedback_explicit_strictness`. **No legacy `~?` or `~:` operators** — design session 2026-05-26 chốt full migration sang ternary family vì brand-clean, AI-friendly, không redundant.
+**Lock (author 2026-05-26):** Three postfix operators, each targeting **exactly one trit state** of the outcome discriminator. Symmetrically matching the constructor family `~+` / `~0` / `~-` from §2. **No operator for force-unwrap** — dangerous extraction is method-only (§4) per `feedback_explicit_strictness`. **No legacy `~?` or `~:` operators** — design session 2026-05-26 locked full migration to the ternary family because it is brand-clean, AI-friendly, and non-redundant.
 
-| Operator | Target trit state | Default auto-wrap | Use case |
+| Operator | Target Trit State | Default Auto-wrap | Use Case |
 |---|---|---|---|
 | `expr ~+> \|val\| body` | Positive | `~+` (success) | Transform success payload (Functor map) |
-| `expr ~0> body` | Zero (null) | `~+` (recover null → success) | Substitute default cho null; chỉ valid cho `T?~E` |
-| `expr ~-> \|err\| body` | Negative | `~-` (error) | Propagate, recover, hoặc transform error |
+| `expr ~0> body` | Zero (null) | `~+` (recover null → success) | Substitute default for null; valid only for `T?~E` |
+| `expr ~-> \|err\| body` | Negative | `~-` (error) | Propagate, recover, or transform error |
 
-Mỗi operator chỉ "fire" trên arm tương ứng; arm khác **pass through** unchanged. Chain nhiều operator để xử lý nhiều arm.
+Each operator only fires on its corresponding arm; other arms **pass through** unchanged. Chain multiple operators to handle multiple arms.
 
 ### 3.0 — Auto-wrap rule (operator-context constructor inference)
 
-**Lock (author 2026-05-26):** Inside body của arm-specific operator, value returned (qua `return` statement hoặc tail expression) **tự động wrap** với constructor tương ứng arm của operator. Explicit `~+` / `~0` / `~-` chỉ cần khi **override** sang arm khác.
+**Lock (author 2026-05-26):** Inside the body of an arm-specific operator, values returned (via `return` statement or tail expression) **automatically wrap** with the constructor corresponding to the operator's arm. Explicit `~+` / `~0` / `~-` is only needed when **overriding** to a different arm.
 
-| Operator | Body's plain value → auto-wrap | Body returns full outcome (matches outer type) | Override sang arm khác |
+| Operator | Body's Plain Value $\rightarrow$ Auto-wrap | Body Returns Full Outcome (Matches Outer Type) | Override to Different Arm |
 |---|---|---|---|
-| `~+>` | `~+ value` | Use as-is | Explicit `~- err` hoặc `~0` |
-| `~0>` | `~+ value` (recover null → success) | Use as-is | Explicit `~- err` hoặc `~0` (stay null) |
-| `~->` | `~- value` | Use as-is | Explicit `~+ val` (recover) hoặc `~0` |
+| `~+>` | `~+ value` | Use as-is | Explicit `~- err` or `~0` |
+| `~0>` | `~+ value` (recover null $\rightarrow$ success) | Use as-is | Explicit `~- err` or `~0` (stay null) |
+| `~->` | `~- value` | Use as-is | Explicit `~+ val` (recover) or `~0` |
 
-**Lý do:**
+**Rationale:**
 
-1. **Operator name carries semantic.** `~->` đã chỉ định "error arm context"; viết `return ~- err` trong body là redundant. Bỏ `~-` redundant cho code cleaner.
-2. **Precedent đã có.** ADR-0020 §10.4 lock implicit `T ⊂ T?` widening — auto-wrap là extension cùng nguyên lý: constructor inference khi context unambiguous.
-3. **Brand-coherent.** `feedback_explicit_strictness` áp dụng cho **panic-possible ops** (force-unwrap với message argument). Auto-wrap chỉ là constructor inference từ context — không panic, không hidden control flow.
-4. **AI-friendly.** Operator carry context info → AI generate `return X` ngắn hơn, đúng intent.
+1. **Operator name carries semantic context.** `~->` already designates "error arm context"; writing `return ~- err` in the body is redundant. Removing redundant `~-` keeps code cleaner.
+2. **Established precedent.** ADR-0020 §10.4 locks implicit `T ⊂ T?` widening — auto-wrap is an extension of the same principle: constructor inference when context is unambiguous.
+3. **Brand-coherent.** `feedback_explicit_strictness` applies to **panic-possible operations** (force-unwrap with message arguments). Auto-wrap is merely constructor inference from context — no panics, no hidden control flow.
+4. **AI-friendly.** Operator carries context info $\rightarrow$ AI generates shorter, more accurate `return X` adhering to developer intent.
 
 **Examples:**
 
@@ -247,14 +247,14 @@ let cfg = parse_config(input) ~-> |e| return AppError.parse(e)
 let v = parse(input) ~-> |e| AppError.parse(e)
 //                           ^^^^^^^^^^^^^^^^ auto-wrap ~-
 
-// Override khi recover:
+// Override when recovering:
 let v: Integer = parse(input) ~-> |_| return ~+ 0
 //                                           ^^^^ explicit ~+ override
 ```
 
 **Edge case 1: T ≡ E (success type same as error type)**
 
-Hiếm gặp (code smell). Compiler force explicit để tránh ambiguity:
+Rare (code smell). Compiler forces explicit syntax to prevent ambiguity:
 
 ```triet
 function ambiguous() -> Integer~Integer {
@@ -262,9 +262,9 @@ function ambiguous() -> Integer~Integer {
 }
 ```
 
-→ E1039 fires (định nghĩa §9.4). Author phải gõ `return ~- e` (hoặc `~+ e` nếu intent recover).
+$\rightarrow$ E1039 fires (defined in §9.4). Developer must write `return ~- e` (or `~+ e` if intent is recovery).
 
-**Edge case 2: Body returns full outcome trực tiếp**
+**Edge case 2: Body returns full outcome directly**
 
 ```triet
 function outer() -> Integer~AppError {
@@ -273,12 +273,12 @@ function outer() -> Integer~AppError {
 }
 ```
 
-Compiler check return value type:
-- Matches outer outcome (Integer~AppError) → **use as-is**, không double-wrap.
-- Matches payload type only (E = AppError) → auto-wrap `~-`.
-- Matches success type (T = Integer) → would auto-wrap `~+`, nhưng đây là `~->` operator → conflict; require explicit override.
+Compiler checks return value type:
+- Matches outer outcome (Integer~AppError) $\rightarrow$ **use as-is**, no double-wrap.
+- Matches payload type only (E = AppError) $\rightarrow$ auto-wrap `~-`.
+- Matches success type (T = Integer) $\rightarrow$ would auto-wrap `~+`, but this is `~->` operator $\rightarrow$ conflict; requires explicit override.
 
-**Edge case 3: Block body với nhiều `return`**
+**Edge case 3: Block body with multiple `return` statements**
 
 ```triet
 inner() ~-> |e| {
@@ -290,48 +290,48 @@ inner() ~-> |e| {
 }
 ```
 
-Mỗi `return` typecheck độc lập. Auto-wrap khi value matches operator arm payload; explicit khi override.
+Each `return` statement is typechecked independently. Auto-wrap applies when the value matches the operator arm payload; explicit syntax is used for overrides.
 
-### 3.0.1 — Two modes: MAP vs EARLY-RETURN (consistent across all operators)
+### 3.0.1 — Two modes: MAP vs. EARLY-RETURN (consistent across all operators)
 
-**Lock:** Mọi operator (`~+>`, `~0>`, `~->`) hỗ trợ **2 modes** body. Sự khác biệt KHÔNG nằm ở operator mà ở việc body có dùng `return` keyword hay không.
+**Lock:** Every operator (`~+>`, `~0>`, `~->`) supports **2 modes** for its body. The distinction lies in whether the body uses the `return` keyword or not.
 
-| Mode | Cú pháp body | Tác động lên outcome chain | Outer binding type |
+| Mode | Body Syntax | Effect on Outcome Chain | Outer Binding Type |
 |---|---|---|---|
-| **MAP (tail expression)** | Tail expr, KHÔNG `return` | Body's value thay arm value, **chain tiếp tục** | Outcome type (full discriminator) |
-| **EARLY-RETURN (with `return`)** | `return <value>` | Body's value làm **function exit ngay** | Unwrapped success type (path non-exit) |
+| **MAP (tail expression)** | Tail expr, NO `return` | Body value replaces arm value, **chain continues** | Outcome type (full discriminator) |
+| **EARLY-RETURN (with `return`)** | `return <value>` | Body value causes **immediate function exit** | Unwrapped success type (non-exit path) |
 
-**Auto-wrap rule §3.0 áp dụng cho CẢ 2 modes** — body's plain value tự wrap với operator's arm constructor.
+**Auto-wrap rule §3.0 applies to BOTH modes** — body plain values automatically wrap with the operator arm constructor.
 
-#### Mode 1 minh họa — MAP (no `return`)
+#### Mode 1 Illustration — MAP (no `return`)
 
 ```triet
-// Pure map chain: tất cả operators dùng tail-expr form
+// Pure map chain: all operators use tail-expr form
 let final_outcome: NormalizedString?~WrapErr = parse(input)
     ~+> |v| v.normalize().to_string()    // map success: Config → NormalizedString
     ~-> |e| WrapErr.from(e)               // map error: ParseError → WrapErr
     ~0> default_value()                   // map null: convert to success default
 
-// final_outcome VẪN là outcome — chưa unwrapped.
-// Caller phải pattern match hoặc dùng `.unwrap_value(message)` method.
+// final_outcome REMAINS an outcome — not unwrapped.
+// Caller must pattern match or use `.unwrap_value(message)` method.
 ```
 
-#### Mode 2 minh họa — EARLY-RETURN (with `return`)
+#### Mode 2 Illustration — EARLY-RETURN (with `return`)
 
 ```triet
 function run() -> Output~AppError {
     let cfg = parse_config(input) ~-> |e| return AppError.parse(e)
-    //                                    ^^^^^^^^^^^^^^^^^^^^^^^^^^ exit function nếu error
-    //                                    cfg = unwrapped Config trên path success
+    //                                    ^^^^^^^^^^^^^^^^^^^^^^^^^^ exit function if error
+    //                                    cfg = unwrapped Config on success path
     
     let result = compute(cfg) ~+> |v| return ~+ v.shortcut()
-    //                                ^^^^^^^^^^^^^^^^^^^^^^^^^ exit function với value mới (rare)
+    //                                ^^^^^^^^^^^^^^^^^^^^^^^^^ exit function with new value (rare)
 }
 ```
 
-#### Pattern thực tế: Mixed modes
+#### Real-world Pattern: Mixed Modes
 
-Phổ biến nhất là **mix 2 modes** trong cùng chain:
+The most common pattern is **mixing both modes** within the same chain:
 
 ```triet
 function run() -> Output~AppError {
@@ -349,17 +349,17 @@ function run() -> Output~AppError {
 }
 ```
 
-**Asymmetry là về intent, KHÔNG về syntax.** Typical usage:
-- `~+>` thường MAP (transform success → tiếp tục dùng)
-- `~->` thường EARLY-RETURN (error → exit function, propagate up)
+**Asymmetry is about intent, NOT syntax.** Typical usage:
+- `~+>` is usually MAP (transform success $\rightarrow$ continue using)
+- `~->` is usually EARLY-RETURN (error $\rightarrow$ exit function, propagate upward)
 
-Cả 2 operators support cả 2 modes — author chọn dựa trên intent. Compiler typecheck consistent regardless.
+Both operators support both modes — developers choose based on intent. Compiler typechecks consistently regardless.
 
-#### Chú thích trong examples từ §3.1 trở đi
+#### Annotations in Examples from §3.1 Onward
 
-Để rõ ràng, các examples sau dùng comment label:
-- `// Mode 1 MAP` cho tail-expr form
-- `// Mode 2 EARLY-RETURN` cho return form
+For clarity, subsequent examples use comment labels:
+- `// Mode 1 MAP` for tail-expr form
+- `// Mode 2 EARLY-RETURN` for return form
 
 ### 3.1 — `~+>` success-arm transformer
 
@@ -369,23 +369,23 @@ let value = expression ~+> |bind| body
 
 **Semantics:**
 
-- Evaluate `expression` (type `T~E` hoặc `T?~E`).
-- Nếu `~+ payload` → bind `payload` to `bind`, evaluate `body`, dùng kết quả thay thế success arm.
-- Nếu `~0` hoặc `~- err` → **pass through unchanged**.
+- Evaluate `expression` (type `T~E` or `T?~E`).
+- If `~+ payload` $\rightarrow$ bind `payload` to `bind`, evaluate `body`, use result to replace success arm.
+- If `~0` or `~- err` $\rightarrow$ **pass through unchanged**.
 
 **Body return:**
 
-- Plain `T'` → auto-wrap thành `~+ T'`. Success type chuyển từ T sang T'.
-- Outcome `T'~E` hoặc `T'?~E` (same error type) → flatten; nested outcome unfolded.
-- Early-return form (`return ...`, `panic(...)`) → exit enclosing function.
+- Plain `T'` $\rightarrow$ auto-wrapped to `~+ T'`. Success type transitions from T to T'.
+- Outcome `T'~E` or `T'?~E` (same error type) $\rightarrow$ flatten; nested outcome unfolded.
+- Early-return form (`return ...`, `panic(...)`) $\rightarrow$ exits enclosing function.
 
-**Examples (Mode 1 MAP — common cho `~+>`):**
+**Examples (Mode 1 MAP — common for `~+>`):**
 
 ```triet
 let normalized = parse(input) ~+> |v| v.normalize()
 //   Mode 1 MAP: tail expr, auto-wrap ~+
 //   parse returns Config~ParseError
-//   result type: Config~ParseError (success type unchanged, just transformed)
+//   result type: Config~ParseError (success type unchanged, transformed)
 
 let str_count = read_file(path) ~+> |contents| count_chars(contents)
 //   Mode 1 MAP: tail expr, auto-wrap ~+
@@ -393,17 +393,17 @@ let str_count = read_file(path) ~+> |contents| count_chars(contents)
 //   result type: Integer~IoError (success type changed)
 ```
 
-**Example (Mode 2 EARLY-RETURN — rare cho `~+>`):**
+**Example (Mode 2 EARLY-RETURN — rare for `~+>`):**
 
 ```triet
 function shortcut_lookup() -> Result~Err {
     let v = compute() ~+> |val| return ~+ val.optimized()
-    //                          ^^^^^^^^^^^^^^^^^^^^^^^^^^ exit function với value mới
-    // ... regular logic chỉ chạy nếu compute() failed
+    //                          ^^^^^^^^^^^^^^^^^^^^^^^^^^ exit function with new value
+    // ... regular logic only runs if compute() failed
 }
 ```
 
-**Discard underscore:** Body có thể dùng `|_|` để discard payload và trả về fixed value:
+**Discard underscore:** The body may use `|_|` to discard the payload and return a fixed value:
 
 ```triet
 let success_flag: Trilean = operation() ~+> |_| true   // Mode 1 MAP
@@ -418,13 +418,12 @@ let value = expression ~0> body
 **Semantics:**
 
 - Evaluate `expression` (type **must be** `T?~E` ternary outcome).
-- Nếu `~0` (null) → evaluate `body`, dùng kết quả thay thế null arm.
-- Nếu `~+ payload` hoặc `~- err` → **pass through unchanged**.
+- If `~0` (null) $\rightarrow$ evaluate `body`, use result to replace null arm.
+- If `~+ payload` or `~- err` $\rightarrow$ **pass through unchanged**.
 
-**Body return:** Plain `T` (auto-wrap `~+`), outcome trực tiếp, hoặc early-return form. No closure capture (null arm carries no payload).
+**Body return:** Plain `T` (auto-wrap `~+`), outcome directly, or early-return form. No closure capture (null arm carries no payload).
 
-**Type restriction:** Sử dụng `~0>` trên `T~E` (binary, không có null arm) → **E1025 NullStateInBinaryOutcome**.
-(Nguyên bản ADR §3.2 gán E1037; E1037 bị APP.2b chiếm cho `ArmHandlerMapModeRejected` — "body must be Bậc A scalar". E1025 tái dùng cho cùng bản chất "null operation on binary".)
+**Type restriction:** Using `~0>` on `T~E` (binary, no null arm) $\rightarrow$ **E1025 NullStateInBinaryOutcome**.
 
 **Examples:**
 
@@ -433,7 +432,7 @@ let value = expression ~0> body
 let user: User~DbError = find_user(id) ~0> anonymous_user()
 //   find_user returns User?~DbError
 //   ~0> fires on null → substitute anonymous_user()
-//   ~+ và ~- pass through
+//   ~+ and ~- pass through
 //   result: User~DbError (null arm eliminated → binary)
 
 // Propagate null up to caller
@@ -452,18 +451,18 @@ let value = expression ~-> |bind| body
 
 **Semantics:**
 
-- Evaluate `expression` (type `T~E` hoặc `T?~E`).
-- Nếu `~- error` → bind `error` to `bind`, evaluate `body`, dùng kết quả thay thế error arm.
-- Nếu `~+ payload` hoặc `~0` → **pass through unchanged**.
+- Evaluate `expression` (type `T~E` or `T?~E`).
+- If `~- error` $\rightarrow$ bind `error` to `bind`, evaluate `body`, use result to replace error arm.
+- If `~+ payload` or `~0` $\rightarrow$ **pass through unchanged**.
 
 **Body return (per §3.0 auto-wrap):**
 
-- Plain `E` (error type) → auto-wrap `~- E`. Default behavior (propagation/transform).
-- Plain `T` với explicit `~+` → wrap `~+ T`. Recovery (override, error arm eliminated).
-- Outcome trực tiếp (matches outer type) → use as-is.
-- Early-return form → exit enclosing function.
+- Plain `E` (error type) $\rightarrow$ auto-wrap `~- E`. Default behavior (propagation/transform).
+- Plain `T` with explicit `~+` $\rightarrow$ wrap `~+ T`. Recovery (override, error arm eliminated).
+- Outcome directly (matches outer type) $\rightarrow$ use as-is.
+- Early-return form $\rightarrow$ exits enclosing function.
 
-**Examples (Mode 2 EARLY-RETURN — common cho `~->`):**
+**Examples (Mode 2 EARLY-RETURN — common for `~->`):**
 
 ```triet
 // Propagate error verbatim (auto-wrap ~-, function exits)
@@ -479,7 +478,7 @@ let count: Integer = parse_count(input) ~-> |_| return ~+ 0
 let cfg = parse_config(s) ~-> |e| return e.context("config phase")
 ```
 
-**Example (Mode 1 MAP — khi muốn transform error type và chain tiếp tục):**
+**Example (Mode 1 MAP — when transforming error type and continuing chain):**
 
 ```triet
 // Map error type, chain continues with new outcome
@@ -487,10 +486,10 @@ let outcome: Config~AppError = parse_config(s) ~-> |e| AppError.from(e)
 //   Mode 1 MAP: tail expr, auto-wrap ~-
 //   parse_config returns Config~ParseError
 //   ~-> transforms ParseError to AppError, chain continues
-//   outcome type: Config~AppError (vẫn outcome, chưa unwrap)
+//   outcome type: Config~AppError (still outcome, not unwrapped)
 ```
 
-**Explicit type conversion required.** Khi inner error type `E_inner` ≠ caller's `E_outer`, body phải construct outer error explicitly (compiler không tự convert giữa E types). Không có implicit `From` magic (Rust `?` làm vậy; Triết refuses-over-guess per VISION §6). Auto-wrap chỉ apply constructor `~-`, không apply conversion giữa E types.
+**Explicit type conversion required.** When inner error type `E_inner` $\ne$ caller's `E_outer`, the body must construct outer error explicitly (compiler does not auto-convert between E types). No implicit `From` magic (which Rust `?` does; Triet refuses-over-guess per VISION §6). Auto-wrap only applies constructor `~-`, without implicit conversions between E types.
 
 ```text
 // VALID — explicit conversion (auto-wrap ~- applied):
@@ -502,7 +501,7 @@ expression ~->   // E1030: closure capture form required
 
 ### 3.4 — Chaining: composition of arm handlers
 
-Các operator chain left-to-right. Mỗi operator "tiêu thụ" 1 arm; chain xử lý đủ arm sẽ "narrow" outcome type:
+Operators chain left-to-right. Each operator "consumes" 1 arm; a chain handling sufficient arms will "narrow" the outcome type:
 
 ```triet
 function run() -> Output?~AppError {
@@ -524,7 +523,7 @@ function run() -> Output?~AppError {
 }
 ```
 
-Chain mix Mode 1 (`~+>` map success type qua `.normalize()`) và Mode 2 (`~->` propagate error). Comments label rõ intent.
+Chain mixing Mode 1 (`~+>` mapping success type via `.normalize()`) and Mode 2 (`~->` propagating errors).
 
 **Type narrowing through chain:**
 
@@ -538,88 +537,73 @@ let val_recovered: Config =
     outcome_after_null_default ~-> |_| Config.default()  // ~- eliminated → bare value
 ```
 
-Compiler tracks remaining arms qua flow analysis; final type = subset của initial trit state space dựa trên handler nào "consume" arm nào.
+The compiler tracks remaining arms via flow analysis; final type = subset of the initial trit state space based on which handlers consumed which arms.
 
 ### 3.5 — Capture syntax + discard underscore
 
-Cú pháp `|bind|` cho `~+>` và `~->` reuse từ closure parameter form (sẽ chính thức hóa ADR closure tương lai). Hiện tại không có first-class closure expose form này, nhưng ternary outcome operators claim precedent.
+The `|bind|` syntax for `~+>` and `~->` reuses closure parameter forms.
 
-`|_|` form discard payload — match wildcard convention từ Triết `match` arms.
+The `|_|` form discards payload — matching wildcard conventions from Triet `match` arms.
 
-`~0>` **không có capture form** vì null arm không có payload. Cú pháp `~0> |_| body` → **E1038 NullArmHasNoPayload** (syntax error).
+`~0>` **has no capture form** because the null arm has no payload. Writing `~0> |_| body` $\rightarrow$ **E1038 NullArmHasNoPayload** (syntax error).
 
 ### 3.6 — Operator precedence and chaining
 
-Cả 3 operators bind **lower** hơn method call/field access, **higher** hơn assignment:
+All 3 operators bind **lower** than method call / field access, and **higher** than assignment:
 
 ```triet
 let value = outcome.try_value() ~-> |_| default()    // method first, then ~->
 let value = (outcome ~-> |_| default).field          // ~-> first → REQUIRES PARENS
 ```
 
-**Left-associative chaining:** `a ~+> f ~-> g ~0> d` parse như `((a ~+> f) ~-> g) ~0> d`.
+**Left-associative chaining:** `a ~+> f ~-> g ~0> d` parses as `((a ~+> f) ~-> g) ~0> d`.
 
-Style guide: parenthesize khi chain operator với field access hoặc method call cho readability. Format chuẩn: mỗi operator trên 1 dòng riêng khi chain ≥ 2 (xem example §3.4).
+Style guide: parenthesize when chaining operators with field access or method calls for readability. Canonical formatting: place each operator on its own line when chaining $\ge$ 2 operators.
 
-### 3.7 — Migration từ `~?` / `~:` (deprecated)
+### 3.7 — Migration from `~?` / `~:` (deprecated)
 
-Pre-2026-05-26 ADR-0020 có `~?` (propagate) và `~:` (default). Author chốt full migration:
+Pre-2026-05-26 ADR-0020 contained `~?` (propagate) and `~:` (default). The author locked full migration to the ternary family:
 
-| Old (deprecated) | New (canonical, with auto-wrap §3.0) |
+| Old (Deprecated) | New (Canonical, with Auto-wrap §3.0) |
 |---|---|
 | `expr ~? \|e\| return ~- e` | `expr ~-> \|e\| return e` |
 | `expr ~? \|e\| return ~- WrapErr(e)` | `expr ~-> \|e\| return WrapErr(e)` |
-| `expr ~: default` (cho `T~E`) | `expr ~-> \|_\| return ~+ default` |
-| `expr ~: default` (cho `T?~E`, same default cả 2 arm) | `expr ~0> default ~-> \|_\| return ~+ default` |
+| `expr ~: default` (for `T~E`) | `expr ~-> \|_\| return ~+ default` |
+| `expr ~: default` (for `T?~E`, same default both arms) | `expr ~0> default ~-> \|_\| return ~+ default` |
 
-**Tool migration:** `dao fmt --fix --migrate-outcome-ops` (planned v0.7.4.3-error.4) tự rewrite. Implementation v0.7.4.3-error.3c chưa ship → migrate trước khi user gặp `~?`/`~:` trong production code.
+**Migration tooling:** `dao fmt --fix --migrate-outcome-ops` (planned v0.7.4.3-error.4) performs automatic rewriting.
 
-Lexer dứt khoát refuse parse bare `~?` và `~:` tokens (chỉ accept `~+>`, `~0>`, `~->` compound) từ implementation v0.7.4.3-error.3c trở đi. Vì design vẫn pre-ship, không cần warning period — break the symbol immediately. Test corpus + stdlib + examples migrate trong same sub-task.
+The lexer rejects bare `~?` and `~:` tokens (accepting only `~+>`, `~0>`, `~->` compounds) from implementation v0.7.4.3-error.3c onward.
 
-### 3.8 — Phạm vi của `return` (return scope)
+### 3.8 — Scope of `return` (return scope)
 
-**Lock (author 2026-06-17, sau tranh luận O):** `return` được giữ lại trong
-Triết với phạm vi dùng ĐƯỢC ĐỊNH NGHĨA HẸP. Nó KHÔNG phải `throw`.
+**Lock (author 2026-06-17):** `return` is retained in Triet with a NARROWLY DEFINED usage scope. It is NOT `throw`.
 
-**`return` phục vụ đúng HAI vai:**
+**`return` serves exactly TWO roles:**
 
-1. **Early-exit một frame** — thoát sớm khỏi HÀM HIỆN TẠI, trả giá trị cho
-   caller trực tiếp (guard clause). Thoát đúng 1 frame, KHÔNG unwinding qua
-   nhiều frame. Ví dụ: `function fib(n) -> Integer { if n < 2 { return n } ... }`.
+1. **Early-exit a frame** — early exit from the CURRENT FUNCTION, returning a value to the direct caller (guard clause). Exits exactly 1 frame; NO multi-frame unwinding. Example: `function fib(n) -> Integer { if n < 2 { return n } ... }`.
 
-2. **Cọc-tiêu-mode cho Outcome** — sự hiện diện của `return` trong body của
-   `~+>`/`~0>`/`~->` phân biệt MAP mode (không return → biến đổi tại chỗ) với
-   EARLY-RETURN mode (có return → propagate, thoát hàm bao). Xem §3.0 + §3.6.
-   `return` ở đây là non-local return của hàm bao, không phải của closure.
+2. **Mode beacon for Outcome** — the presence of `return` in the body of `~+>`/`~0>`/`~->` distinguishes MAP mode (no return $\rightarrow$ local transformation) from EARLY-RETURN mode (with return $\rightarrow$ propagate, exit enclosing function). See §3.0 + §3.6. `return` here represents a non-local return of the enclosing function, not a closure return.
 
-**`return` KHÔNG phải gì:**
+**What `return` is NOT:**
 
-- KHÔNG phải `throw` — Triết không có exception/catch/unwinding (errors-as-values
-  school, SPEC §103: runtime panic không catch được). Kênh báo lỗi mang-trạng-thái
-  là `~- error` + `~->`, KHÔNG phải `return`.
-- KHÔNG phải kênh trả-giá-trị mặc định cho happy-path — đó là tail-expression
-  (block's last expr, ADR-0055). Mục tiêu phong cách: hàm happy-path KHÔNG rải
-  `return` cuối thân; chỉ dùng `return` khi early-exit thật sự.
+- NOT `throw` — Triet has no exception/catch/unwinding mechanics (errors-as-values school, SPEC §103: runtime panics are uncatchable). The state-bearing error channel is `~- error` + `~->`, NOT `return`.
+- NOT the default value-returning channel for happy paths — that role belongs to tail expressions (block's last expr, ADR-0055). Style objective: happy-path functions do NOT scatter `return` at the end of function bodies; `return` is used only for genuine early exits.
 
-**Bốn làn thoát của Triết (không cái nào là throw):**
+**Four exit channels in Triet (none of which is throw):**
 
-| Mục đích | Construct |
+| Purpose | Construct |
 |---|---|
-| Trả giá trị happy-path | tail-expression |
-| Thoát sớm 1 frame, không lỗi | `return expr` |
-| Lỗi mang-trạng-thái leo caller | `~- e` + `~->` propagate |
-| Bug không cứu được | panic `.unwrap_*` / trap (uncatchable) |
+| Return happy-path value | tail-expression |
+| Early exit 1 frame, non-error | `return expr` |
+| State-bearing error escalating to caller | `~- e` + `~->` propagate |
+| Unrecoverable bug | panic `.unwrap_*` / trap (uncatchable) |
 
-**Quyết định lịch sử (2026-06-17):** đã cân nhắc TRẢM HOÀN TOÀN `return`
-(expression-oriented thuần). **BÁC BỎ.** Lý do: `return` đang là cọc-tiêu-mode
-khóa cứng trong §3.0 (E1028/E1029 keyed vào form `return`), và early-exit hàm
-non-Outcome không có construct thay thế. Điều kiện tiên quyết nếu tái xét: phải
-có ADR mới thiết kế lại mode-inference của `~->` KHÔNG-dùng-`return`. Diagnostic
-và docs gọi đúng tên: **early-return** và **error-propagation**, KHÔNG gọi "throw".
+**Historical decision (2026-06-17):** Considered completely eliminating `return` (pure expression-oriented language). **REJECTED.** Rationale: `return` serves as the mode beacon locked into §3.0 (E1028/E1029 keyed to the `return` form), and early exits in non-Outcome functions have no alternative construct. Diagnostic messages and documentation use precise terminology: **early-return** and **error-propagation**, NEVER "throw".
 
 ## §4 — Safe properties and dangerous methods
 
-**Lock:** Per [`feedback_explicit_strictness.md`](../../README.md) — property access is 100% safe contract; panic-possible operations are verbose methods with mandatory message argument.
+**Lock:** Per [`feedback_explicit_strictness.md`](../../README.md) — property access is 100% safe contract; panic-possible operations are verbose methods with mandatory message arguments.
 
 ### 4.1 — Safe properties (no panic, no message)
 
@@ -631,11 +615,11 @@ outcome.is_null      // Trilean — True if Trit::Zero (T?~E only; always False 
 outcome.is_error     // Trilean — True if Trit::Negative, False otherwise
 ```
 
-For `T~E`, `is_null` always returns `False` (the Zero state is invalid and would have panicked at construction or runtime). The property still exists for syntactic uniformity — caller code that handles both `T~E` and `T?~E` polymorphically need not change.
+For `T~E`, `is_null` always returns `False` (the Zero state is invalid and would panic at construction or runtime). The property exists for syntactic uniformity — caller code handling both `T~E` and `T?~E` polymorphically need not change.
 
 ### 4.2 — Safe extraction (returns nullable)
 
-Two methods convert outcome to nullable, never panic:
+Two methods convert outcome to nullable, never panicking:
 
 ```triet
 outcome.try_value() -> T?     // Some(value) if success, null otherwise
@@ -649,11 +633,11 @@ let value: Integer = outcome.try_value() ?: 0
 let error_message: String = outcome.try_error()?.message() ?: "no error"
 ```
 
-For `T?~E`, `try_value()` returns `null` for BOTH the null state and the error state — caller distinguishes via `is_error` if needed. This is a deliberate flattening; if granular distinction is required, use pattern match (§5).
+For `T?~E`, `try_value()` returns `null` for BOTH the null state and the error state — callers distinguish via `is_error` if needed. This is a deliberate flattening; if granular distinction is required, use pattern matching (§5).
 
 ### 4.3 — Dangerous methods (panic-possible, REQUIRE message argument)
 
-Two methods extract payload with panic on wrong state. Both require a `String` message argument explaining why the caller believes the panic-condition is impossible:
+Two methods extract payloads with panics on incorrect states. Both require a `String` message argument explaining why the caller believes the panic condition is impossible:
 
 ```triet
 outcome.unwrap_value(message: String) -> T
@@ -663,19 +647,19 @@ outcome.unwrap_error(message: String) -> E
     // Returns E if failure. Panics with `message` if not failure.
 ```
 
-The mandatory `message: String` parameter is the explicit-strictness contract: reading `outcome.unwrap_value("config must exist after init check")` immediately tells the next developer that this is panic-possible code path with stated invariant. Java's `Optional.get()` (no message) is the anti-pattern this defends against.
+The mandatory `message: String` parameter is the explicit-strictness contract: reading `outcome.unwrap_value("config must exist after init check")` immediately informs future maintainers of a panic-possible code path with an explicit stated invariant. Java's `Optional.get()` (no message) is the anti-pattern this defends against.
 
-**No shorter alias is provided.** A `.unwrap()` (no message) variant would tempt callers to skip the explanation, defeating the principle.
+**No shorter alias is provided.** A `.unwrap()` (no message) variant would tempt callers to omit explanations, defeating the principle.
 
 ### 4.4 — Why no force-unwrap operator?
 
-Earlier draft proposed `outcome~~` as parallel to `!!` null-unwrap. Author 2026-05-17 explicitly rejected: dangerous operations MUST be verbose to remain visible at call sites. The `~~` operator would be too easy to scatter through code without thinking — exactly the failure mode this design prevents.
+An earlier draft proposed `outcome~~` parallel to `!!` null-unwrap. The author explicitly rejected this: dangerous operations MUST be verbose to remain visible at call sites. An operator like `~~` would be too easily scattered through code without consideration — precisely the failure mode this design prevents.
 
 Note: `!!` on `T?` remains as is. It is a historical primitive on the language's first-class nullable type, predates this design principle, and stays for compatibility. New struct-like APIs (Outcome, future container types) follow the stricter rule.
 
 ## §5 — Pattern matching
 
-**Lock:** Outcome values pattern-match using the same constructor forms `~+`, `~0`, `~-`. Style guide mandates space.
+**Lock:** Outcome values pattern-match using the same constructor forms `~+`, `~0`, `~-`. The style guide mandates spaces.
 
 ```triet
 match read_file("config.toml") {
@@ -692,7 +676,7 @@ match lookup_symbol("foo") {
 
 ### 5.1 — Exhaustiveness
 
-The typechecker enforces exhaustive match per existing SPEC §7.3 rules:
+The typechecker enforces exhaustive matches per existing SPEC §7.3 rules:
 
 - For `T~E`: match must cover `~+` and `~-` arms (the `~0` arm is structurally absent).
 - For `T?~E`: match must cover `~+`, `~0`, and `~-` arms.
@@ -736,7 +720,7 @@ E1026 NonExhaustiveOutcomeMatch
 
 ### 5.2 — Pattern binding
 
-The expression after `~+` or `~-` in a pattern position is a **binding name** (or literal for value-equality match):
+The expression after `~+` or `~-` in pattern positions is a **binding name** (or literal for value-equality match):
 
 ```triet
 match outcome {
@@ -752,13 +736,13 @@ The `~0` arm takes **no expression** (the null state has no payload).
 
 **Lock:** The Zero state of the outcome discriminator has three valid interpretations depending on phase:
 
-| Phase | Type | Zero state means |
+| Phase | Type | Zero State Meaning |
 |---|---|---|
-| v0.7+ | `T~E` (binary) | **Invalid.** Typecheck rejects construction (`~0` for binary type → E1025). Runtime encountering Zero in binary outcome → panic E2210 `InvalidOutcomeState`. |
+| v0.7+ | `T~E` (binary) | **Invalid.** Typecheck rejects construction (`~0` for binary type $\rightarrow$ E1025). Runtime encountering Zero in binary outcome $\rightarrow$ panic E2210 `InvalidOutcomeState`. |
 | v0.7+ | `T?~E` (ternary) | **Valid null state.** Constructed via `~0`. |
-| v0.8+ | `T~E` (binary) | **Reserved for actor model "pending" state** (async I/O not yet complete). Not yet implementable; placeholder. |
+| v0.8+ | `T~E` (binary) | **Reserved for actor model "pending" state** (async I/O not yet complete). Placeholder for future specification. |
 
-Refuse-over-guess: v0.7 does not allow `~0` in binary outcome types. The slot is reserved, not silently coerced.
+Refuse-over-guess: v0.7 does not permit `~0` in binary outcome types. The slot is reserved, not silently coerced.
 
 ```text
 E2210 InvalidOutcomeState
@@ -767,11 +751,9 @@ E2210 InvalidOutcomeState
     future-version pending state encountered by a pre-v0.8 reader.
 ```
 
-(No span or fix block — runtime corruption diagnostic per [ADR-0027 §3](0027-diagnostic-format-standard.md). User code did not cause this; file a bug report or update reader version.)
+## §7 — Wire format: `.triv` v4 $\rightarrow$ v5 patch bump
 
-## §7 — Wire format: `.triv` v4 → v5 patch bump
-
-**Lock:** New `TypeTag::Outcome` variant encoded with discriminant 10 (extending the v0.7.3.1 collection discriminants 8/9). Patch bump per [ADR-0008 §"Version compatibility"](0008-triv-binary-format.md) (additive type discriminants).
+**Lock:** New `TypeTag::Outcome` variant encoded with discriminant 10 (extending v0.7.3.1 collection discriminants 8/9). Patch bump per [ADR-0008 §"Version compatibility"](0008-triv-binary-format.md) (additive type discriminants).
 
 ### 7.1 — Type table encoding
 
@@ -785,11 +767,11 @@ TypeTag::Outcome encoding:
 Total: 1 + 1 + (varint × 2) bytes per outcome type entry.
 ```
 
-Like Vector (discriminant 8) and HashMap (discriminant 9), the inner type indices are **post-order** — the value type and error type entries must precede the Outcome entry in the type table. The `add_type` helper in `triet-ir/src/serde.rs` already implements this pattern; v0.7.4.3-error extends to cover the new Outcome composite.
+Like Vector (discriminant 8) and HashMap (discriminant 9), inner type indices are **post-order** — value type and error type entries must precede the Outcome entry in the type table. The `add_type` helper in `triet-ir/src/serde.rs` implements this pattern; v0.7.4.3-error extends it to cover the new Outcome composite.
 
 ### 7.2 — Constant pool
 
-Outcome values **do not appear in the constant pool**. They are constructed at runtime via the constructor instructions. The constant pool reader/writer rejects Outcome types with the same error as Vector/HashMap (v0.7.3.1):
+Outcome values **do not appear in the constant pool**. They are constructed at runtime via constructor instructions. The constant pool reader/writer rejects Outcome types with the same error as Vector/HashMap (v0.7.3.1):
 
 ```text
 TrivError::Corrupted(
@@ -800,7 +782,7 @@ TrivError::Corrupted(
 
 ### 7.3 — Constructor / dispatch opcodes
 
-Two new IR opcodes added to handle outcome construction. Sub-version additive within `.triv` v5 (no further bump needed):
+Six new IR opcodes are added to handle outcome construction and manipulation within `.triv` v5:
 
 | Opcode | Mnemonic | Operands | Semantic |
 |---|---|---|---|
@@ -811,53 +793,52 @@ Two new IR opcodes added to handle outcome construction. Sub-version additive wi
 | 0xC5 | `OUTCOME_UNWRAP_VALUE` | `dest: varint, source: operand` | Extract success payload; panic E2210 if not Positive. |
 | 0xC6 | `OUTCOME_UNWRAP_ERROR` | `dest: varint, source: operand` | Extract failure payload; panic E2210 if not Negative. |
 
-`OUTCOME_DISCRIMINANT` is the lowering target for the safe properties (`.is_success`, `.is_null`, `.is_error`) and for pattern match dispatch (which becomes a `BR_TRILEAN` on the discriminator). It is also the lowering target for the ternary operator family `~+>`/`~0>`/`~->` (§3) — each operator lowers to a discriminator check plus a branch into the matching-arm handler.
+`OUTCOME_DISCRIMINANT` is the lowering target for safe properties (`.is_success`, `.is_null`, `.is_error`), pattern matching dispatch (lowering to `BR_TRILEAN`), and the ternary operator family `~+>`/`~0>`/`~->` (§3).
 
 ### 7.4 — Pre-v5 reader behavior
 
-Pre-v0.7.4.3 readers encountering type discriminant 10 emit `TrivError::UnknownTypeDiscriminant` (E2104). Pre-v0.7.4.3 readers encountering opcodes 0xC1–0xC6 emit `TrivError::UnknownOpcode` (E2105). Same forward-compat contract as v0.7.3.1 Vector/HashMap (additive primitives, refuse on unknown).
+Pre-v0.7.4.3 readers encountering type discriminant 10 emit `TrivError::UnknownTypeDiscriminant` (E2104). Pre-v0.7.4.3 readers encountering opcodes 0xC1–0xC6 emit `TrivError::UnknownOpcode` (E2105). Same forward-compatibility contract as v0.7.3.1 Vector/HashMap.
 
 ## §8 — Coexistence with existing `Result<T, E>`
 
-**Lock:** Existing `std.result::Result<T, E>` enum (v0.4) is NOT removed. New `T~E` / `T?~E` is the **primary error mechanism** for code from v0.7.4.3 onward. Legacy `Result<T, E>` stays for:
+**Lock:** The existing `std.result::Result<T, E>` enum (v0.4) is NOT removed. New `T~E` / `T?~E` is the **primary error mechanism** for code from v0.7.4.3 onward. Legacy `Result<T, E>` remains for:
 
-1. **Backwards compatibility** — pre-v0.7.4.3 code using `Result<T, E>` continues to work unchanged.
-2. **User-defined structural enums** — when a user needs an algebraic-data-type with custom variants and methods, `Result<T, E>` as a generic enum (or any user-defined enum) is the right tool.
-3. **Cross-package APIs where author prefers explicit struct shape** — `Result<T, E>` is a regular enum, serializes deterministically, and integrates with pattern match. Authors may keep using it.
+1. **Backwards compatibility** — pre-v0.7.4.3 code using `Result<T, E>` continues to function unchanged.
+2. **User-defined structural enums** — when developers need an algebraic data type with custom variants and methods, `Result<T, E>` (or any user-defined enum) is the appropriate tool.
+3. **Cross-package APIs where developers prefer explicit struct shapes** — `Result<T, E>` is a standard enum, serializes deterministically, and integrates with pattern matching.
 
 ### 8.1 — Migration policy
 
-- **No automatic rewriting tool.** Authors who want to migrate `Result<T, E>` call sites to `T~E` do so manually. The two types are not auto-convertible — typecheck E1027 if mixed without explicit conversion.
-- **Stdlib stubs v0.7.3 are NOT migrated.** They already use `T?` and `Trilean` returns (per Q4-A IO strict 2-state). No `Result<T, E>` exposure currently.
+- **No automatic rewriting tool.** Developers migrating `Result<T, E>` call sites to `T~E` do so manually. The two types are not auto-convertible — typechecking emits E1027 if mixed without explicit conversion.
+- **Stdlib stubs v0.7.3 are NOT migrated.** They already use `T?` and `Trilean` returns (per Q4-A IO strict 2-state).
 - **Self-host compiler v0.7.4.3+ adopts `T~E`** as the primary form. No `Result<T, E>` in `compiler/*.tri` source.
 
 ### 8.2 — Conversion utilities (deferred)
 
-A `std.outcome` module providing `Result<T, E> → T~E` and reverse conversions is **deferred**. When the first concrete use case appears (likely a multi-package compile where one package uses `Result` and another `T~E`), open a sub-task in `v0.7.x.review` to add the converters. Refuse-over-guess: do not pre-build infrastructure for hypothetical migration.
+A `std.outcome` module providing `Result<T, E> → T~E` and reverse conversions is **deferred**. When concrete use cases appear, open a sub-task in `v0.7.x.review`. Refuse-over-guess: do not pre-build infrastructure for hypothetical migrations.
 
 ### 8.3 — Documentation policy
 
-SPEC §2.5 (nullable + error-handling primary section) is updated in v0.7.4.3-error commit to document:
+SPEC §2.5 (nullable + error-handling primary section) is updated in the v0.7.4.3-error commit to document:
 1. `T?` for absent values (primary).
 2. `T~E` / `T?~E` for fallible operations (primary, **new**).
 3. `Trilean` for Ł3 semantic uncertainty (primary).
 4. `Result<T, E>` for structural enum needs (legacy, valid).
-5. Runtime panic (bug-tier; not recoverable).
+5. Runtime panic (bug-tier; uncatchable).
 
 ## §9 — Pattern match codegen + type inference details
 
 ### 9.1 — Lowering match-on-outcome
 
-Match-on-outcome lowers to `OUTCOME_DISCRIMINANT` → `BR_TRILEAN` (existing v0.3.x.ternary opcode). Three branches map directly to the three arms; binary-only outcomes use the standard `BR_TRILEAN` with the Zero arm pointing to an `UNREACHABLE` opcode (because Trit::Zero is invalid for `T~E` per §6).
+Match-on-outcome lowers to `OUTCOME_DISCRIMINANT` $\rightarrow$ `BR_TRILEAN` (existing v0.3.x.ternary opcode). Three branches map directly to the three arms; binary-only outcomes point the Zero arm to an `UNREACHABLE` opcode (since Trit::Zero is invalid for `T~E` per §6).
 
-This reuses the v0.3.x.ternary ternary-branch infrastructure — no new control-flow primitive needed.
+This reuses the existing v0.3.x.ternary ternary-branch infrastructure — no new control-flow primitives required.
 
 ### 9.2 — Type inference rules
 
 When the typechecker encounters a call to a function declared to return `T~E`:
 
-- Caller using `~->` with `return ~- err` body: typecheck checks that the caller's own return type is fallible (else E1028 PropagateInNonFallibleContext), and that the inner E is compatible with the caller's error type (else E1029 ErrorTypeMismatch). `~+>` and `~0>` with `return ~+ x` / `return ~0` bodies follow the same fallible-context rule.
-- Caller using `~:`: typecheck checks default expression type matches T.
+- Caller using `~->` with `return ~- err` body: typecheck verifies that the caller's own return type is fallible (else E1028 PropagateInNonFallibleContext), and that inner E is compatible with caller's error type (else E1029 ErrorTypeMismatch). `~+>` and `~0>` with `return ~+ x` / `return ~0` bodies follow the identical fallible-context rule.
 - Caller using `match`: typecheck enforces exhaustiveness (§5.1).
 - Caller using `.unwrap_value(msg)`: returns T, no type-system fence.
 - Caller using `.try_value()`: returns `T?`.
@@ -930,18 +911,18 @@ E1029 ErrorTypeMismatch
 
 ### 9.3 — Explicit closure capture in `~+>` / `~->` right-hand side
 
-Section 3.1 và 3.3 locks `|binding_name|` capture form trên RHS của `~+>` và `~->` (riêng `~0>` không có capture vì null arm không có payload — xem E1038). Typecheck rules:
+Sections 3.1 and 3.3 lock `|binding_name|` capture forms on the RHS of `~+>` and `~->` (`~0>` takes no capture since the null arm carries no payload — see E1038). Typecheck rules:
 
-1. Lexer/parser produces an `OutcomeArmHandler { inner_expr, target_arm, capture_name, body }` AST node from each source operator. `target_arm` ∈ { Positive, Zero, Negative }; `capture_name` is None khi `target_arm == Zero`.
+1. Lexer/parser produces an `OutcomeArmHandler { inner_expr, target_arm, capture_name, body }` AST node from each source operator. `target_arm` $\in$ { Positive, Zero, Negative }; `capture_name` is None when `target_arm == Zero`.
 2. Inside `body` typecheck scope, the parser pushes a frame and declares the captured binding (name = `capture_name`):
-   - Cho `~+>`: binding type = `T` (inner outcome's success payload type)
-   - Cho `~->`: binding type = `E` (inner outcome's failure payload type)
-   - Cho `~0>`: no binding declared
-3. `capture_name` may be `_` to discard the payload — typecheck does not declare a binding in that case; references to `_` inside the form are a separate error per existing wildcard rules.
-4. If `capture_name` shadows an outer variable, this is treated identically to a regular `let capture_name = ...` shadow — no special-case shadowing rule; the developer is responsible for picking a non-conflicting name.
-5. The binding is read-only (cannot be reassigned within the form) and goes out of scope when the form ends.
+   - For `~+>`: binding type = `T` (inner outcome's success payload type)
+   - For `~->`: binding type = `E` (inner outcome's failure payload type)
+   - For `~0>`: no binding declared
+3. `capture_name` may be `_` to discard the payload — typecheck does not declare a binding in that case; references to `_` inside the form are an error per existing wildcard rules.
+4. If `capture_name` shadows an outer variable, this is treated identically to a standard `let capture_name = ...` shadow.
+5. The binding is read-only and goes out of scope when the form ends.
 
-**No implicit magic.** Triết has zero implicit bindings — the developer always sees the name they're using. This matches author's clean-code principle: every variable in scope is traceable to a `let`/`function param`/`|capture|` site. Connects to [`feedback_explicit_strictness.md`](../../README.md) — explicit > convenient.
+**No implicit magic.** Triet has zero implicit bindings — developers always explicitly observe every binding in scope. Connects to [`feedback_explicit_strictness.md`](../../README.md) — explicit > convenient.
 
 ```text
 E1030 OutcomePropagateMissingCapture
@@ -992,7 +973,6 @@ E1031 OutcomePropagateMalformedReturn
 
 ```text
 E1025 NullStateInBinaryOutcome
-    (Nguyên bản E1037; đổi thành E1025 vì E1037 bị APP.2b chiếm — cùng bản chất.)
     Operator `~0>` targets the null arm (Trit::Zero), which only exists
     in ternary outcome type `T?~E`. Inner expression has type `T~E` (binary),
     which has no null arm.
@@ -1064,20 +1044,20 @@ E1039 AmbiguousAutoWrap
 
 ### 10.1 — Why unify
 
-`null` and `~0` express the same semantic value: "Trit::Zero arm of a trit-encoded discriminator, no payload". Pre-ADR-0020 they were two syntactic forms for the identical underlying state:
+`null` and `~0` express the same semantic value: "Trit::Zero arm of a trit-encoded discriminator, no payload". Prior to ADR-0020 they were two syntactic forms for the identical underlying state:
 
 - `T?` discriminator: `Trit::Positive` (T value) / `Trit::Zero` (null) / `Trit::Negative` (reserved)
 - `T?~E` discriminator: `Trit::Positive` (T value) / `Trit::Zero` (null) / `Trit::Negative` (E error)
 
-Keeping both spellings violates **refuse-over-guess** (one canonical form per concept) and the **balanced-ternary identity** principle (`~+`/`~0`/`~-` is a complete mathematical triple — adding `null` as a fourth way to spell Trit::Zero breaks the symmetry).
+Retaining both spellings violates **refuse-over-guess** (one canonical form per concept) and the **balanced-ternary identity** principle (`~+`/`~0`/`~-` is a complete mathematical triple — adding `null` as a fourth way to spell Trit::Zero breaks the symmetry).
 
 Trade-offs considered:
 
-| Path | Rejected because |
+| Path | Rejected Because |
 |---|---|
 | Keep both (`null` for T?, `~0` for T?~E only) | Two ways for one concept; linter would still need to pick canonical |
 | Drop `~0`, use `null` everywhere | `null` has no parallel for positive/negative arms; 2-state vocabulary applied to 3-state design |
-| **Drop `null`, use `~0` everywhere** (chosen) | Triết-native math identity; AI-first (`~0` distinct from training-data noise); pattern match unified across T? and T?~E |
+| **Drop `null`, use `~0` everywhere** (chosen) | Triet-native mathematical identity; AI-first (`~0` distinct from training-data noise); pattern matching unified across T? and T?~E |
 
 ### 10.2 — Canonical form: `~0` at every Trit::Zero site
 
@@ -1112,10 +1092,10 @@ match lookup_result {
 **v0.7.4.3-error (this ADR's implementation phase):**
 
 - Lexer accepts both `null` and `~0` tokens.
-- Parser normalizes both to the same AST node (`Expr::TritZero` or equivalent — implementation chooses).
+- Parser normalizes both to the same AST node (`Expr::TritZero` or equivalent).
 - Typecheck emits warning **W2001 NullDeprecated** at every `null` token site with fix-hint *"replace `null` with `~0` (canonical Trit::Zero literal per ADR-0020 §10)"*.
 - Existing code (examples, demos, stdlib stubs, anywhere using `null`) **continues to compile and run** with warnings.
-- `dao fmt --fix --migrate-null` flag introduced — auto-rewrites every `null` → `~0` across a project tree.
+- `dao fmt --fix --migrate-null` flag introduced — auto-rewrites every `null` $\rightarrow$ `~0` across a project tree.
 
 **v1.0 (production stability cutoff):**
 
@@ -1161,7 +1141,7 @@ E2002 NullRemoved    (active at v1.0+)
     Use `dao fmt --fix --migrate-null` from project root
 ```
 
-Per [ADR-0009 version gate policy](0009-version-gate-policy.md), no behavior breakage on minor bumps within v0.7.x — `null` keeps working until v1.0 freeze. This matches Triết's "stability over speed" principle: long migration window, automated tooling.
+Per [ADR-0009 version gate policy](0009-version-gate-policy.md), no behavior breakage on minor bumps within v0.7.x — `null` keeps working until v1.0 freeze. This matches Triet's "stability over speed" principle: long migration window, automated tooling.
 
 ### 10.4 — `T?` widening rules (Q3 lock — allowed-not-required)
 
@@ -1210,19 +1190,19 @@ E1032 PatternMissingExplicitConstructor
 
 ### 10.5 — `dao fmt --fix --migrate-null` specification
 
-The migration tool is a **non-trivial requirement** of this ADR — it carries the cost of unification across all user codebases. Implementation locked here:
+The migration tool is a **non-trivial requirement** of this ADR:
 
-1. **Token-level rewrite:** `null` → `~0` everywhere. No semantic analysis required (the unification is exact).
-2. **Preserve formatting:** spaces, comments, line breaks adjacent to `null` token are preserved verbatim. Only the 4 characters `null` change to the 2 characters `~0` (with surrounding spaces handled per the existing `dao fmt` rules).
+1. **Token-level rewrite:** `null` $\rightarrow$ `~0` everywhere. No semantic analysis required (the unification is exact).
+2. **Preserve formatting:** spaces, comments, line breaks adjacent to `null` token are preserved verbatim. Only the 4 characters `null` change to the 2 characters `~0`.
 3. **In-place by default**, with `--dry-run` option for preview.
-4. **Recursive directory traversal** when given a directory argument; respects `.gitignore` (mirror existing `dao fmt` behavior).
+4. **Recursive directory traversal** when given a directory argument; respects `.gitignore`.
 5. **Idempotent:** running `--migrate-null` twice produces no further changes.
 6. **No-op on already-canonical files:** emit `No migration needed: <path>` per file with zero `null` tokens.
-7. **W2001 warnings suppressed during migration run** — the tool's purpose is to fix them, no need to also report them.
+7. **W2001 warnings suppressed during migration run**.
 
 **Acceptance criteria for v0.7.4.3-error:**
-- All `examples/*.tri` files migrate cleanly (after audit, em estimate ~5-10 occurrences across the example set).
-- All `std/*.tri` files migrate cleanly (em estimate ~3-5 occurrences).
+- All `examples/*.tri` files migrate cleanly.
+- All `std/*.tri` files migrate cleanly.
 - All `demos/**/*.tri` files migrate cleanly.
 - Self-host compiler source (`compiler/*.tri`, when written from v0.7.4.3+) uses `~0` from day one — no `null` introduced.
 
@@ -1232,19 +1212,19 @@ Trilean (Ł3 logic) keeps its three named literals `true` / `false` / `unknown` 
 
 Mental model split:
 
-| Domain | Three states | Literals |
+| Domain | Three States | Literals |
 |---|---|---|
 | Outcome (T?, T~E, T?~E) | success / null / failure | `~+ value` / `~0` / `~- error` |
 | Logic (Trilean Ł3) | true / unknown / false | `true` / `unknown` / `false` |
 | Numeric (Trit) | +1 / 0 / -1 | `1_trit` / `0_trit` / `-1_trit`, or `0t+` / `0t0` / `0t-` |
 
-Three different naming systems for three different mental models. Author 2026-04 already locked this split when picking `unknown` over `null` for Trilean (SPEC §1.5.2). ADR-0020 §10 simply applies the same principle to outcome-state discriminators — they get `~+`/`~0`/`~-`, distinct from both Trit literals and Trilean literals.
+Three different naming systems for three different mental models. ADR-0020 §10 applies the same principle to outcome-state discriminators — they get `~+`/`~0`/`~-`, distinct from both Trit literals and Trilean literals.
 
 ### 10.7 — Implementation impact
 
 **No IR / wire-format change.** The existing `Constant::Null` IR opcode (ADR-0010) already encodes "canonical Trit::Zero discriminator state of T?". It just gains an additional source-syntax form (`~0` in addition to `null`). The lowerer normalizes both source spellings to the same `Constant::Null` IR opcode.
 
-ADR-0001 (nullable memory layout) and ADR-0010 (ternary-native IR) each receive a brief **Addendum** (no decision change, syntactic clarification only) — see [ADR-0001 Addendum — v0.7.4.3-error] and [ADR-0010 Addendum — v0.7.4.3-error].
+ADR-0001 (nullable memory layout) and ADR-0010 (ternary-native IR) each receive a brief **Addendum** (syntactic clarification only).
 
 **Implementation lands in v0.7.4.3-error sub-task** (lexer/parser/typecheck/diagnostic):
 - Lexer accepts `~0` literal token.
@@ -1252,27 +1232,25 @@ ADR-0001 (nullable memory layout) and ADR-0010 (ternary-native IR) each receive 
 - Typecheck emits W2001 for every `null` token.
 - New code paths and examples use `~0`; legacy `null` still works through v1.0.
 
-Tracked in [ADR-0019 Addendum §A7](0019-self-hosting-compiler-bootstrap.md#a7--deferred-items-log-technical-debt-surfaced-by-v073) deferred items log under "Null keyword deprecation (W2001) + migration tool".
-
-## Hệ quả
+## Consequences
 
 ### For SPEC §2.5
 
 Major rewrite. Section becomes "Nullable, Outcome, and error-handling primitives" with the 5-mechanism table from §8.3 above. Existing `T?` content preserved; new content explains `T~E` / `T?~E` semantics, constructor syntax, operators, and methods.
 
-### For ADR-0003 (Iterator protocol)
+### For ADR-0003 (Iterator Protocol)
 
-`Iterator::next() -> T?` signature stays. The Iterator trait is about absence-of-next-element, not about failure. Failure-yielding iterators (e.g., `LineReader` that returns `String?~IoError` per line) are a **separate trait** to be designed in the v0.8 concurrency phase. No ADR-0003 update from v0.7.4.3-error.
+`Iterator::next() -> T?` signature stays. The Iterator trait is about absence-of-next-element, not about failure. Failure-yielding iterators (e.g., `LineReader` returning `String?~IoError` per line) are a **separate trait** to be designed in the v0.8 concurrency phase. No ADR-0003 update from v0.7.4.3-error.
 
-### For std.result existing enum
+### For std.result Existing Enum
 
 No code change. Documentation updated in v0.7.4.3-error commit to mark `Result<T, E>` as "legacy convention" (still supported, no deprecation).
 
-### For self-host compiler (v0.7.4.3+)
+### For Self-host Compiler (v0.7.4.3+)
 
 All error paths use `T~E` / `T?~E`. No `Result<T, E>` imports in `compiler/*.tri` source. Idiomatic patterns: `~->` propagate (most common), `~+>` post-success transform, pattern match (when all arms have logic), `~-> |_| default` for recovery (rare).
 
-### For VM + interpreter
+### For VM + Interpreter
 
 VM (`triet-ir::vm`): new opcodes 0xC1–0xC6 added to dispatch (§7.3). Outcome values stored as:
 
@@ -1296,20 +1274,20 @@ When a `RuntimeValue::Outcome` is dropped or its register is reassigned, the imp
 
 For each backend tier (per [VISION §4.2](../../VISION.md)):
 
-- **VM tier (Rust impl, v0.3)**: handled automatically by Rust's `Drop` trait on `Box<T>`. No manual code needed; correctness inherits from the borrow checker. Explicit unit tests will verify (a) frame teardown drops payloads, (b) phi-merge in loops doesn't accumulate, (c) `~+`/`~-` round-trip through pattern match leaves no leak (using Rust's `Box::leak` audit in test code).
-- **JIT tier (v0.9 Cranelift)**: codegen MUST emit explicit deallocation calls at register-death points. Cranelift's memory management is manual — this rule pins the contract.
-- **AOT tier (v2.0 LLVM)**: same rule via LLVM lifetime intrinsics (`@llvm.lifetime.end`). Compatible with planned ARC-style memory model per [ADR-0007 §"Memory model deferred to v0.3 implementation"](0007-ir-design.md).
-- **Trytecode tier (v∞ ternary native)**: ternary CPU memory model is TBD at v∞, but this ADR commits the equivalent ownership semantics — the design requires safe payload deallocation regardless of underlying hardware.
+- **VM tier (Rust impl, v0.3)**: handled automatically by Rust's `Drop` trait on `Box<T>`. No manual code needed; correctness inherits from the borrow checker. Explicit unit tests verify (a) frame teardown drops payloads, (b) phi-merge in loops does not accumulate, (c) `~+`/`~-` round-trip through pattern match leaves no leak.
+- **JIT tier (v0.9 Cranelift)**: codegen MUST emit explicit deallocation calls at register-death points.
+- **AOT tier (v2.0 LLVM)**: same rule via LLVM lifetime intrinsics (`@llvm.lifetime.end`).
+- **Trytecode tier (v∞ ternary native)**: ternary CPU memory model commits equivalent ownership semantics.
 
-Interpreter parity for outcome — **deferred** per same §A7 entry as v0.7.3 builtin parity. Self-host compiler runs via VM path only; interpreter catches up in v0.7.x.review or is dropped at v0.9 JIT (per prior §A7 plan).
+Interpreter parity for outcome is **deferred** per §A7. Self-host compiler runs via VM path only; interpreter catches up in `v0.7.x.review` or is dropped at v0.9 JIT.
 
-### For capability resolver (ADR-0017)
+### For Capability Resolver (ADR-0017)
 
-`CapabilityResolver::resolve(req) -> CachedDecision { outcome: Trit, source: DecisionSource }` is **not** an Outcome type — it's an existing `Trit`-discriminator-plus-payload struct that predates this ADR. No migration. Future ADR may reframe as `Trit?~CapabilityError` if useful, but not in scope of v0.7.4.3-error.
+`CapabilityResolver::resolve(req) -> CachedDecision { outcome: Trit, source: DecisionSource }` is **not** an Outcome type — it is an existing struct that predates this ADR. No migration.
 
-### For wire format `.triv`
+### For Wire Format `.triv`
 
-v4 → v5 patch bump. Type discriminant 10 added. Six new opcodes (0xC1–0xC6) added. Pre-v5 readers refuse with existing E2104/E2105 errors. No breaking change to v4-and-earlier content.
+v4 $\rightarrow$ v5 patch bump. Type discriminant 10 added. Six new opcodes (0xC1–0xC6) added. Pre-v5 readers refuse with existing E2104/E2105 errors. No breaking change to v4-and-earlier content.
 
 ### For v0.9 JIT
 
@@ -1317,12 +1295,12 @@ Cranelift backend reading `.triv` v5 must lower the six new opcodes. Each maps t
 
 ### For v2.0 AOT (LLVM)
 
-Same as JIT. LLVM IR types for Outcome: `{ i8, [N x i8] }` where N = max payload size. Straightforward.
+Same as JIT. LLVM IR types for Outcome: `{ i8, [N x i8] }` where N = max payload size.
 
-## Không làm
+## Rejected Alternatives
 
 - **Force-unwrap operator (e.g. `~~`).** Author 2026-05-17 explicit rejection. Dangerous extraction is method-only.
-- **`.value` / `.error` field access** without panic-message argument. Property access must be 100% safe contract per [`feedback_explicit_strictness.md`](../../README.md).
+- **`.value` / `.error` field access** without panic-message argument. Property access must be a 100% safe contract per [`feedback_explicit_strictness.md`](../../README.md).
 - **Implicit `error` binding in `~->` form.** Author 2026-05-17 rejection (carried into 2026-05-26 ternary family). Every variable in scope must trace to an explicit declaration site (`let` / function param / `|capture|`). No magic.
 - **Whitespace-tolerant `?~` compound** (e.g. accepting `T ? ~ E` with internal space). Author 2026-05-17: compound tokens must be adjacent at the lexer level.
 - **Preserving `null` keyword permanently** (Q2 rejection). `null` is deprecated v0.7.4.3-error onward and removed at v1.0 per §10.3 timeline. Migration tool `dao fmt --fix --migrate-null` automates the cleanup. Refuse-over-guess: one canonical Trit::Zero literal across the language.
@@ -1335,17 +1313,17 @@ Same as JIT. LLVM IR types for Outcome: `{ i8, [N x i8] }` where N = max payload
 - **`try!` macro / built-in keyword** equivalent to `~->`. Operator family is sufficient.
 - **`.unwrap()` (no-message) shorter alias** for `.unwrap_value(msg)`. Author rejection — message is mandatory contract.
 
-## Prior art
+## Prior Art
 
-- **Rust `Result<T, E>` + `?` operator** — direct inspiration for the propagate concept, but Triết rejects `?`-on-Result because Triết's `?` family already operates on `T?` nullable. Adopting a different operator family (`~+>` / `~0>` / `~->`) and a different type family avoids overload confusion.
-- **Swift `throws` + `try` / `try?` / `try!`** — closest in spirit. Author rejected "đồ cổ" (try-catch) framing; Outcome is value-returning, not control-flow-jumping. Swift's `try!` (force-unwrap throw) is the exact anti-pattern §4 defends against.
-- **Zig error union `!T`** — closest mechanically. Zig's `!T` is value-returning, no exceptions, error set tracked in type. Triết's `T~E` is more explicit (named error type) and exposes the trit discriminator (Triết-native). Zig has `try expr` for propagate, similar to `~-> |e| return ~- e` but more implicit. Author favored explicit form.
-- **Kotlin sealed class + smart cast** — author considered (Option 2 in design discussion). Rejected because flow typing in typecheck is multi-week effort; the explicit `is_success` check + `unwrap_value(msg)` method is verbose-but-Java-friendly.
+- **Rust `Result<T, E>` + `?` operator** — direct inspiration for the propagate concept, but Triet rejects `?`-on-Result because Triet's `?` family already operates on `T?` nullable. Adopting a different operator family (`~+>` / `~0>` / `~->`) and a different type family avoids overload confusion.
+- **Swift `throws` + `try` / `try?` / `try!`** — closest in spirit. Author rejected exception framing; Outcome is value-returning, not control-flow-jumping. Swift's `try!` (force-unwrap throw) is the exact anti-pattern §4 defends against.
+- **Zig error union `!T`** — closest mechanically. Zig's `!T` is value-returning, no exceptions, error set tracked in type. Triet's `T~E` is more explicit (named error type) and exposes the trit discriminator (Triet-native). Zig has `try expr` for propagate, similar to `~-> |e| return ~- e` but more implicit. Author favored explicit form.
+- **Kotlin sealed class + smart cast** — author considered (Option 2 in design discussion). Rejected because flow typing in typecheck is a multi-week effort; the explicit `is_success` check + `unwrap_value(msg)` method is verbose-but-Java-friendly.
 - **Go `(value, error)` tuple** — author considered (Option 3). Rejected: `if err != nil` boilerplate, zero-value pitfall, ambiguous (Some,Some)/(None,None) invariant, requires tuple opcodes (deferred post-v1.0).
-- **Effect systems (Koka, Eff, Algebraic Effects)** — author considered. Rejected as research-grade and overkill for Triết v0.7. Compiler-level transparency missing for AI-first design.
-- **`Outcome<T, E>` generic struct (Java/Kotlin idiom)** — author considered (Option 4). Rejected because it doesn't exploit balanced ternary identity (just a 2-state struct) and requires the smart-cast typecheck infrastructure that Kotlin's `is` checks provide.
+- **Effect systems (Koka, Eff, Algebraic Effects)** — author considered. Rejected as research-grade and overkill for Triet v0.7. Compiler-level transparency missing for AI-first design.
+- **`Outcome<T, E>` generic struct (Java/Kotlin idiom)** — author considered (Option 4). Rejected because it does not exploit balanced ternary identity (just a 2-state struct) and requires the smart-cast typecheck infrastructure that Kotlin's `is` checks provide.
 
-## Tham chiếu
+## References
 
 - [VISION §2 — Balanced ternary identity](../../VISION.md)
 - [VISION §6 — Refuse over guess principle](../../VISION.md)
@@ -1357,9 +1335,9 @@ Same as JIT. LLVM IR types for Outcome: `{ i8, [N x i8] }` where N = max payload
 - [ADR-0010 — Ternary-native IR](0010-ternary-native-ir.md) — BR_TRILEAN is the existing primitive that match-on-outcome lowers to
 - [ADR-0019 + Addendum §A7](0019-self-hosting-compiler-bootstrap.md) — error handling primitive deferred item this ADR closes
 - [`feedback_explicit_strictness.md`](https://github.com/gianghoang/triet) (author memory, 2026-05-17) — explicit-strictness-over-dangerous-ergonomics principle this ADR enacts
-- Zig error union `!T` — primary technical precedent; Outcome is a Triết-native ternary refinement
-- Rust `Result<T, E> + ?` — propagate concept; Triết's `~->` (with explicit closure) is the explicit form, plus `~+>` / `~0>` complete the ternary family
+- Zig error union `!T` — primary technical precedent; Outcome is a Triet-native ternary refinement
+- Rust `Result<T, E> + ?` — propagate concept; Triet's `~->` (with explicit closure) is the explicit form, plus `~+>` / `~0>` complete the ternary family
 
 ---
 
-*Quyết định này lock outcome error handling cho Triết. Breaking change ở §1–§9 cần ADR mới supersede. Implementation lands ở sub-task v0.7.4.3-error (parser + AST + typecheck + lowerer + VM dispatch + tests + SPEC §2.5 rewrite + std.result documentation update + .triv v5 bump). Self-host compiler v0.7.4.3+ adopts `T~E` as primary; existing `Result<T, E>` is legacy-convention.*
+*This decision locks outcome error handling for Triet. Breaking changes in §1–§9 require a new superseding ADR. Implementation lands in sub-task v0.7.4.3-error (parser + AST + typecheck + lowerer + VM dispatch + tests + SPEC §2.5 rewrite + std.result documentation update + .triv v5 bump). Self-host compiler v0.7.4.3+ adopts `T~E` as primary; existing `Result<T, E>` is legacy-convention.*

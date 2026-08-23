@@ -1,77 +1,77 @@
 # ADR 0012 — Witness table dispatch for cross-package generics
 
-**Trạng thái:** Quyết định. Áp dụng cho v0.4 cross-package linker + runtime dispatch. Tham chiếu bởi ADR-0011 (ABI metadata) cho generic encoding.
+**Status:** Decision. Applicable to v0.4 cross-package linker + runtime dispatch. Referenced by ADR-0011 (ABI metadata) for generic encoding.
 
-**Issue:** ABI stability cho generics là vấn đề khó nhất của system-level packaging. Hai approach phổ biến:
+**Issue:** ABI stability for generics is the most challenging aspect of system-level packaging. Two common approaches:
 
-| Approach | Ngôn ngữ | ABI stability | Speed | Code size |
+| Approach | Language | ABI stability | Speed | Code size |
 |---|---|---|---|---|
-| **Monomorphization** | Rust, C++ templates | ❌ Phá ABI khi caller đổi instantiation | ✅ Tốc tối ưu | ❌ Bloat |
+| **Monomorphization** | Rust, C++ templates | ❌ Breaks ABI when caller changes instantiation | ✅ Optimal speed | ❌ Bloat |
 | **Type erasure** | Java generics | ✅ Stable | ⚠️ Boxing overhead | ✅ Compact |
-| **Witness tables** | Swift | ✅ Stable | ✅ Near-native qua vtable | ✅ Compact |
+| **Witness tables** | Swift | ✅ Stable | ✅ Near-native via vtable | ✅ Compact |
 
-VISION §3.3 đã chốt: **hybrid** — monomorphization intra-package (Rust speed), witness tables cross-package (Swift stability). ADR này lock format và runtime semantics cho witness table dispatch.
+VISION §3.3 has finalized: **hybrid** — monomorphization intra-package (Rust speed), witness tables cross-package (Swift stability). This ADR locks the format and runtime semantics for witness table dispatch.
 
-## Quyết định
+## Decision
 
-### 1. Hai chế độ dispatch
+### 1. Two dispatch modes
 
-Lowerer phân biệt **at compile time** dựa trên callee location:
+The lowerer distinguishes **at compile time** based on callee location:
 
-| Callsite | Callee location | Dispatch | Lý do |
+| Callsite | Callee location | Dispatch | Rationale |
 |---|---|---|---|
-| `foo(x: T)` trong cùng package | Local | Monomorphize per instantiation | Hot path, full inline opportunity |
-| `foo(x: T)` từ package khác | External `.khi` | Witness call qua table | ABI stability, recompile cha không phá con |
+| `foo(x: T)` within the same package | Local | Monomorphize per instantiation | Hot path, full inlining opportunity |
+| `foo(x: T)` from another package | External `.khi` | Witness call via table | ABI stability; recompiling the parent does not break the child |
 
-Đây là **decision tại compile time**, không phải runtime — không có cost phân biệt khi dispatch.
+This is a **compile-time decision**, not a runtime one — there is no dispatch-time cost for distinguishing.
 
 ### 2. Witness table layout
 
-Khi function generic `f<T>(...)` được export từ package, ABI metadata KHÔNG ship monomorphized copies. Thay vào đó:
+When a generic function `f<T>(...)` is exported from a package, the ABI metadata does NOT ship monomorphized copies. Instead:
 
 ```
-Witness table cho call site `f<Integer>(x)` từ package consumer:
+Witness table for call site `f<Integer>(x)` from a consumer package:
 ┌────────────────────────────────────────────────────────────┐
 │ slot 0: type metadata for T = Integer                       │
 │   - size_in_trits: 27 (varint)                              │
 │   - type_id: TypeRef per ADR-0011 § 2                       │
-│ slot 1+: required-operation function pointers (hiện tại 0)  │
-│   - reserved cho v0.6 capability checks                     │
-│   - reserved cho v0.7 trait/protocol dispatch               │
+│ slot 1+: required-operation function pointers (currently 0)  │
+│   - reserved for v0.6 capability checks                     │
+│   - reserved for v0.7 trait/protocol dispatch               │
 └────────────────────────────────────────────────────────────┘
 ```
 
-Caller build witness table **at link time** (compile-time của caller package, khi resolve cross-pkg call). Witness table sống trong data section của caller `.khi`, reference ABI metadata của callee package.
+The caller builds the witness table **at link time** (the caller package's compile time, when resolving cross-package calls). The witness table resides in the caller's `.khi` data section, referencing the callee package's ABI metadata.
 
 ### 3. New IR instruction: `WitnessCall`
 
-Bổ sung opcode mới vào IR (ADR-0007 additive):
+Add a new opcode to the IR (additive to ADR-0007):
 
 ```rust
 Instruction::WitnessCall {
     dest: Option<ValueId>,
     /// Path to cross-package function (resolved via dep table).
     path: AbsolutePath,
-    /// Index của witness table trong caller's data section.
-    /// Linker populate sau khi resolve generic instantiation.
+    /// Index of the witness table in the caller's data section.
+    /// Linker populates this after resolving generic instantiation.
     witness_idx: u32,
     args: Vec<Operand>,
 }
 ```
 
-Khác với `CallCrossModule` ở chỗ:
-- `CallCrossModule` đi qua function ID đã resolve hoàn toàn (non-generic).
-- `WitnessCall` carry `witness_idx` cho phép callee dispatch dựa trên type metadata.
+Unlike `CallCrossModule` in that:
+- `CallCrossModule` uses a fully resolved function ID (non-generic).
+- `WitnessCall` carries a `witness_idx` allowing the callee to dispatch based on type metadata.
 
 VM dispatch:
-1. Load witness table tại `witness_idx`.
-2. Lookup callee function via `path` trong cross-package symbol table.
-3. Push frame với args + witness table as implicit last arg.
-4. Callee có thể read type info qua intrinsic `__witness_type(0)` (slot 0 = T's metadata).
+1. Load the witness table at `witness_idx`.
+2. Lookup the callee function via `path` in the cross-package symbol table.
+3. Push the frame with args + the witness table as the implicit last argument.
+4. The callee can read type info via the `__witness_type(0)` intrinsic (slot 0 = T's metadata).
 
-### 4. Encoding trong `.khi`
+### 4. Encoding in `.khi`
 
-ABI metadata exports table (ADR-0011 §3) đã có `type_param_count`. Khi caller resolve generic call:
+The ABI metadata exports table (ADR-0011 §3) already includes `type_param_count`. When the caller resolves a generic call:
 
 ```
 Caller .tripack:
@@ -86,100 +86,100 @@ Caller .tripack:
   code.* (uses WitnessCall { witness_idx: 0, ... })
 ```
 
-Witness tables là **part of caller**, không phải callee. Mỗi caller package ship witness tables cho mỗi unique generic instantiation **mà nó tạo ra**. Callee chỉ ship một generic function body.
+Witness tables are **part of the caller**, not the callee. Each caller package ships witness tables for every unique generic instantiation **it creates**. The callee only ships a single generic function body.
 
 ### 5. Dispatch performance
 
 | Operation | Cost (bytecode VM) | Cost (LLVM AOT, v2.0) |
 |---|---|---|
-| Witness call setup | 1 table lookup + 1 indirect call | 1 mov + 1 call indirect |
+| Witness call setup | 1 table lookup + 1 indirect call | 1 mov + 1 indirect call |
 | Type metadata read | 1 array index | 1 mov |
-| Compare với direct call | ~2× chậm hơn | <10% slower trên modern CPU |
+| Compared to direct call | ~2× slower | <10% slower on modern CPUs |
 
-Đối với hot paths cùng package (monomorphize): zero overhead so với v0.3.
+For hot paths within the same package (monomorphized): zero overhead compared to v0.3.
 
-### 6. Generic constraint hỗ trợ ở v0.4
+### 6. Generic constraints supported in v0.4
 
-v0.4 chỉ implement **unconstrained generics** (như v0.2 hiện tại). Witness table chỉ chứa type metadata, không operations. Future expansion:
+v0.4 only implements **unconstrained generics** (as in the current v0.2). The witness table only contains type metadata, no operations. Future expansion:
 
-- v0.6: capability constraints (`fn f<T: Send>(x: T)` cần witness entry cho Send marker).
-- v0.7+: trait/protocol constraints (`fn f<T: Display>(x: T)` cần entries cho display methods).
+- v0.6: capability constraints (`fn f<T: Send>(x: T)` requires a witness entry for the `Send` marker).
+- v0.7+: trait/protocol constraints (`fn f<T: Display>(x: T)` requires entries for `display` methods).
 
-Cấu trúc reserved entry slots cho phép thêm sau mà không bump `abi_version`.
+The structure of reserved entry slots allows for later addition without bumping the `abi_version`.
 
 ### 7. Witness table identity & deduplication
 
-Hai call sites với same generic instantiation share witness table:
+Two call sites with the same generic instantiation share a witness table:
 
 ```triet
 let a = math.scale<Integer>(5)
-let b = math.scale<Integer>(10)  // share witness table với a
-let c = math.scale<Long>(20)     // witness table khác
+let b = math.scale<Integer>(10)  // shares witness table with a
+let c = math.scale<Long>(20)     // different witness table
 ```
 
-Linker dedup theo `(callee_path, type_args)` key. Reduce data section size cho generic-heavy code.
+The linker deduplicates based on the `(callee_path, type_args)` key. This reduces the data section size for generic-heavy code.
 
 ### 8. Cross-package recompile invariant
 
-Khi caller modify body (impl), iface không đổi → witness tables stay same → callee package không cần rebuild.
+When the caller modifies the body (impl), if the interface remains unchanged → witness tables remain the same → the callee package does not need to be rebuilt.
 
-Khi callee modify generic body (impl), iface_hash không đổi → caller package không cần rebuild → existing witness tables vẫn valid.
+When the callee modifies the generic body (impl), if the `iface_hash` remains unchanged → the caller package does not need to be rebuilt → existing witness tables remain valid.
 
-Khi callee thay đổi ABI surface của generic function (param/return type), iface_hash đổi → caller must rebuild witness tables → semver check kick in (ADR-0013).
+When the callee changes the ABI surface of a generic function (param/return type), the `iface_hash` changes → the caller must rebuild witness tables → semver checks kick in (ADrag-0013).
 
-## Hệ quả
+## Consequences
 
-### Đối với IR (ADR-0007)
+### For IR (ADR-0007)
 
-- Thêm `Instruction::WitnessCall` (additive, không phá .triv v2).
-- Bump `.triv` v2 → v3 khi opcode WITNESS_CALL được serialize.
+- Add `Instruction::WitnessCall` (additive, does not break `.triv` v2).
+- Bump `.triv` v2 → v3 when the `WITNESS_CALL` opcode is serialized.
 
-### Đối với VM
+### For VM
 
-- Thêm dispatch path cho WitnessCall — đọc witness table từ caller's data, lookup callee.
-- VM tests cần cover witness dispatch path.
+- Add a dispatch path for `WitnessCall` — load the witness table from the caller's data, lookup the callee.
+- VM tests must cover the witness dispatch path.
 
-### Đối với lowerer
+### For the lowerer
 
-- Phân biệt local generic vs cross-package generic ở compile time.
-- Local: monomorphize như v0.2 hiện tại (không đổi).
-- Cross-package: emit WitnessCall + register witness table entry.
+- Distinguish local vs. cross-package generics at compile time.
+- Local: monomorphize as in the current v0.2 (unchanged).
+- Cross-package: emit `WitnessCall` + register a witness table entry.
 
-### Đối với linker (v0.4.5)
+### For the linker (v0.4.5)
 
-- Build witness table cho mỗi unique (callee_path, type_args).
-- Dedup tables across call sites.
-- Output witness tables vào caller's `.khi` data section.
+- Build a witness table for each unique `(callee_path, type_args)`.
+- Deduplicate tables across call sites.
+- Output witness tables into the caller's `.khi` data section.
 
-### Đối với JIT (v0.9) và LLVM AOT (v2.0)
+### For JIT (v0.9) and LLVM AOT (v2.0)
 
-- Witness call lower thành indirect call (1 đếm address load + 1 call). Native CPU branch predictor handle tốt.
-- Specializer optional có thể inline khi witness table biết tại compile time.
+- Lower witness calls to indirect calls (1 address load + 1 call). Modern CPU branch predictors handle this well.
+- Optional specialization can inline when the witness table is known at compile time.
 
-### Đối với trytecode backend (v∞)
+### For the trytecode backend (v∞)
 
-- Witness table layout dùng Trit slots tự nhiên (capability constraint là Trit grant/deny/ambient per VISION §3.5).
-- Trên hardware tam phân: 1 trit witness check thay vì 8-bit byte → memory hiệu quả.
+- The witness table layout uses native Trit slots (capability constraints are Trit grant/deny/ambient per VISION §3.5).
+- On ternary hardware: 1 trit witness check instead of an 8-bit byte → memory efficiency.
 
-## Không làm
+## Alternatives Considered
 
-- **Specialization của witness calls** (auto-inline cùng package): defer v0.9+. v0.4 keep dispatch luôn qua witness table cho cross-package.
-- **Variance** (`<T : Sub>` vs `<+T>` vs `<-T>`): không có ở v0.4. Sub-typing variance là v0.7+ topic.
-- **Higher-kinded types** (`F<G<_>>`): defer indefinitely. Triết không cam kết support.
-- **Const generics** (`fn arr<const N: Integer>`): defer v0.5+. Cần hash stability cho const values trong ABI metadata.
-- **Trait objects / dynamic dispatch tại function value level**: defer. v0.4 chỉ generic functions, không generic values.
+- **Specialization of witness calls** (auto-inline within the same package): defer to v0.9+. v0.4 maintains dispatch via the witness table for cross-package calls.
+- **Variance** (`<T : Sub>` vs `<+T>` vs `<-T>`): not available in v0.4. Sub-typing variance is a v0.7+ topic.
+- **Higher-kinded types** (`F<G<_>>`): defer indefinitely. Triet does not commit to supporting this.
+- **Const generics** (`fn arr<const N: Integer>`): defer to v0.5+. Requires hash stability for const values in ABI metadata.
+- **Trait objects / dynamic dispatch at the function value level**: defer. v0.4 only supports generic functions, not generic values.
 
 ## Prior art
 
-- **Swift witness tables** — chính. Triết design gần đúng identical.
-- **Rust trait objects (vtables)** — similar concept nhưng tied vào dynamic dispatch, không phải compile-time-resolved generics.
-- **Haskell type class dictionaries** — same idea từ academic side. Witness table là Swift's renaming của dictionary passing.
-- **C++ vtables for virtual methods** — anti-prior-art: tied vào runtime polymorphism, không stable ABI.
+- **Swift witness tables** — primary reference. Triet's design is nearly identical.
+- **Rust trait objects (vtables)** — similar concept but tied to dynamic dispatch, not compile-time-resolved generics.
+- **Haskell type class dictionaries** — same idea from the academic side. Witness table is Swift's renaming of dictionary passing.
+- **C++ vtables for virtual methods** — anti-prior-art: tied to runtime polymorphism, not a stable ABI.
 
-## Tham chiếu
+## References
 
 - [VISION §3.3 — Stable ABI generics](../../VISION.md)
-- [ADR-0007 — IR design](0007-ir-design.md) (this ADR extends opcode table)
+- [ADR-0007 — IR design](0007-ir-design.md) (this ADR extends the opcode table)
 - [ADR-0008 — .triv binary format](0008-triv-binary-format.md) (will bump version)
 - [ADR-0011 — ABI metadata format](0011-abi-metadata-format.md) (companion)
 - [ADR-0013 — Semver linking policy](0013-semver-linking-policy.md) (companion)

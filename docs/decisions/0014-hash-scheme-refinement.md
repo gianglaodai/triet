@@ -1,59 +1,59 @@
-# ADR 0014 — Hash scheme refinement (3-cấp hash tree)
+# ADR 0014 — Hash scheme refinement (3-level hash tree)
 
-**Trạng thái:** Quyết định. Áp dụng cho v0.5 CAS Packaging và mọi tool đọc cấu trúc hash trong `.khi` kể từ v0.5. Extend [ADR-0011 §6](0011-abi-metadata-format.md) (canonical encoding) và section table layout của ABI metadata; **không phá** invariants của [ADR-0013](0013-semver-linking-policy.md) (iface_hash vẫn là final arbiter).
+**Status:** Decided. Applicable to v0.5 CAS Packaging and all tools reading `.khi` hash structures from v0.5 onwards. Extends [ADR-0011 §6](0011-abi-metadata-format.md) (canonical encoding) and the ABI metadata section table layout; **does not break** the invariants of [ADR-0013](0013-semver-linking-policy.md) (iface_hash remains the final arbiter).
 
-**Issue:** v0.4 land hash scheme 2 cấp **per-package**: `iface_hash` (ABI surface) + `impl_hash` (ABI + IR code). Đủ cho cross-package linking refuse/accept, nhưng **không đủ** cho lời hứa [VISION §3.1](../../VISION.md):
+**Issue:** v0.4 introduced a 2-level hash scheme **per-package**: `iface_hash` (ABI surface) + `impl_hash` (ABI + IR code). This is sufficient for cross-package linking (refuse/accept), but **insufficient** for the [VISION §3.1](../../VISION.md) promise:
 
-> *"10 ứng dụng dùng `String.format` chỉ load 1 bản vào RAM."*
+> *"10 applications using `String.format` only load one instance into RAM."*
 
-Pack-level hash ≠ function-level identity. Hai `.khi` khác nhau cùng chứa byte-identical `std.text.format` → 2 `impl_hash` khác nhau → CAS store load 2 bản. VISION §3.1 yêu cầu dedup ở mức term, không phải pack.
+Pack-level hash $\neq$ function-level identity. Two different `.khi` files containing byte-identical `std.text.format` $\rightarrow$ two different `impl_hash` values $\rightarrow$ CAS store loads two instances. VISION §3.1 requires deduplication at the term level, not the package level.
 
-Bốn câu hỏi ADR phải khoá trước khi viết CAS store (ADR-0015):
+Four questions this ADR must resolve before writing the CAS store (ADR-0015):
 
-1. **Namespace** — hash địa chỉ cái gì? package? module? function?
-2. **Granularity** — sharing/dedup ở cấp nào?
-3. **Normalization** — canonical form rules đủ chặt để determinism qua re-compile?
-4. **Content-vs-interface separation** — `iface_hash`/`impl_hash` extend xuống cấp nhỏ thế nào?
+1. **Namespace** — what does the hash address? package? module? function?
+2. **Granularity** — at what level is sharing/deduplication occurring?
+3. **Normalization** — are canonical form rules strict enough to ensure determinism across re-compilation?
+4. **Content-vs-interface separation** — how do `iface_hash`/`impl_hash` extend to lower levels?
 
-Tension với [ADR-0006](0006-ternary-packaging-vision.md) §2 (Ternary Vector Versioning) là vấn đề **versioning**, không phải hashing — defer ra ADR riêng sau v0.5 ship CAS cơ bản.
+The tension with [ADR-0006](0006-ternary-packaging-vision.md) §2 (Ternary Vector Versioning) is a **versioning** issue, not a hashing issue — deferred to a separate ADR after the basic CAS is shipped in v0.5.
 
-## Quyết định
+## Decision
 
-### 1. Hash tree 3 cấp
+### 1. 3-level Hash tree
 
-Triết addresses content ở **đúng 3 cấp**, mirror Trit identity `{-1, 0, +1}`:
+Addresses content at **exactly 3 levels**, mirroring the Triet identity `{-1, 0, +1}`:
 
 ```
 ┌─────────────────────────────────────────────────────────────┐
-│  Cấp 3 — Package    iface_hash_pkg  +  impl_hash_pkg        │
-│      (= iface_hash / impl_hash hiện tại từ ADR-0011)        │
+│  Level 3 — Package    iface_hash_pkg  +  impl_hash_pkg        │
+│      (= current iface_hash / impl_hash from ADR-0011)        │
 │      Rollup: BLAKE3(sorted module hashes + deps + caps)     │
 ├─────────────────────────────────────────────────────────────┤
-│  Cấp 2 — Module     iface_hash_mod  +  impl_hash_mod        │
+│  Level 2 — Module     ifanc_hash_mod  +  impl_hash_mod        │
 │      Rollup: BLAKE3(sorted term hashes within module)       │
 ├─────────────────────────────────────────────────────────────┤
-│  Cấp 1 — Term       iface_hash_term + impl_hash_term        │
+│  Level 1 — Term       iface_hash_term + impl_hash_term      │
 │      Per export: function, struct, enum, generic-shell      │
 │      iface = BLAKE3(canonical signature bytes)              │
 │      impl  = BLAKE3(iface_hash_term ‖ term IR body bytes)   │
 └─────────────────────────────────────────────────────────────┘
 ```
 
-**Tại sao 3 cấp, không N:** `{term, module, package}` là tam giác tự nhiên của module system Triết (ADR-0005 đã khoá hierarchical namespace). Hash sâu hơn (AST node như Unison thuần) tốn cost canonicalization mà không ai consume. Hash nông hơn (1 cấp pack-only) phá VISION §3.1. 3 là điểm cân bằng — và mỗi cấp tương ứng một state của Trit khi LLM/AI address: `Trit::Negative` = term (cấp thấp nhất), `Trit::Zero` = module (trung gian), `Trit::Positive` = package (cấp cao nhất).
+**Why 3 levels, not N:** `{term, module, package}` is the natural triangle of the Triet module system (ADR-0005 locked the hierarchical namespace). Deeper hashing (AST nodes, as in pure Unison) incurs canonicalization costs that no one consumes. Shallower hashing (1-level pack-only) breaks VISION §3.1. 3 is the equilibrium — and each level corresponds to a state of a Trit when an LLM/AI addresses it: `Trit::Negative` = term (lowest level), `Trit::Zero` = module (intermediate), `Trit::Positive` = package (highest level).
 
-### 2. Cấp 1 — Term hash
+### 2. Level 1 — Term hash
 
-Một "term" là một export item ở module-system boundary (ADR-0005):
+A "term" is an exported item at the module-system boundary (ADR-0005):
 - function declaration
 - struct declaration
 - enum declaration
 - generic-shell declaration
 
-Term hash **không** đệ quy xuống statement/expression/AST-node. Boundary giới hạn ở public ABI surface — cùng granularity mà ADR-0011 §2-§3 đã track.
+Term hash **does not** recurse into statements/expressions/AST-nodes. The boundary is limited to the public ABI surface — the same granularity tracked by ADR-0011 §2-§3.
 
 **`iface_hash_term`** = `BLAKE3(domain_sep_term ‖ canonical_signature_bytes)`
 
-Canonical signature bytes (deterministic, exclude debug/source location):
+Canonical signature bytes (deterministic, excludes debug/source location):
 ```
 term_kind: u8              // 0=function, 1=struct, 2=enum, 3=generic-shell
 name: length-prefixed UTF-8
@@ -63,25 +63,25 @@ type_param_count: varint
 body: kind-specific encoding (per ADR-0011 §2 struct/enum body or §3 function signature)
 ```
 
-**Loại trừ:** `body_offset` (storage detail), capability claims (pkg-level — ADR-0011 §5), doc comments, span info.
+**Exclusions:** `body_offset` (storage detail), capability claims (pkg-level — ADR-0011 §5), doc comments, span info.
 
 **`impl_hash_term`** = `BLAKE3(domain_sep_term_impl ‖ iface_hash_term ‖ term_ir_body_bytes)`
 
-`term_ir_body_bytes` = canonical bytes của block IR riêng cho term này trong `.triv` code section. Yêu cầu format change: code section phải có per-term offset index (xem §5).
+`term_ir_body_bytes` = canonical bytes of the specific IR block for this term in the `.triv` code section. Requires format change: the code section must have a per-term offset index (see §5).
 
-### 3. Cấp 2 — Module hash
+### 3. Level 2 — Module hash
 
-Một "module" identified bằng dotted path từ ADR-0005 (`crate.foo.bar`, `std.text`, etc.). Top-level inline module và file-bound module đều count.
+A "module" is identified by a dotted path from ADR-0005 (`crate.foo.bar`, `std.text`, etc.). Both top-level inline modules and file-bound modules are included.
 
 **`iface_hash_mod`** = `BLAKE3(domain_sep_mod_iface ‖ module_path_bytes ‖ sorted_term_iface_hashes)`
 
-Sorted_term_iface_hashes = sequence of (`term_name_len: u32 LE`, `term_name_bytes`, `iface_hash_term: 32 bytes`) cho mỗi term thuộc module này, sort theo `term_name` lexicographically.
+Sorted_term_iface_hashes = sequence of (`term_name_len: u32 LE`, `term_name_bytes`, `iface_hash_term: 32 bytes`) for each term in this module, sorted lexicographically by `term_name`.
 
 **`impl_hash_mod`** = `BLAKE3(domain_sep_mod_impl ‖ iface_hash_mod ‖ sorted_term_impl_hashes)`
 
-### 4. Cấp 3 — Package hash
+### 4. Level 3 — Package hash
 
-Replace ADR-0011 §6 hash inputs. **Cùng output shape (32 bytes)**, cùng field name (`iface_hash`/`impl_hash`) — bytes thay đổi vì rollup formula đổi.
+Replaces ADR-0011 §6 hash inputs. **Same output shape (32 bytes)**, same field names (`iflag_hash`/`impl_hash`) — bytes change because the rollup formula changes.
 
 **`iface_hash_pkg`** = `BLAKE3(`
 - `domain_sep_pkg_iface ‖`
@@ -93,23 +93,23 @@ Replace ADR-0011 §6 hash inputs. **Cùng output shape (32 bytes)**, cùng field
 
 **`impl_hash_pkg`** = `BLAKE3(domain_sep_pkg_impl ‖ iface_hash_pkg ‖ sorted impl_hash_mod sequence)`
 
-### 5. Encoding thay đổi trong `.khi` (abi_version bump 1 → 2)
+### 5. Encoding changes in `.khi` (abi_version bump 1 $\rightarrow$ 2)
 
-Additive — v1 readers gặp `abi_version = 2` phải refuse với E2301 (per ADR-0013 §3). Không có shim đọc partial v2 — Triết là **refuse over guess**.
+Additive — v1 readers encountering `abi_version = 2` must refuse with E2301 (per ADR-0013 §3). No shim for partial v2 reading — Triet follows **refuse over guess**.
 
-**Types table (ADR-0011 §2):** mỗi type entry thêm cuối:
+**Types table (ADR-0011 §2):** each type entry adds at the end:
 ```
 iface_hash_term: 32 bytes
 impl_hash_term:  32 bytes
 ```
 
-**Exports table (ADR-0011 §3):** mỗi export entry thêm cuối:
+**Exports table (ADR-0011 §3):** each export entry adds at the end:
 ```
 iface_hash_term: 32 bytes
 impl_hash_term:  32 bytes
 ```
 
-**Modules table (mới, section ID giữa exports và deps):**
+**Modules table (new, section ID between exports and deps):**
 ```
 mod_count: varint
 for each:
@@ -118,20 +118,20 @@ for each:
     impl_hash_mod:  32 bytes
 ```
 
-**Code section (`.triv` reference từ ADR-0008):** thêm **per-term offset index** trước instruction stream:
+**Code section (`.triv` reference from ADR-0008):** adds a **per-term offset index** before the instruction stream:
 ```
 term_offset_count: varint
 for each: term_name (length-prefixed UTF-8) + body_start: varint + body_len: varint
-[instruction bytes — như cũ]
+[instruction bytes — as before]
 ```
 
-`.triv` wire format bump **v3 → v4** (v3 đã bumped ở ADR-0012 cho WitnessCall). v3 readers gặp v4 file → E2301.
+`.triv` wire format bump **v3 $\rightarrow$ v4** (v3 was bumped in ADR-0012 for WitnessCall). v3 readers encountering v4 files $\rightarrow$ E2301.
 
 ### 6. Domain separation
 
-BLAKE3 không bị length-extension như SHA-2 nhưng vẫn cần domain separation để chống ambiguity khi cùng input bytes được hash ở 2 cấp khác nhau (ví dụ term name trùng module path).
+BLAKE3 is not susceptible to length-extension attacks like SHA-2, but domain separation is still required to prevent ambiguity when the same input bytes are hashed at different levels (e.g., a term name matching a module path).
 
-Domain separator là **16-byte ASCII prefix với NUL pad**:
+The domain separator is a **16-byte ASCII prefix with NUL padding**:
 ```
 b"triet/term-i  \0\0"   // iface_hash_term     (16 bytes)
 b"triet/term-m  \0\0"   // impl_hash_term      (m = "mut/impl")
@@ -141,83 +141,83 @@ b"triet/pkg-i   \0\0"   // iface_hash_pkg
 b"triet/pkg-m   \0\0"   // impl_hash_pkg
 ```
 
-Chuỗi cố định, lock ở constants trong `triet-pack/src/hash.rs`. Đổi separator = đổi mọi hash = bump abi_version. Không-được-đổi-im-lặng.
+Fixed strings, locked in constants in `triet-pack/src/hash.rs`. Changing the separator = changing all hashes = bumping `abi_version`. No silent changes allowed.
 
 ### 7. Normalization rules (strengthen ADR-0011 §6)
 
-- **Sort**: lexicographic theo raw UTF-8 bytes của name (không phải Unicode collation — implementation-independent).
-- **Varint**: LEB128 minimal encoding (no trailing-zero pad). Decoder reject non-minimal — strict mode.
-- **Length-prefixed string**: `u32 LE length`, **no NUL terminator**, no BOM, no validation rerun (caller-provided UTF-8 trusted).
-- **TypeRef ordering** (ADR-0011 §2): ref_kind byte trước, sau đó payload — deterministic per discriminator value.
-- **Type param order**: positional (source declaration order), không sort.
-- **Sub-table sort key**: name primary; nếu trùng name (cross-namespace shouldn't happen post-ADR-0005, nhưng defensive): secondary key = full canonical path bytes.
+- **Sort**: lexicographical by raw UTF-8 bytes of the name (not Unicode collation — implementation-independent).
+- **Varint**: LEB128 minimal encoding (no trailing-zero padding). Decoder rejects non-minimal — strict mode.
+- **Length-prefixed string**: `u32 LE length`, **no NUL terminator**, no BOM, no validation rerun (caller-provided UTF-8 is trusted).
+- **TypeRef ordering** (ADR-0011 §2): `ref_kind` byte first, then payload — deterministic per discriminator value.
+- **Type param order**: positional (source declaration order), no sorting.
+- **Sub-table sort key**: name is primary; if names collide (cross-namespace shouldn't happen post-ADR-0005, but for defense): secondary key = full canonical path bytes.
 
-Test invariant cho `triet-pack`: round-trip một AbiMetadata → encode → hash → re-encode → hash → bytes ≡, hash ≡. Existing `iface_hash_ignores_pkg_version` test extends to 3 cấp.
+Test invariant for `triet-pack`: round-trip an `AbiMetadata` $\rightarrow$ encode $\rightarrow$ hash $\rightarrow$ re-encode $\rightarrow$ hash $\rightarrow$ bytes $\equiv$, hash $\equiv$. Existing `iface_hash_ignores_pkg_version` test extends to 3 levels.
 
-### 8. iface_hash là final arbiter — không đổi
+### 8. iface_hash is the final arbiter — unchanged
 
-[ADR-0013 §4](0013-semver-linking-policy.md) lock policy "semver là declaration, hash là proof". ADR-0014 **không** đổi điều này. Linker vẫn check `iface_hash_pkg` (cấp 3) — đó là arbiter. Cấp 1 + cấp 2 là **enabler cho dedup**, không phải linker contract.
+[ADR-0013 §4](0013-semver-linking-policy.md) locks the policy: "semver is declaration, hash is proof." ADR-0014 **does not** change this. The linker still checks `iface_hash_pkg` (level 3) — that is the arbiter. Level 1 + Level 2 are **enablers for deduplication**, not the linker contract.
 
-**Hệ quả:** linker không reject pack khi term-level hash drift nhưng pkg-level match. Author chịu trách nhiệm — nếu term hash đổi mà pkg hash không, đó là rollup error (defensive test trong `triet-pack`).
+**Consequence:** The linker does not reject a package when term-level hashes drift but the package-level matches. The author is responsible — if a term hash changes but the package hash does not, it is a rollup error (defensive test in `triet-pack`).
 
-## Hệ quả
+## Consequences
 
-### Cho v0.5 CAS store (ADR-0015 sắp viết)
+### For v0.5 CAS store (ADR-0015 to be written)
 
-- Filesystem layout có thể address ở 3 cấp:
+- Filesystem layout can address 3 levels:
   - `~/.triet/store/term/<hex(impl_hash_term)>/code.bin` — function-level dedup
   - `~/.triet/store/mod/<hex(impl_hash_mod)>/index.bin` — module-level metadata
-  - `~/.triet/store/pkg/<hex(impl_hash_pkg)>/pack.khi` — pack-level distribution unit
-- VISION §3.1 gate đạt được: `std.text.format` chia sẻ qua N apps lookup-by-term-hash.
+  - `~/.triet/store/pkg/<hex(impl_hash_pkg)>/pack.khi` — package-level distribution unit
+- VISION §3.1 goal achieved: `std.text.format` is shared via N apps using lookup-by-term-hash.
 
-### Cho v0.6 Capability
+### For v0.6 Capability
 
-- Caps table giữ nguyên ở pkg-level (ADR-0011 §5). Term-level capability annotations (nếu cần) đi vào term signature → đã được hash bởi `iface_hash_term`. Không phá v0.5 invariants.
+- Caps table remains at the package level (ADR-0011 §5). Term-level capability annotations (if needed) will enter the term signature $\rightarrow$ already hashed by `iface_hash_term`. Does not break v0.5 invariants.
 
-### Cho v0.7 Self-hosting
+### For v0.7 Self-hosting
 
-- Re-implement hash computation trong Triết. ADR-0014 là canonical spec. Cross-bootstrap diff: cùng AbiMetadata → cùng 3-tuple hashes qua Rust impl vs Triết impl.
+- Re-implement hash computation in Triet. ADR-0014 is the canonical spec. Cross-bootstrap diff: same `AbiMetadata` $\rightarrow$ same 3-tuple hashes via Rust impl vs. Triet impl.
 
-### Cho `.triv` wire format
+### For `.triv` wire format
 
-- Bump v3 → v4 (per-term offset index). Linker/VM v3 reader gặp v4 file → E2301. Không lossy-fallback.
+- Bump v3 $\rightarrow$ v4 (per-term offset index). Linker/VM v3 readers encountering v4 files $\rightarrow$ E2031. No lossy fallback.
 
-### Cho linker performance
+### For linker performance
 
-- Per-export hash thêm 64 bytes overhead mỗi export trong ABI metadata. Pack typical ~50 exports = ~3KB overhead. Negligible.
+- Per-export hash adds 64 bytes of overhead per export in the ABI metadata. A typical package with ~50 exports $\approx$ ~3KB overhead. Negligible.
 
-### Cho generic dispatch (ADR-0012 witness tables)
+### For generic dispatch (ADR-0012 witness tables)
 
-- Witness table reference giờ có thể pin bằng `iface_hash_term` (per-function) thay vì pkg-level. v0.5 chưa exploit — slot reserved.
+- Witness table references can now be pinned by `iface_hash_term` (per-function) instead of package-level. v0.5 does not exploit this yet — slot reserved.
 
-## Không làm
+## Rejected Alternatives
 
-- **Không hash AST node** (Unison thuần). Triết hash ở module-system boundary, không sâu hơn. Term-of-term hashing thêm cost canonicalize mỗi sub-expression, không ai consume ở v0.5 — over-engineering.
-- **Không Ternary Vector Versioning** ([ADR-0006](0006-ternary-packaging-vision.md) §2). Tách thành ADR sau v0.5 ship CAS cơ bản. Versioning là semantic intent, hashing là content identity — orthogonal concerns.
-- **Không capability per-term** ở v0.5. Caps remain pkg-level. v0.6 ADR sẽ revisit.
-- **Không network CAS** (`triet pull <hash>` style). Local store first; distributed registry là v1.0+ topic.
-- **Không content-defined chunking** (FastCDC/rsync-style). Term boundary đã là natural chunk — không cần thêm layer.
-- **Không cross-platform hash variance**. BLAKE3 deterministic; ADR-0011 §6 đã lock little-endian + arch-independent IR.
-- **Không Merkle proof / inclusion proof** API. v0.5 store là trust-local-filesystem; cryptographic proof không cần thiết khi không có untrusted peer.
+- **Do not hash AST nodes** (pure Unison). Triet hashes at the module-system boundary, not deeper. Term-of-term hashing adds canonicalization costs for every sub-expression, which no one consumes in v0.5 — over-engineering.
+- **Do not implement Ternary Vector Versioning** ([ADR-0006](0006-ternary-packaging-vision.md) §2). Split into a separate ADR after the basic CAS is shipped in v0.5. Versioning is semantic intent; hashing is content identity — orthogonal concerns.
+- **No per-term capability** in v0.5. Caps remain package-level. v0.6 ADR will revisit.
+- **No network CAS** (`triet pull <hash>` style). Local store first; distributed registry is a v1.0+ topic.
+- **No content-defined chunking** (FastCDC/rsync-style). The term boundary is already a natural chunk — no additional layer needed.
+- **No cross-platform hash variance**. BLAKE3 is deterministic; ADR-0011 §6 has locked little-endian + architecture-independent IR.
+- **No Merkle proof / inclusion proof API**. The v0.5 store assumes a trust-local-filesystem model; cryptographic proofs are unnecessary when there are no untrusted peers.
 
 ## Prior art
 
-- **Unison** ([unison-lang.org](https://www.unison-lang.org/)) — main inspiration. Term-level hashing là core idea. Triết khác: hash boundary ở module-system level (function/type), không xuống AST node. Trade-off: ít dedup hơn Unison, nhưng canonicalization simpler + alignment với ADR-0005 module structure.
-- **Git Merkle tree** — blob → tree → commit là 3 cấp parallel với term → module → pkg. Git inspire trên cấu trúc cây, không trên content (Git hash arbitrary blob bytes; Triết hash canonical signature).
-- **Nix derivations** ([nixos.org](https://nixos.org/)) — pkg-only CAS. Triết extend xuống term-level cho RAM-sharing use case mà Nix không cover.
-- **IPFS / Merkle DAG** — general theory của content-addressed graphs. Triết là instance đặc biệt (3-cấp, không arbitrary depth).
-- **Bazel action cache** — input-hash → output-hash mapping. Triết tương đương ở cấp pack (impl_hash là cache key), thêm 2 cấp dưới.
-- **Anti-prior-art:** Java `.jar` (no hash identity, ClassNotFoundException hell); npm (semver-only resolution, content drift unobserved); Maven Central (sha checksum chỉ for download integrity, không cho identity/dedup).
+- **Unison** ([unison-lang.org](https://www.unison-lang.org/)) — main inspiration. Term-level hashing is the core idea. Triet differs: the hash boundary is at the module-system level (function/type), not at the AST node level. Trade-off: less deduplication than Unison, but simpler canonicalization + alignment with ADR-0005 module structure.
+- **Git Merkle tree** — blob $\rightarrow$ tree $\rightarrow$ commit is a 3-level structure parallel to term $\rightarrow$ module $\rightarrow$ package. Git inspired the tree structure, not the content (Git hashes arbitrary blob bytes; Triet hashes canonical signatures).
+- **Nix derivations** ([nixos.org](https://nixos.org/)) — package-only CAS. Triet extends this to the term level for RAM-sharing use cases that Nix does not cover.
+- **IPFS / Merkle DAG** — general theory of content-addressed graphs. Triet is a specific instance (3-level, not arbitrary depth).
+- **Bazel action cache** — input-hash $\rightarrow$ output-hash mapping. Triet is equivalent at the package level (impl_hash is the cache key), with two additional lower levels.
+- **Anti-prior-art:** Java `.jar` (no hash identity, ClassNotFoundException hell); npm (semver-only resolution, content drift unobserved); Maven Central (SHA checksums only for download integrity, not for identity/deduplication).
 
-## Tham chiếu
+## References
 
-- [VISION §3.1 — CAS Packaging](../../VISION.md) (lời hứa RAM-sharing)
-- [VISION §3.3 — Stable ABI](../../VISION.md) (iface_hash là arbiter)
-- [ADR-0005 — Module system](0005-module-system.md) (định nghĩa term/module boundary)
-- [ADR-0006 — Ternary packaging vision](0006-ternary-packaging-vision.md) (informational, ADR-0014 chỉ implement phần "CAS hash" — Ternary Versioning tách)
-- [ADR-0008 — .triv binary format](0008-triv-binary-format.md) (per-term offset index = v3 → v4 bump)
+- [VISION §3.1 — CAS Packaging](../../VISION.md) (RAM-sharing promise)
+- [VISION §3.3 — Stable ABI](../../VISION.md) (iface_hash is the arbiter)
+- [ADR-0005 — Module system](0005-module-system.md) (defines term/module boundary)
+- [ADR-0006 — Ternary packaging vision](0006-ternary-packaging-vision.md) (informational, ADR-0014 only implements the "CAS hash" part — Ternary Versioning is separate)
+- [ADR-0008 — .triv binary format](0008-triv-binary-format.md) (per-term offset index = v3 $\rightarrow$ v4 bump)
 - [ADR-0011 — ABI metadata format](0011-abi-metadata-format.md) (ADR-0014 extends §2, §3, §6)
-- [ADR-0013 — Semver linking policy](0013-semver-linking-policy.md) (final arbiter rule giữ nguyên)
-- [ADR-0015 — Package store layout](0015-package-store-layout.md) (sibling, viết sau ADR-0014)
+- [ADR-0013 — Semver linking policy](0013-semver-linking-policy.md) (final arbiter rule remains)
+- [ADR-0015 — Package store layout](0015-package-store-layout.md) (sibling, to be written after ADR-0014)
 - [ROADMAP § v0.5](../../ROADMAP.md)
 - [BLAKE3 specification](https://github.com/BLAKE3-team/BLAKE3-specs)

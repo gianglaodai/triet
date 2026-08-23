@@ -1,290 +1,448 @@
-# ADR 0066 — Heap-in-Aggregate: Move & Drop-glue (Flat, Lát 1)
+# ADR 0066 — Heap-in-Aggregate: Move & Drop-glue (Flat, Slice 1)
 
-> # ⚖️🩸 LUẬT THÉP SOUNDNESS — BẤT BIẾN ATOMIC (LỜI THỀ TRỤC B)
-> # `byte-copy` ⟶ `tombstone-source` PHẢI ATOMIC TRONG CÙNG MỘT BASIC BLOCK.
-> **TUYỆT ĐỐI KHÔNG** được chèn function-call / rẽ-nhánh-CFG / điểm-panic-hoặc-trap nào vào khe giữa
-> nhịp copy mảng byte và nhịp ghi `0` vào con trỏ source. Nếu lọt khe → panic → drop-glue kích hoạt khi
-> CẢ HAI biến trỏ chung 1 heap → **DOUBLE-FREE BANH XÁC**. Mọi WO/code Trục B vi phạm bất biến này =
-> REJECT không cần đọc tiếp. (G khắc đá 2026-06-21.)
+> # ⚖️🩸 IRON LAW OF SOUNDNESS — ATOMIC INVARIANT (AXIS B PLEDGE)
+> #  ⟶  MUST BE ATOMIC WITHIN THE SAME BASIC BLOCK.
+> **ABSOLUTELY NO** function call / CFG branch / panic-or-trap point may be inserted into the gap between
+> the byte-array copy phase and the writing of  to the source pointer. If any gap exists → panic → drop-glue triggers while
+> BOTH variables point to the same heap allocation → **CATASTROPHIC DOUBLE-FREE**. Any Axis B WO/code violating this invariant =
+> REJECT immediately without reading further. (Carved in stone by G, 2026-06-21.)
 
-**Trạng thái:** ✅ **Quyết định — G KÝ DUYỆT bản vẽ 2026-06-21** (D được phép `rustc` từ đây). Áp dụng
-cho Bậc C+. Cho phép **struct chứa heap field PHẲNG** (`struct Person { name: String }`) construct, move
-qua function boundary, và drop **không leak, không double-free** — gỡ rào B8 cho trường hợp FLAT.
+**Status:** ✅ **Decision — G SIGNED OFF on design blueprint 2026-06-21** (D is permitted to Usage: rustc [OPTIONS] INPUT
 
-**Issue:** Toàn bộ chuỗi aggregate (struct/enum/nullable) tới ADR-0065 đều **Copy-only** — rào B8
-(§4 ADR-0065) khóa mọi heap field/payload (`String`/`Vector`/`HashMap`) trong aggregate. Recon Phase 1
-(Trục B, 2026-06-21) chứng minh: **value-model i64 SỐNG** (con trỏ nằm được ở field-offset trong
-StackSlot — `mir_lower.rs:660-665`), giới hạn chỉ là 10 cổng construction-gate `!is_copy(None)`. Nhưng
-gỡ rào để lộ **3 lỗ tử thần**: (1) whole-struct copy = nhân đôi con trỏ → double-free; (2) KHÔNG có
-struct drop-glue (`Drop(struct)` chứa heap → `Unsupported`); (3) KHÔNG có partial-move. Đây là campaign
-VISION (object-model/ownership/lifetime) — phải có ADR trắng trước khi gõ phím.
+Options:
+    -h, --help          Display this message
+        --cfg <SPEC>    Configure the compilation environment.
+                        SPEC supports the syntax `<NAME>[="<VALUE>"]`.
+        --check-cfg <SPEC>
+                        Provide list of expected cfgs for checking
+    -L [<KIND>=]<PATH>  Add a directory to the library search path. The
+                        optional KIND can be one of
+                        <dependency|crate|native|framework|all> (default:
+                        all).
+    -l [<KIND>[:<MODIFIERS>]=]<NAME>[:<RENAME>]
+                        Link the generated crate(s) to the specified native
+                        library NAME. The optional KIND can be one of
+                        <static|framework|dylib> (default: dylib).
+                        Optional comma separated MODIFIERS
+                        <bundle|verbatim|whole-archive|as-needed>
+                        may be specified each with a prefix of either '+' to
+                        enable or '-' to disable.
+        --crate-type <bin|lib|rlib|dylib|cdylib|staticlib|proc-macro>
+                        Comma separated list of types of crates
+                        for the compiler to emit
+        --crate-name <NAME>
+                        Specify the name of the crate being built
+        --edition <2015|2018|2021|2024|future>
+                        Specify which edition of the compiler to use when
+                        compiling code. The default is 2015 and the latest
+                        stable edition is 2024.
+        --emit <TYPE>[=<FILE>]
+                        Comma separated list of types of output for the
+                        compiler to emit.
+                        Each TYPE has the default FILE name:
+                        * asm - CRATE_NAME.s
+                        * llvm-bc - CRATE_NAME.bc
+                        * dep-info - CRATE_NAME.d
+                        * link - (platform and crate-type dependent)
+                        * llvm-ir - CRATE_NAME.ll
+                        * metadata - libCRATE_NAME.rmeta
+                        * mir - CRATE_NAME.mir
+                        * obj - CRATE_NAME.o
+                        * thin-link-bitcode - CRATE_NAME.indexing.o
+        --print <INFO>[=<FILE>]
+                        Compiler information to print on stdout (or to a file)
+                        INFO may be one of
+                        <all-target-specs-json|backend-has-mnemonic|backend-has-zstd|calling-conventions|cfg|check-cfg|code-models|crate-name|crate-root-lint-levels|deployment-target|file-names|host-tuple|link-args|native-static-libs|relocation-models|split-debuginfo|stack-protector-strategies|supported-crate-types|sysroot|target-cpus|target-features|target-libdir|target-list|target-spec-json|target-spec-json-schema|tls-models>.
+    -g                  Equivalent to -C debuginfo=2
+    -O                  Equivalent to -C opt-level=3
+    -o <FILENAME>       Write output to FILENAME
+        --out-dir <DIR> Write output to compiler-chosen filename in DIR
+        --explain <OPT> Provide a detailed explanation of an error message
+        --test          Build a test harness
+        --target <TARGET>
+                        Target tuple for which the code is compiled
+    -A, --allow <LINT>  Set lint allowed
+    -W, --warn <LINT>   Set lint warnings
+        --force-warn <LINT>
+                        Set lint force-warn
+    -D, --deny <LINT>   Set lint denied
+    -F, --forbid <LINT> Set lint forbidden
+        --cap-lints <LEVEL>
+                        Set the most restrictive lint level. More restrictive
+                        lints are capped at this level
+    -C, --codegen <OPT>[=<VALUE>]
+                        Set a codegen option
+    -V, --version       Print version info and exit
+    -v, --verbose       Use verbose output
 
-**Quan hệ ADR:** trả nợ defer ADR-0065 §4 (B8) + ADR-0062 §6 (heap-in-aggregate). Tổng quát hóa
-tombstone của ADR-0042 (Deinit) + Outcome heap drop-glue ADR-0057 (`mir_lower.rs:1454-1457`). Value-model
-nền: ADR-0040 (heap layout) + ADR-0049 (fat-pointer String StackSlot). Box-tam-phân `&+` ≈ owner:
-ADR-0022 §2 (drop-glue gắn vào owner-scope, KHÔNG vào object-header).
+Additional help:
+    -C help             Print codegen options
+    -W help             Print 'lint' options and default settings
+    --help -v           Print the full set of options rustc accepts from here). Applicable
+to Tier C+. Permits **FLAT structs containing heap fields** () to construct, move
+across function boundaries, and drop **without leaks or double-frees** — lifting the B8 barrier for the FLAT case.
+
+**Issue:** The entire aggregate chain (struct/enum/nullable) up to ADR-0065 was **Copy-only** — the B8 barrier
+(§4 ADR-0065) locked all heap fields/payloads (//) inside aggregates. Phase 1 Recon
+(Axis B, 2026-06-21) proved: the **i64 value-model is VIABLE** (pointers can reside at field offsets in
+StackSlot — ), and the only limitation was 10 construction-gate sites . But
+lifting the barrier exposed **3 fatal hazards**: (1) whole-struct copy = duplicate pointers → double-free; (2) NO
+struct drop-glue ( containing heap → ); (3) NO partial-move. This is a VISION campaign
+(object-model/ownership/lifetime) — requiring a formal ADR before writing code.
+
+**Related ADRs:** Settles deferral debt from ADR-0065 §4 (B8) + ADR-0062 §6 (heap-in-aggregate). Generalizes the
+tombstone mechanism of ADR-0042 (Deinit) + Outcome heap drop-glue in ADR-0057 (). Underlying
+value-model: ADR-0040 (heap layout) + ADR-0049 (fat-pointer String StackSlot). Ternary box  ≈ owner:
+ADR-0022 §2 (drop-glue bound to owner-scope, NOT to object-header).
 
 ---
 
-## Quyết định
+## Decision
 
-Gỡ rào B8 cho **FLAT heap-in-struct** (Lát 1) bằng **3 cơ chế**, theo 3 kim chỉ nam G ký (2026-06-21):
+Lift the B8 barrier for **FLAT heap-in-struct** (Slice 1) using **3 mechanisms**, following 3 guiding principles signed by G (2026-06-21):
 
-### KCN-1 — Inline per-struct static drop-glue (CẤM header/v-table)
-JIT giữ trọn `MirType` + `StructLayout` lúc compile. Khi `Drop(struct_local)`, JIT **tự walk layout**:
-mỗi field heap → emit **tĩnh** một lệnh `free(ptr@offset)`. **Zero runtime memory overhead** — KHÔNG
-object-header, KHÔNG v-table, KHÔNG drop-flag động. Mã dọn được "nhét tĩnh vào đít scope".
+### GP-1 — Inline per-struct static drop-glue (FORBID header/v-table)
+The JIT retains full  +  at compile time. Upon , the JIT **walks the layout itself**:
+for each heap field → statically emits a  instruction. **Zero runtime memory overhead** — NO
+object-header, NO v-table, NO dynamic drop-flags. Cleanup code is "statically inserted at scope exit".
 
-### KCN-2 — Copy-then-Tombstone move semantics (giả lập Move trên value-model copy)
-Move struct-chứa-heap = byte-copy nguyên khối StackSlot (copy luôn địa chỉ con trỏ) **+ ngay sau đó**
-emit **TOMBSTONE** (zero con trỏ heap ở slot GỐC). Khi scope gốc đến End-of-Scope, inline drop-glue
-thấy ptr==0 → bỏ qua → KHÔNG double-free. Tổng quát hóa cơ chế Outcome `mir_lower.rs:1454-1457` cho
-TỪNG heap field của struct.
+### GP-2 — Copy-then-Tombstone move semantics (emulating Move on copy value-model)
+Moving a struct-containing-heap = byte-copy the entire StackSlot (copying pointer addresses) **+ immediately thereafter**
+emit a **TOMBSTONE** (zero out heap pointers in the SOURCE slot). When the source scope reaches End-of-Scope, inline drop-glue
+observes ptr==0 → skips deallocation → NO double-free. Generalizes the Outcome mechanism from  for
+EACH heap field of the struct.
 
-### KCN-3 — FLAT only (recursive type defer Lát 2)
-Lát 1 chỉ ôm **struct chứa heap LEAF trực tiếp** (`String`/`Vector`/`HashMap` field). Struct chứa
-struct-chứa-heap (transitive/recursive `Node{next: Node?}`) **GIỮ refuse** → Lát 2 (tránh bài toán
-infinite-size recursion).
+### GP-3 — FLAT only (recursive types deferred to Slice 2)
+Slice 1 only covers **structs containing direct heap LEAVES** (// fields). Structs containing
+structs-containing-heap (transitive/recursive ) **REMAIN refused** → deferred to Slice 2 (avoiding the
+infinite-size recursion problem).
 
-### Tiền đề móng (phải vá TRƯỚC khi 3 cơ chế chạy)
-- **M-1 Layout-sizing:** `lower_program` (`lib.rs:489`) hardcode mọi field = 8B; fixup ADR-0060
-  (508-555) KHÔNG chữa heap. **Bảng width đã VERIFY (O đo shim 2026-06-21, G dặn kiểm):**
+### Foundational Prerequisites (must be patched BEFORE running the 3 mechanisms)
+- **M-1 Layout-sizing:**  () hardcoded all fields = 8B; fixup in ADR-0060
+  (508-555) DID NOT handle heap types. **VERIFIED width table (measured from shims by O on 2026-06-21, audited per G):**
 
-  | Heap type | Width field | Repr trong slot | Free shim | Drop-glue per-field |
+  | Heap type | Field width | Slot representation | Free shim | Per-field drop-glue |
   |---|---|---|---|---|
-  | `String` | **24B** (fat) | `{ptr@0, len@8, cap@16}` — slot cache len/cap | `__triet_string_free(ptr, cap)` **2-arg** | load ptr@off+0 + cap@off+16 → free |
-  | `Vector` | **8B** (thin handle) | `{ptr@0}` — len/cap/data sống TRONG heap (header) | `__triet_vector_free(ptr)` **1-arg** | load ptr@off → free |
-  | `HashMap` | **8B** (thin handle) | `{ptr@0}` — len/cap/slots sống TRONG heap | `__triet_hashmap_free(ptr)` **1-arg** | load ptr@off → free |
+  |  | **24B** (fat) |  — slot caches len/cap |  **2-arg** | load ptr@off+0 + cap@off+16 → free |
+  |  | **8B** (thin handle) |  — len/cap/data reside IN heap (header) |  **1-arg** | load ptr@off → free |
+  |  | **8B** (thin handle) |  — len/cap/slots reside IN heap |  **1-arg** | load ptr@off → free |
 
-  ⚠ **String ≠ Vector/HashMap về drop-arity** — drop-glue PHẢI dispatch per-field-type (String 2-arg với
-  cap@+16; Vector/HashMap 1-arg). Khai nhầm width hoặc nhầm arity = byte-copy đạp vùng nhớ kế / free sai
-  con trỏ = SIGSEGV chết cạn. Mở rộng fixup ADR-0060: `String → 24`, `Vector → 8`, `HashMap → 8`.
-- **M-2 `is_copy(None)` audit:** `mir:706` default `None → assume Copy` ("SOUND only while B8 blocks heap
-  fields"). Construction-gate `2999` truyền `None` → với field kiểu **nested-Struct** sẽ assume Copy →
-  RÒ heap transitive. Lát 1 gate phải thread `Some(body)` + phân biệt **direct-heap-leaf** (cho phép) vs
-  **transitive-heap** (refuse → Lát 2).
+  ⚠ **String ≠ Vector/HashMap regarding drop-arity** — drop-glue MUST dispatch per-field-type (String 2-arg with
+  cap@+16; Vector/HashMap 1-arg). Declaring the wrong width or incorrect arity = byte-copy clobbers adjacent memory / frees invalid
+  pointer = immediate SIGSEGV. Extends ADR-0060 fixup: , , .
+- **M-2  audit:**  defaults  ("SOUND only while B8 blocks heap
+  fields"). Construction-gate  passes  → for **nested-Struct** fields it assumes Copy →
+  LEAKING transitive heap. Slice 1 gate must thread  + distinguish **direct-heap-leaf** (allowed) vs
+  **transitive-heap** (refused → Slice 2).
 
-### Hình thức cụ thể — luồng SỐNG/CHẾT của `Person { name: String }`
+### Concrete Execution — Life and Death Cycle of 
 
-```
-struct Person { name: String }                 // layout (M-1): name@0 (24B), total_size = 24
-function take(p: Person) -> Integer = { return 0 }
-function main() -> Integer = {
-    let p = Person { name: "Giang" };           // (A) construct
-    return take(p);                             // (B) MOVE p → take
-}                                                // (D) main scope end
-```
 
-Bộ nhớ & lifetime (StackSlot 24B mỗi struct local; String free shim đã null-safe: no-op nếu ptr==0):
 
-```
-(A) CONSTRUCT  Person{name:"Giang"}
-    __triet_string_alloc("Giang") → heap H (cap=C, len=5)
-    p.slot (main):  [ ptr=H | len=5 | cap=C ]      @ name@0
-                       │
-                       └── owns heap H
+Memory & lifetime (StackSlot 24B per struct local; String free shim is already null-safe: no-op if ptr==0):
 
-(B) MOVE  take(p)   ── ABI THẬT: pass-by-pointer (ADR-0049), KHÔNG byte-copy 24B ở call ──
-    B.1 PASS-BY-POINTER: call take(&p.slot)  → callee đọc p qua con trỏ (cùng vùng nhớ main)
-        callee NHẬN QUYỀN sở hữu (Move param, lib.rs:758 push_owned cho non-ref type)
-    B.2 (xảy ra TRONG call, tại C) callee Drop(p) ở End-of-Scope → free(H)
-    B.3 TOMBSTONE sau return: caller nã `Statement::Deinit(p)` (ADR-0042 Q1, lib.rs:2409)
-        → zero ptr@name+0 trong p.slot CỦA MAIN
-        p.slot (main):  [ ptr=0 | len=5 | cap=C ]  ← vô hiệu, Drop(main.p) sau sẽ no-op
+Statement::Deinit(p)
 
-(C) take SCOPE END → Drop(take.p)  [inline drop-glue KCN-1, đọc qua con trỏ param]
-        walk Person layout → field name:String @0
-        load ptr@0 = H (≠0) → __triet_string_free(H, C)   → heap H giải phóng (1 lần)
+**Soundness Invariant (SI):** every heap allocation has **exactly 1** owner-slot with ptr≠0 at any point in the CFG.
+Two forms of move:
+- **Arg-move (by-pointer, ):** callee Drop-glue (INSIDE call) + caller -tombstone IMMEDIATELY
+  after return. IRON LAW: NO panic/CFG-branch interposed between call return and .
+- **Assign-move ():** byte-copy slot→slot (mir_lower.rs:1510) + tombstone-source ATOMIC within the same
+  basic block (GP-2 literal). IRON LAW: NO gap between copy and tombstone.
 
-(D) main SCOPE END → Drop(main.p)  [inline drop-glue KCN-1]
-        walk Person layout → field name:String @0
-        load ptr@0 = 0 (tombstoned B.3) → __triet_string_free(0, C) = NO-OP
-        → KHÔNG double-free ✓
-```
+Drop-glue frees ⟺ ptr≠0. Tombstone (ptr=0) + null-safe free = idempotent no-op. (Diagram amended 2026-06-21
+per Recon-2: parameter ABI is by-pointer + ADR-0042 -reuse, NOT byte-copy at call site as in original draft.)
 
-**Bất biến soundness (BI):** mỗi heap allocation có **đúng 1** owner-slot với ptr≠0 tại mọi điểm CFG.
-Hai dạng move:
-- **Arg-move (by-pointer, `take(p)`):** callee Drop-glue (TRONG call) + caller `Deinit`-tombstone NGAY
-  sau return. LUẬT THÉP: KHÔNG panic/CFG-branch xen giữa call-return và `Deinit`.
-- **Assign-move (`let q = p`):** byte-copy slot→slot (mir_lower.rs:1510) + tombstone-source ATOMIC cùng
-  basic-block (KCN-2 literal). LUẬT THÉP: KHÔNG xen giữa copy và tombstone.
-
-Drop-glue free ⟺ ptr≠0. Tombstone (ptr=0) + free-null-safe = no-op idempotent. (Diagram amend 2026-06-21
-theo Recon-2: ABI param là by-pointer + `Deinit`-reuse ADR-0042, KHÔNG byte-copy ở call như bản vẽ gốc.)
-
-### Phạm vi Lát 1 (khoanh CHẶT)
-| Trong scope | Ngoài scope (defer) |
+### Slice 1 Scope (STRICTLY bounded)
+| In scope | Out of scope (deferred) |
 |---|---|
-| Construct `struct{f: String/Vector/HashMap}` (heap leaf trực tiếp) | Nested/recursive struct chứa heap (Lát 2) |
-| Whole-struct MOVE qua function boundary (param by-move + sret return) | **Partial move** `let s = p.name` (move field ra — Lát 1.x) |
-| Inline drop-glue walk layout, free từng heap leaf | Field reassignment `p.name = "x"` (drop-old + move-new — Lát 1.x) |
-| Tombstone source sau move | Enum payload heap (cùng cơ chế, lát kế) |
-| String trước (Vector/HashMap cùng mẫu) | `&+ T` owner-drop (design ADR-0022, backend chưa có) |
+| Construct  (direct heap leaf) | Nested/recursive structs containing heap (Slice 2) |
+| Whole-struct MOVE across function boundary (by-move param + sret return) | **Partial move**  (move field out — Slice 1.x) |
+| Inline drop-glue layout walk, freeing each heap leaf | Field reassignment  (drop-old + move-new — Slice 1.x) |
+| Tombstone source after move | Enum payload heap (same mechanism, next slice) |
+| String first (Vector/HashMap follow same pattern) |  owner-drop (design ADR-0022, backend not yet implemented) |
 
 ---
 
-## Các phương án đã cân nhắc
+## Alternatives Considered
 
-### Drop-glue: sinh mã thế nào
-| # | Phương án | Ưu | Nhược | Kết luận |
-|---|-----------|---|-------|----------|
-| 1 | **Inline per-struct static JIT emit** (KCN-1) | Zero runtime overhead; tận dụng MirType có sẵn lúc compile; không phình bộ nhớ | JIT phức tạp hơn (walk layout đệ quy ở Lát 2) | ✅ **G CHỌN** — bám triết lý "no managed runtime" (VISION §7) |
-| 2 | Object-header + drop-glue-table (mỗi heap object mang fn-ptr dọn) | Drop đồng nhất, dễ recursive | +8B/object runtime; "rác OOP" (G); phá value-model thuần | ❌ G bác — "cấm tha rác OOP vào" |
-| 3 | Drop-flag động (bitset runtime theo dõi moved) | Move linh hoạt | Runtime overhead + state; thừa vì compile-time biết hết | ❌ thừa — value-model tĩnh |
+### Drop-glue code generation strategy
+| # | Alternative | Pros | Cons | Conclusion |
+|---|-------------|------|------|------------|
+| 1 | **Inline per-struct static JIT emit** (GP-1) | Zero runtime overhead; leverages compile-time MirType; no memory bloat | More complex JIT (recursive layout walk in Slice 2) | ✅ **CHOSEN by G** — aligns with "no managed runtime" philosophy (VISION §7) |
+| 2 | Object-header + drop-glue-table (each heap object carries cleanup fn-ptr) | Uniform drop, easier recursion | +8B/object runtime overhead; "OOP clutter" (G); breaks pure value-model | ❌ Rejected by G — "forbidden OOP clutter" |
+| 3 | Dynamic drop-flag (runtime bitset tracking moved state) | Flexible move handling | Runtime overhead + state management; redundant since compile-time info is complete | ❌ Redundant — static value-model |
 
-### Move semantics qua boundary
-| # | Phương án | Ưu | Nhược | Kết luận |
-|---|-----------|---|-------|----------|
-| 1 | **Copy-then-tombstone** (KCN-2) | Tái dùng byte-copy StackSlot sẵn có; tombstone = 1 store; tiền lệ Outcome | "Copy thừa" địa chỉ rồi vô hiệu (vô hại — chỉ 1 store) | ✅ **G CHỌN** — tổng quát hóa Outcome 1454-1457 |
-| 2 | True move (chuyển ownership không copy byte) | Không copy thừa | Phá ABI sret/pointer hiện tại; đập value-model | ❌ đập móng — value-model phải SỐNG |
+### Move semantics across boundaries
+| # | Alternative | Pros | Cons | Conclusion |
+|---|-------------|------|------|------------|
+| 1 | **Copy-then-tombstone** (GP-2) | Reuses existing StackSlot byte-copy; tombstone = 1 store; precedent in Outcome | "Redundant copy" of address before invalidation (harmless — just 1 store) | ✅ **CHOSEN by G** — generalizes Outcome 1454-1457 |
+| 2 | True move (transfer ownership without copying bytes) | No redundant copy | Breaks existing sret/pointer ABI; destroys value-model | ❌ Destroys foundations — value-model MUST survive |
 
-### Phạm vi
-| # | Phương án | Kết luận |
-|---|-----------|----------|
-| 1 | **FLAT trước, recursive defer** (KCN-3) | ✅ **G CHỌN** — tránh infinite-size recursion, miếng nhỏ |
-| 2 | Ôm luôn recursive `Node{next:Node?}` | ❌ G bác — "tham nhai miếng quá to" |
-
----
-
-## Hậu quả
-
-### Tích cực
-- Mở khóa case dùng cốt lõi: `struct{name: String}` — bất kỳ record/DTO chứa text. Tiền đề cho mọi
-  data-structure thực tế.
-- Value-model i64 ABI nguyên vẹn — không đập móng (recon Phase 1 chứng minh).
-- Zero runtime overhead (no header/v-table) — giữ lời hứa freestanding/no-managed-runtime (VISION §7).
-- Drop-glue inline mở đường `&+ T` owner-drop (ADR-0022) cùng luật "own → compiler nhét free vào đít scope".
-
-### Tiêu cực
-- JIT drop-glue + tombstone tăng độ phức tạp lowering (walk layout, per-field free emit).
-- Byte-copy-thừa địa chỉ con trỏ ở mỗi move (1 store tombstone bù lại — vô hại).
-- Layout fixup (M-1) phải biết width fat-pointer từng heap type (hard-code 24/8/8 — chấp nhận Bậc C).
-
-### Rủi ro cần mitigate
-- **R1 Double-free** nếu tombstone bị bỏ sót ở 1 nhánh CFG (move trong if-branch). → teeth: poison
-  tombstone → `FREE_COUNT==2` (mẫu HP.2 `mir_lower.rs:4385`).
-- **R2 Leak** nếu drop-glue bỏ sót 1 heap field (struct nhiều field). → teeth: struct 2 heap field →
-  poison walk bỏ field thứ 2 → `FREE_COUNT < 2`.
-- **R3 RÒ transitive** nếu gate Lát 1 (M-2) nhầm nested-struct-chứa-heap thành FLAT-cho-phép → JIT
-  `Drop Unsupported` hoặc leak. → teeth: `Outer{inner: Person}` PHẢI refuse ở construction.
-- **R4 Move-then-use** (dùng `p` sau khi move vào `take`) — borrowck phải bắt (E2420 move). Lát 1 dựa
-  borrowck move-tracking sẵn có cho whole-local move; partial-move defer nên không thủng.
-- **R5 Use-after-tombstone** trong cùng scope (đọc `p.name` sau move) → ptr=0 → đọc rác. borrowck
-  E2420 phải chặn TRƯỚC khi tới JIT.
+### Scope
+| # | Alternative | Conclusion |
+|---|-------------|------------|
+| 1 | **FLAT first, recursive deferred** (GP-3) | ✅ **CHOSEN by G** — avoids infinite-size recursion, manageable scope |
+| 2 | Tackle recursive  immediately | ❌ Rejected by G — "biting off more than we can chew" |
 
 ---
 
-## Ngày hiệu lực
+## Consequences
 
-- **Bậc C Lát 1+** — FLAT heap-in-struct: construct + whole-move + inline drop-glue + tombstone. Chỉ
-  `String` field trước; `Vector`/`HashMap` cùng mẫu trong Lát 1.x.
-- **Defer Lát 2** — recursive/nested heap-in-aggregate, enum-payload heap, partial-move, field-reassign.
-- Không áp dụng hồi tố: aggregate Copy-only (ADR-0065 và trước) giữ nguyên; rào B8 vẫn khóa mọi case
-  NGOÀI FLAT-struct-heap-leaf.
+### Positive
+- Unlocks core use case:  — any record/DTO carrying text. Foundation for all practical data structures.
+- i64 ABI value-model preserved intact — foundations unbroken (proven by Phase 1 recon).
+- Zero runtime overhead (no headers/v-tables) — upholds the freestanding/no-managed-runtime promise (VISION §7).
+- Inline drop-glue paves the way for  owner-drop (ADR-0022) with the rule: "own → compiler inserts free at scope exit".
+
+### Negative
+- JIT drop-glue + tombstone increases lowering complexity (layout walk, per-field free emission).
+- Redundant byte-copy of pointer addresses on each move (offset by 1 tombstone store — harmless).
+- Layout fixup (M-1) must know fat-pointer width of each heap type (hard-coded 24/8/8 — acceptable for Tier C).
+
+### Risks to Mitigate
+- **R1 Double-free** if tombstone is omitted in any CFG branch (e.g. move inside if-branch). → Safeguard: poison
+  tombstone →  (pattern HP.2 ).
+- **R2 Leak** if drop-glue misses a heap field (multi-field structs). → Safeguard: struct with 2 heap fields →
+  poison layout walk skipping 2nd field → .
+- **R3 Transitive LEAK** if Slice 1 gate (M-2) mistakes nested-struct-containing-heap for allowed-FLAT → JIT
+   or leak. → Safeguard:  MUST be refused at construction.
+- **R4 Move-then-use** (using  after moving into ) — borrowck must reject (E2420 move). Slice 1 relies on
+  existing borrowck whole-local move tracking; partial-move deferred so no safety holes exist.
+- **R5 Use-after-tombstone** within same scope (reading  after move) → ptr=0 → reading garbage. borrowck
+  E2420 must block this BEFORE reaching JIT.
 
 ---
 
-## Tiến độ thi công (Lát 1 — 4 nhát)
+## Effective Date
 
-- **Nhát 1a (M-1+M-2+KCN-1+STEP 4):** heap-leaf field sizing (String=24/Vector=8/HashMap=8) · B8-relax
-  gate (`ctx_is_copy` đệ quy trên `field_decl_ty`: direct heap leaf ALLOW, transitive + `Nullable(heap)`
-  REFUSE) · inline per-struct static drop-glue (`emit_heap_free_at` walk layout) · fat-store (String field
-  projected dest copy len/cap — hết pass-by-luck UB). Fixtures 256/257 + 3 unit teeth (R-cap/R-leak/R2/R3).
-- **Nhát 1b (arg-move):** `take(p: Person)` whole-move qua boundary — callee by-pointer drop-glue
-  (`copy_base_addr` unify slot-local + param; `emit_heap_free_at` address-based) + caller `Deinit`
-  tombstone (`to_zero` 6 site → `ctx_is_copy`; Deinit struct-walk). LUẬT THÉP ATOMIC: `Deinit` đầu ret_bb.
+- **Tier C Slice 1+** — FLAT heap-in-struct: construct + whole-move + inline drop-glue + tombstone. Only
+   fields initially; / follow same pattern in Slice 1.x.
+- **Deferred to Slice 2** — recursive/nested heap-in-aggregate, enum-payload heap, partial-move, field reassignment.
+- Not retroactive: Copy-only aggregates (ADR-0065 and earlier) remain unchanged; B8 barrier still locks all cases
+  OUTSIDE FLAT-struct-heap-leaf.
+
+---
+
+## Implementation Progress (Slice 1 — 4 Steps)
+
+- **Step 1a (M-1+M-2+GP-1+STEP 4):** heap-leaf field sizing (String=24/Vector=8/HashMap=8) · B8-relax
+  gate ( recursive on : direct heap leaf ALLOW, transitive + 
+  REFUSE) · inline per-struct static drop-glue ( layout walk) · fat-store (String field
+  projected dest copies len/cap — eliminating pass-by-luck UB). Fixtures 256/257 + 3 unit safeguards (R-cap/R-leak/R2/R3).
+- **Step 1b (arg-move):**  whole-move across boundary — callee by-pointer drop-glue
+  ( unifies slot-local + param;  address-based) + caller 
+  tombstone ( 6 sites → ; Deinit struct-walk). ATOMIC IRON LAW:  at start of ret_bb.
   Fixture 258 + counting test (R-callee/R1-deinit/R1-arg, double-free FREE_COUNT==2).
-- **Nhát 1c (assign-move):** `let q = p` true-move (giết pseudo-copy alias) — `is_move_binding` →
-  `ctx_is_copy`; `Deinit(p)` LIỀN SAU move-Assign (ATOMIC). LOWER-ONLY (JIT 0 dòng). Fixture 259 +
+- **Step 1c (assign-move):**  true-move (eliminating pseudo-copy alias) —  →
+  ;  IMMEDIATELY AFTER move-Assign (ATOMIC). LOWER-ONLY (0 lines in JIT). Fixture 259 +
   counting test (R1-assign).
-- **Nhát 1d (LOCK & SEAL):** Vector/HashMap field + struct use-after-move E2420 — mechanism type-generic
-  1a/1b/1c đã phủ, niêm phong bằng fixtures 260/261/262 + counting teeth (R-leak-vec/R-leak-hmap +
-  **isolation scalpel:** poison riêng `is_vec` → Vector leak 0, String CÙNG struct sống 1 — chứng minh
-  drop-glue dispatch per-field-type) + R-e2420. 0 dòng compiler mới.
+- **Step 1d (LOCK & SEAL):** Vector/HashMap fields + struct use-after-move E2420 — generic mechanisms from
+  1a/1b/1c fully covered, sealed with fixtures 260/261/262 + counting safeguards (R-leak-vec/R-leak-hmap +
+  **isolation scalpel:** poisoning  alone → Vector leaks 0, String in SAME struct survives 1 — proving
+  drop-glue dispatches per-field-type) + R-e2420. 0 new compiler lines.
 
-**Bãi mìn Partial-move (`let s = p.name` móc field heap ra) — KIÊN QUYẾT DEFER Lát 1.x (G chốt 2026-06-22).**
-Borrowck track whole-local move-state, KHÔNG field-level; thêm nữa bị chặn bởi read-side gap (String field
-read → `Unknown` type, chưa lower — cùng gap §12.8 ADR-0065). Không reachable sạch → đụng vào lúc này =
-chọc Typing Inference, nhiễu loạn Trục B. Lát 1 dừng ở ranh giới **whole-local move**.
+**Partial-move minefield ( extracting heap field) — FIRMLY DEFERRED to Slice 1.x (decided by G, 2026-06-22).**
+Borrowck tracks whole-local move-state, NOT field-level state; additionally blocked by read-side gap (String field
+read →  type, not yet lowered — same gap as §12.8 ADR-0065). Not cleanly reachable → touching it now =
+interfering with Type Inference and disrupting Axis B focus. Slice 1 halts at the boundary of **whole-local move**.
 
-**✅ Lát 1 (1a+1b+1c+1d) HOÀN TẤT** — heap-leaf field (`String`/`Vector`/`HashMap`) construct + whole-move
-(arg + assign) + inline drop-glue + tombstone + use-after-move E2420: **sound + locked**. Rào B8 thủng cho
-FLAT heap-in-struct; vẫn khóa nested/recursive/enum-payload (Lát 2).
+**✅ Slice 1 (1a+1b+1c+1d) COMPLETED** — heap-leaf fields (//) construct + whole-move
+(arg + assign) + inline drop-glue + tombstone + use-after-move E2420: **sound + locked**. B8 barrier lifted for
+FLAT heap-in-struct; remains locked for nested/recursive/enum-payload (Slice 2).
 
 ---
 
 ## §AMEND-1 — Callee Stack-Slot Copy-In for Struct Parameters (2026-07-28)
 
-**Trạng thái:** ✅ Quyết định — G ký duyệt WO-Param-Aggregate-CopyIn 2026-07-28. D thi hành.
+**Status:** ✅ Decision — G signed off on WO-Param-Aggregate-CopyIn 2026-07-28. Implemented by D.
 
-**Bệnh lý đóng bởi amend này:** Struct param bị loại khỏi `struct_slots` tại vòng lặp dẫn xuất
-prologue (`crates/triet-jit/src/mir_lower.rs`, vòng lặp Lát 2 §"Hình thức cụ thể" ở trên, guard
-`i < reserved_locals`), khiến mọi cổng kiểm soát ownership, Deinit và Assign thi hành qua
-`struct_slots.get()` đều mù hoặc rơi vào nhánh fallback sai, gây UB double-free (134), SIGSEGV
-(139) và SIGILL (132) — tuỳ hình MIR cụ thể trúng cổng nào.
+**Defect resolved by this amendment:** Struct parameters were excluded from  during the prologue
+derivation loop (, Slice 2 loop under §"Concrete Execution" above, guard
+), causing all ownership control gates, Deinit, and Assign executing through
+ to be blind or fall into incorrect fallback branches, causing UB double-free (134), SIGSEGV
+(139), and SIGILL (132) — depending on which specific MIR structure hit the gate.
 
-Nhát 1b's diagram ở trên ("Hình thức cụ thể", bước B.1) mô tả ĐÚNG ABI hôm nay: callee nhận `p`
-qua con trỏ và "đọc p qua con trỏ (cùng vùng nhớ main)" — điều này **CHỈ ĐƯỢC CHỨNG MINH SOUND**
-cho hình `take(p) { return 0; }` (fixture 258): callee KHÔNG đụng field nào của `p` trước khi
-Drop nó qua chính con trỏ đó. Recon 2026-07-28 đo được: bất kỳ hình nào ĐỌC hoặc DI CHUYỂN một
-field của `p` (S1 đọc field, S2 move field ra, P4 whole-move nội bộ rồi đọc lại, S9 forward `p`
-sang lệnh gọi khác) đều đâm vào MỘT TRONG BA cổng `struct_slots.get()` sau, tất cả đều mù trước
-param vì Lát 2's `reserved_locals` guard loại trừ param khỏi vòng cấp slot:
-- field move-out tombstone (`mir_lower.rs:~3239`) — bỏ qua câm, không zero field đã move-out
-  trong "slot" của param (không tồn tại) → double-free khi cả field-owner mới VÀ Drop(param) đều
-  free cùng con trỏ.
-- `Statement::Deinit`'s struct branch (`mir_lower.rs:~2921`) — rơi fallback `def_var(local, zero)`,
-  chỉ zero Cranelift Variable (giữ con trỏ caller), KHÔNG chạm bộ nhớ thật → whole-move sau đó đọc
-  qua con trỏ hỏng.
-- call-site arg forwarding (`mir_lower.rs:~3816`) — rơi fallback `use_var`, forward THẲNG con trỏ
-  của caller (không phải bản sao riêng) sang callee kế tiếp → hai hàm cùng alias một buffer.
+Step 1b's diagram above ("Concrete Execution", step B.1) accurately described the ABI at that time: callee receives 
+via pointer and "reads p via pointer (same memory region as main)" — this was **ONLY PROVEN SOUND**
+for the structure  (fixture 258): callee DOES NOT touch any field of  before
+dropping it through that exact pointer. Recon on 2026-07-28 measured that: any form that READS or MOVES a
+field of  (S1 reading field, S2 moving field out, P4 internal whole-move then reading again, S9 forwarding 
+to another call) crashed into ONE OF THE FOLLOWING THREE  gates, all blind to
+parameters because Slice 2's  guard excluded parameters from slot allocation:
+- field move-out tombstone () — silently skipped, failing to zero the moved-out field
+  in the parameter's "slot" (non-existent) → double-free when both the new field-owner AND Drop(param)
+  free the same pointer.
+- 's struct branch () — fell back to ,
+  only zeroing the Cranelift Variable (holding caller pointer), WITHOUT touching physical memory → subsequent whole-move reads
+  through corrupt pointer.
+- call-site arg forwarding () — fell back to , forwarding the caller's pointer
+  DIRECTLY (not an independent copy) to the next callee → two functions alias the same buffer.
 
-1. **Hợp đồng caller (tái khẳng định Nhát 1b — KHÔNG đổi).** Aggregate vẫn truyền **by-pointer**:
-   call-site ghi `stack_addr` slot của chính caller vào ô đối số (`mir_lower.rs:~3818`). **RÚT BỎ**
-   mọi diễn giải trước đây rằng việc callee alias trực tiếp bộ nhớ caller là một "bug" — đó là
-   hợp đồng ABI có chủ ý (tiết kiệm một byte-copy 24B ở mọi call, per Nhát 1b's lý do gốc).
-2. **Nghĩa vụ callee (MỚI).** Prologue callee **BẮT BUỘC** cấp `StackSlot` tường minh cho mỗi
-   struct param thuần và **copy-in** `layout.total_size` byte từ con trỏ caller — cùng khuôn với
-   String (`mir_lower.rs:~2691`), Enum (`~2701`, WO-NullableEnumParamABI) và Outcome (`~2748`) đã
-   làm từ trước. Struct là aggregate ABI thứ TƯ còn thiếu bước này. Sau copy-in, callee thao tác
-   trên **bản sao riêng của chính nó** — không còn alias trực tiếp bộ nhớ caller, dù ABI truyền
-   vào vẫn là một con trỏ.
-3. **Ngoại lệ `Local(0)` (sret).** Khi hàm trả về qua sret, `Local(0)` là con trỏ DO CALLER CẤP để
-   nhận kết quả return — cấp StackSlot cho nó sẽ shadow con trỏ đó và miscompile đường return (tiền
-   lệ struct 172/14, tiền lệ enum P0 §"Nhát 1b"). `Local(0)` tiếp tục bị loại trừ tuyệt đối khỏi
+1. **Caller contract (reaffirming Step 1b — UNCHANGED).** Aggregates are still passed **by-pointer**:
+   call-site writes  of caller's own slot into argument cell (). **WITHDRAW**
+   all prior interpretations that callee directly aliasing caller memory was a "bug" — it is an intentional
+   ABI contract (saving a 24B byte-copy at every call, per Step 1b's original rationale).
+2. **Callee obligation (NEW).** Callee prologue **MUST** explicitly allocate a  for each
+   plain struct parameter and **copy-in**  bytes from the caller's pointer — matching the pattern
+   already used for String (), Enum (, WO-NullableEnumParamABI), and Outcome ().
+   Struct is the FOURTH aggregate ABI lacking this step. Following copy-in, the callee operates on **its own private
+   copy** — no longer aliasing caller memory directly, even though incoming ABI remains a pointer.
+3. ** exception (sret).** When a function returns via sret,  is a pointer SUPPLIED BY CALLER
+   to receive the return value — allocating a StackSlot for it would shadow that pointer and miscompile the return path
+   (precedent in struct 172/14, precedent in enum P0 §"Step 1b").  remains strictly excluded from
    copy-in.
-4. **Bất biến thu được.** Copy-in tự thoả mãn TOÀN BỘ cổng `struct_slots.get()` của JIT
-   (ownership/Deinit/Assign/Drop/forwarding) cho param, KHÔNG cần vá từng cổng riêng lẻ. Vá lẻ
-   từng cổng là mẫu đã lặp lại và để lại lỗ **BA lần**: `WO-NullableEnumParamABI` (enum param, cổng
-   `mir_lower.rs:~2704`), `WO-StructParamABI` (nhánh `is_nullable_struct_param` đơn lẻ trong
-   `load_place`, `~1343`), và chính hình này trước khi §AMEND-1 tổng quát hoá. Soundness của
-   copy-in dựa vào một bất biến CÓ SẴN, không đổi: `triet-lower/src/lib.rs` phát `Deinit(arg)`
-   **vô điều kiện** ngay sau `CallDispatch` cho mọi đối số kiểu Move (ADR-0042 Q1) — đây là thứ
-   tombstone bản sao của CALLER sau khi "chuyển quyền sở hữu" logic cho callee, bất kể callee làm
-   gì với bản sao riêng của nó. Nếu bất biến này biến mất, copy-in biến double-free thành LEAK CÂM
-   thay vì crash — có canary MIR-structural pin riêng (`param_aggregate_copyin_counting.rs`,
-   `caller_emits_deinit_after_struct_arg_call`), độc lập với JIT.
-5. **Phạm vi khoá cứng.** Chỉ `MirType::Struct` THUẦN (không unwrap `Nullable`, khác nhánh Enum ở
-   trên). `Nullable(Struct)` param GIỮ NGUYÊN đường refuse fail-closed hiện có
-   (`load_place`'s nhánh `is_nullable_struct_param`; Drop/`store_place`'s refuse
-   `"Struct? Drop without slot"`) — cấp slot cho nó sẽ làm nhánh refuse đó chết hoặc deref hai lần.
-   Đây là nợ ghi sổ riêng (`TODO.md`), không mở trong §AMEND-1.
+4. **Resulting invariant.** Copy-in automatically satisfies ALL  gates in the JIT
+   (ownership/Deinit/Assign/Drop/forwarding) for parameters, WITHOUT requiring individual ad-hoc patches. Patching
+   individual gates was a pattern that repeated and left holes **THREE times**:  (enum param, gate
+   ),  (single  branch in
+   , ), and this exact pattern before §AMEND-1 generalized it. Soundness of
+   copy-in relies on an EXISTING, unchanging invariant:  emits 
+   **unconditionally** immediately after  for all Move-typed arguments (ADR-0042 Q1) — this
+   tombstones CALLER's copy after logical ownership transfer to callee, regardless of what callee does
+   with its own copy. If this invariant disappeared, copy-in would turn double-frees into SILENT LEAKS
+   instead of crashes — protected by a dedicated MIR-structural canary (,
+   ), independent of JIT.
+5. **Strictly bounded scope.** Only PLAIN  (not unwrapping , unlike Enum branch above).
+    parameter REMAINS on the existing fail-closed refuse path
+   ('s  branch; Drop/'s refuse
+   ) — allocating a slot for it would break that refuse branch or double-deref.
+   This is tracked as separate technical debt (), not opened in §AMEND-1.
 
-**Nợ leo thang phát hiện trong lúc verify (KHÔNG sửa — ngoài phạm vi §AMEND-1):** trả struct-theo-
-giá-trị (sret, non-nullable) chứa một field `String` sinh giá trị RÁC (không crash) khi field đó
-được ghi vào buffer sret qua một `Assign` chiếu-field (`_0.field = move _1.field`) — đích `_0`
-(sret) VĨNH VIỄN không có `struct_slots` entry nên bước đồng bộ `len@+8`/`cap@+16` riêng cho String
-(`mir_lower.rs:~3156-3168`, gate trên `struct_slots.get(&dest.local)`) không bao giờ chạy cho field
-đích là sret. TÁI HIỆN ĐƯỢC VỚI 0 THAM SỐ (`function make() -> Leaf { let p = Leaf{s:"hi"}; return
-p; }` đã lỗi) — độc lập hoàn toàn với param-copy-in, một lỗ tồn tại từ trước, chưa từng có fixture
-chạm tới (440 chỉ khoá trường hợp `Struct?`/Nullable). Ghi sổ `TODO.md`.
+**Escalated debt discovered during verification (NOT fixed — out of scope for §AMEND-1):** returning struct-by-
+value (sret, non-nullable) containing a  field produces GARBAGE values (without crashing) when that field
+is written into the sret buffer via field-projected  () — destination 
+(sret) NEVER has a  entry, so the / synchronization step specific to String
+(, gated on ) never runs when destination field is sret.
+REPRODUCIBLE WITH 0 PARAMETERS ( fails) — completely
+independent of parameter copy-in, a pre-existing hole not covered by any prior fixture (440 only locked /Nullable case).
+Tracked in .
 
-**Chữ ký §AMEND-1:** O: soạn WO 2026-07-28 (bảng 49-site + 3 điểm chạm semantics bắt buộc đo) ·
-G: ✅ ký duyệt · D: thi hành, đo đủ 8 fixture (543-550) + counting (`param_aggregate_copyin_counting.rs`)
-+ poison thủ công qua cp-snapshot (mir_lower.rs, triet-lower/src/lib.rs) — không `git checkout`.
+**Signatures §AMEND-1:** O: drafted WO 2026-07-28 (49-site audit table + 3 mandatory semantics checkpoints) ·
+G: ✅ signed off · D: executed, verified across all 8 fixtures (543-550) + counting ()
++ manual snapshot poisoning (mir_lower.rs, triet-lower/src/lib.rs) — no M	docs/decisions/0001-nullable-memory-layout.md
+M	docs/decisions/0002-fstring-format-spec.md
+M	docs/decisions/0003-iterator-protocol.md
+M	docs/decisions/0004-multiline-string-indent.md
+M	docs/decisions/0005-module-system.md
+M	docs/decisions/0006-ternary-packaging-vision.md
+M	docs/decisions/0007-ir-design.md
+M	docs/decisions/0008-triv-binary-format.md
+M	docs/decisions/0009-version-gate-policy.md
+M	docs/decisions/0010-ternary-native-ir.md
+M	docs/decisions/0011-abi-metadata-format.md
+M	docs/decisions/0012-witness-table-dispatch.md
+M	docs/decisions/0013-semver-linking-policy.md
+M	docs/decisions/0014-hash-scheme-refinement.md
+M	docs/decisions/0015-package-store-layout.md
+M	docs/decisions/0016-capability-type-system.md
+M	docs/decisions/0017-trilean-policy-hook.md
+M	docs/decisions/0018-capability-loader-semantics.md
+M	docs/decisions/0022-trit-balanced-ownership.md
+M	docs/decisions/0024-khi-dao-identity-naming.md
+M	docs/decisions/0025-borrow-checker-rules.md
+M	docs/decisions/0026-actor-boundary-send-rules.md
+M	docs/decisions/0027-diagnostic-format-standard.md
+M	docs/decisions/0034-jit-aggregate-coverage.md
+M	docs/decisions/0037-enum-tagged-union-layout.md
+M	docs/decisions/0038-comparable-trait-deferred.md
+M	docs/decisions/0039-nullable-operator-family.md
+M	docs/decisions/0040-heap-aggregate-layout.md
+M	docs/decisions/0041-nullable-representation-bac-a.md
+M	docs/decisions/0042-ownership-across-boundary.md
+M	docs/decisions/0043-hashmap-representation.md
+M	docs/decisions/0044-arithmetic-range-enforcement.md
+M	docs/decisions/0046-return-borrow-elision.md
+M	docs/decisions/0047-read-ops-extension.md
+M	docs/decisions/0055-block-body-tail-expression.md
+M	docs/decisions/0056-heap-value-merge.md
+M	docs/decisions/0059-stack-borrow-heap-vector-hashmap.md
+M	docs/decisions/0060-nested-aggregate-layout.md
+M	docs/decisions/0061-trait-system-tier1-static-dispatch.md
+M	docs/decisions/0062-heap-nullable-ptr-sentinel-repr.md
+M	docs/decisions/0069-zst-capability-token-luk3.md
+M	docs/decisions/0077-typed-vector-p1.md
+M	docs/decisions/0078-typed-hashmap-p1-value.md
+M	docs/decisions/0080-hashmap-string-key.md
+M	docs/decisions/0081-get-borrow-mutable.md
+M	docs/decisions/0082-aggregate-by-value-collection-element.md
+M	docs/decisions/0085-shim-meta-totality-verify-gate.md
+M	docs/decisions/0087-builtin-print-overloads-and-io-shim.md
+Your branch is ahead of 'origin/main' by 2 commits.
+  (use "git push" to publish your local commits).
 
 ---
 
-**Chữ ký ADR-0066:** O: ✅ (recon Phase 1 + vẽ bản kiến trúc + verify width Vector/HashMap qua shim) ·
-G: ✅ (ký duyệt bản vẽ 2026-06-21 — 3 KCN + cắt scope whole-move + gộp M-1/M-2 vào Lát 1 + khắc LUẬT THÉP
-Atomic). D được phép `rustc` từ điểm này.
+**Signatures ADR-0066:** O: ✅ (Phase 1 recon + architectural blueprint + Vector/HashMap width verification via shims) ·
+G: ✅ (signed design blueprint 2026-06-21 — 3 GPs + bounded whole-move scope + merged M-1/M-2 into Slice 1 + carved ATOMIC IRON LAW). D permitted to Usage: rustc [OPTIONS] INPUT
+
+Options:
+    -h, --help          Display this message
+        --cfg <SPEC>    Configure the compilation environment.
+                        SPEC supports the syntax `<NAME>[="<VALUE>"]`.
+        --check-cfg <SPEC>
+                        Provide list of expected cfgs for checking
+    -L [<KIND>=]<PATH>  Add a directory to the library search path. The
+                        optional KIND can be one of
+                        <dependency|crate|native|framework|all> (default:
+                        all).
+    -l [<KIND>[:<MODIFIERS>]=]<NAME>[:<RENAME>]
+                        Link the generated crate(s) to the specified native
+                        library NAME. The optional KIND can be one of
+                        <static|framework|dylib> (default: dylib).
+                        Optional comma separated MODIFIERS
+                        <bundle|verbatim|whole-archive|as-needed>
+                        may be specified each with a prefix of either '+' to
+                        enable or '-' to disable.
+        --crate-type <bin|lib|rlib|dylib|cdylib|staticlib|proc-macro>
+                        Comma separated list of types of crates
+                        for the compiler to emit
+        --crate-name <NAME>
+                        Specify the name of the crate being built
+        --edition <2015|2018|2021|2024|future>
+                        Specify which edition of the compiler to use when
+                        compiling code. The default is 2015 and the latest
+                        stable edition is 2024.
+        --emit <TYPE>[=<FILE>]
+                        Comma separated list of types of output for the
+                        compiler to emit.
+                        Each TYPE has the default FILE name:
+                        * asm - CRATE_NAME.s
+                        * llvm-bc - CRATE_NAME.bc
+                        * dep-info - CRATE_NAME.d
+                        * link - (platform and crate-type dependent)
+                        * llvm-ir - CRATE_NAME.ll
+                        * metadata - libCRATE_NAME.rmeta
+                        * mir - CRATE_NAME.mir
+                        * obj - CRATE_NAME.o
+                        * thin-link-bitcode - CRATE_NAME.indexing.o
+        --print <INFO>[=<FILE>]
+                        Compiler information to print on stdout (or to a file)
+                        INFO may be one of
+                        <all-target-specs-json|backend-has-mnemonic|backend-has-zstd|calling-conventions|cfg|check-cfg|code-models|crate-name|crate-root-lint-levels|deployment-target|file-names|host-tuple|link-args|native-static-libs|relocation-models|split-debuginfo|stack-protector-strategies|supported-crate-types|sysroot|target-cpus|target-features|target-libdir|target-list|target-spec-json|target-spec-json-schema|tls-models>.
+    -g                  Equivalent to -C debuginfo=2
+    -O                  Equivalent to -C opt-level=3
+    -o <FILENAME>       Write output to FILENAME
+        --out-dir <DIR> Write output to compiler-chosen filename in DIR
+        --explain <OPT> Provide a detailed explanation of an error message
+        --test          Build a test harness
+        --target <TARGET>
+                        Target tuple for which the code is compiled
+    -A, --allow <LINT>  Set lint allowed
+    -W, --warn <LINT>   Set lint warnings
+        --force-warn <LINT>
+                        Set lint force-warn
+    -D, --deny <LINT>   Set lint denied
+    -F, --forbid <LINT> Set lint forbidden
+        --cap-lints <LEVEL>
+                        Set the most restrictive lint level. More restrictive
+                        lints are capped at this level
+    -C, --codegen <OPT>[=<VALUE>]
+                        Set a codegen option
+    -V, --version       Print version info and exit
+    -v, --verbose       Use verbose output
+
+Additional help:
+    -C help             Print codegen options
+    -W help             Print 'lint' options and default settings
+    --help -v           Print the full set of options rustc accepts from this point.

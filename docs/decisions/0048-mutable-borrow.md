@@ -1,121 +1,120 @@
-# ADR-0048: Mutable Borrow — Bậc C lát 5
+# ADR-0048: Mutable Borrow — Tier C Slice 5
 
-**Status:** ACCEPTED — O + G ký 2026-06-08
+**Status:** ACCEPTED — O + G sign-off 2026-06-08
 **Date:** 2026-06-08
-**Author:** AI (đồng nghiệp D, implement)
+**Author:** AI (collaborator D, implement)
 **Reviewers:** Mentor O (semantics, soundness) · Mentor G (codegen, ABI)
-**Scope:** Mở `&0 mutable String` param + op mutate `clear` (len=0 in-place).
-Exclusivity E2440 reuse. Return-mut-borrow `-> &0 mutable T` CẮT.
-Append/grow CẮT (realloc mìn).
+**Scope:** Enable `&0 mutable String` parameters + mutation op `clear` (in-place len=0).
+Exclusivity E2440 reuse. Return-mut-borrow `-> &0 mutable T` CUT.
+Append/grow CUT (realloc landmine).
 
 ---
 
-## Tóm tắt
+## Summary
 
-Lát 2 (ADR-0045) niêm phong `&0 mutable`, lát 3 (ADR-0046) mở `-> &0 T` return-borrow.
-Lát 5 mở `&0 mutable` param cho String, với chính xác MỘT op mutate: `clear` (set
-len=0, ptr bất biến, không realloc). Append/push bị CẮT vì realloc đổi ptr → caller
-ôm handle cũ trỏ memory freed. Return-mut-borrow `-> &0 mutable T` CẮT (E1042) — né
-nợ `is_propagated`×mutable.
-
----
-
-## §0 — Dữ kiện
-
-| # | Dữ kiện | Vị trí |
-|---|---------|--------|
-| F1 | `Loan.form: ReferenceForm` có sẵn, phân biệt BorrowReadOnly/BorrowExclusiveMutable/… | `checker.rs:93-104` |
-| F2 | Exclusivity hai tầng: typecheck `borrow_check.rs` Pass-3 `forms_conflict` (ADR-0025 §2, fatal first-line) + MIR `checker.rs:113-124` `conflicts_with` (defense-in-depth). `BorrowExclusiveMutable` → conflict với BẤT KỲ loan nào. | `borrow_check.rs` (typecheck), `checker.rs:113-124` |
-| F3 | E2440 fire site MIR: `places_conflict` + `loan.conflicts_with(*form)` → bắn `NllExclusivityViolation`. Fire site typecheck: `forms_conflict` trả E2440. | `checker.rs:507-515`, `borrow_check.rs` (typecheck) |
-| F4 | Probe: `2× &0 mutable m` → E2440 nổ. Hạ tầng exclusivity đã hoạt động, không cần viết lại. | Phase-0 |
-| F5 | Probe: `modify(&0 mutable m)` e2e compile+RUN — &0 mutable param qua typecheck+lower+jit không vấn đề. | Phase-0 |
-| F6 | E1042 gate (check.rs:398-408) đang chặn TẤT CẢ `-> Ref T` trừ `BorrowReadOnly`. `&0 mutable` return đã bị chặn sẵn — không cần action thêm. | `check.rs:398-399` |
-| F7 | `PropagatedLoan` copy `form: orig.form` — nếu sau này mở return-mut, form được truyền đúng. Nhưng hiện CẮT. | `checker.rs:804` |
-| F8 | String layout: `{len: i64@0, cap: i64@8, bytes@16}`. `clear` ghi 0 vào len@0 — ptr bất biến, không đụng cap, không cấp phát. | `mir_lower.rs:1509-1516` (len read), `1531-1547` (contains layout) |
+Slice 2 (ADR-0045) sealed `&0 mutable`, and Slice 3 (ADR-0046) opened `-> &0 T` return-borrow.
+Slice 5 opens `&0 mutable` parameters for String, with exactly ONE mutation op: `clear` (sets
+len=0, pointer immutable, no realloc). Append/push is CUT because reallocation changes the pointer → caller
+holds the stale handle pointing to freed memory. Return-mut-borrow `-> &0 mutable T` is CUT (E1042) — avoiding
+`is_propagated` × mutable technical debt.
 
 ---
 
-## §1 — Op: `clear(&0 mutable String)` — len=0 in-place
+## §0 — Facts
 
-**Quyết định:** Shim `__triet_string_clear(ptr)` → ghi `0` vào `len@0`. Không
-realloc, không đụng cap, không đụng bytes.
-
-**Lý do:** `clear` là op mutate an toàn tuyệt đối: chỉ set len=0, ptr handle không
-đổi. Không có data-race vì exclusivity E2440 đảm bảo chỉ MỘT `&0 mutable` tồn tại
-tại mỗi thời điểm.
-
-**Shim signature:** `fn(ptr: i64) -> i64` (nhận handle, trả 0 = Unit).
-
-**Vị trí:** `mir_lower.rs`, cạnh `__triet_string_len` (line 1509).
-
-**Append/grow CẮT — ghi rõ lý do (cho Bậc D):**
-- `append(&0 mutable String, suffix)` cần realloc khi `len + suffix.len > cap`.
-- Realloc = `std::alloc::alloc` mới → ptr mới → handle mới.
-- Nhưng `&0 mutable String` = handle i64 by-value — caller giữ handle CŨ (i64 value
-  trên stack).
-- Callee realloc → ptr đổi → handle mới KHÔNG propagate về caller → caller ôm handle
-  cũ trỏ memory freed → use-after-free.
-- Giải pháp Bậc D: handle-indirection (fat-pointer {handle_ptr}) hoặc pointer-to-handle
-  trong ABI. Cần redesign ABI — không phải scope lát 5.
+| # | Fact | Location |
+|---|------|----------|
+| F1 | `Loan.form: ReferenceForm` is available, distinguishing BorrowReadOnly/BorrowExclusiveMutable/… | `checker.rs:93-104` |
+| F2 | Two-tier exclusivity: typecheck `borrow_check.rs` Pass-3 `forms_conflict` (ADR-0025 §2, fatal first-line) + MIR `checker.rs:113-124` `conflicts_with` (defense-in-depth). `BorrowExclusiveMutable` → conflicts with ANY loan. | `borrow_check.rs` (typecheck), `checker.rs:113-124` |
+| F3 | E2440 fire site in MIR: `places_conflict` + `loan.conflicts_with(*form)` → emits `NllExclusivityViolation`. Fire site in typecheck: `forms_conflict` returns E2440. | `checker.rs:507-515`, `borrow_check.rs` (typecheck) |
+| F4 | Probe: `2× &0 mutable m` → E2440 triggers. Exclusivity infrastructure already functional, no rewrite needed. | Phase-0 |
+| F5 | Probe: `modify(&0 mutable m)` e2e compile+RUN — `&0 mutable` param passes through typecheck+lower+jit without issue. | Phase-0 |
+| F6 | E1042 gate (`check.rs:398-408`) currently blocks ALL `-> Ref T` except `BorrowReadOnly`. `&0 mutable` return is already blocked — no additional action needed. | `check.rs:398-399` |
+| F7 | `PropagatedLoan` copies `form: orig.form` — if return-mut is opened later, form will be propagated correctly. But currently CUT. | `checker.rs:804` |
+| F8 | String layout: `{len: i64@0, cap: i64@8, bytes@16}`. `clear` writes 0 to len@0 — pointer immutable, does not touch cap, does not allocate. | `mir_lower.rs:1509-1516` (len read), `1531-1547` (contains layout) |
 
 ---
 
-## §2 — Exclusivity: REUSE E2440, không viết lại
+## §1 — Op: `clear(&0 mutable String)` — in-place len=0
 
-**Quyết định:** Cơ chế exclusivity `conflicts_with` (checker.rs:113-124) +
-`places_conflict` (checker.rs:507) đã có sẵn và đã được verify (Phase-0). Không
-viết lại, không thêm rule mới.
+**Decision:** Shim `__triet_string_clear(ptr)` → writes `0` to `len@0`. No
+realloc, does not touch cap, does not touch bytes.
 
-**E2440 rule cho `&0 mutable` — hai tầng song song:**
+**Rationale:** `clear` is a completely safe mutation op: only sets len=0, ptr handle does
+not change. No data races because exclusivity E2440 guarantees only ONE `&0 mutable` exists
+at any given point in time.
 
-1. **Typecheck (fatal first-line):** `borrow_check.rs` Pass-3 kiểm tra
-   `forms_conflict` (ADR-0025 §2) — chặn sớm tại typecheck, không cần tới MIR.
+**Shim signature:** `fn(ptr: i64) -> i64` (takes handle, returns 0 = Unit).
+
+**Location:** `mir_lower.rs`, next to `__triet_string_len` (line 1509).
+
+**Append/grow CUT — explicit rationale (for Tier D):**
+- `append(&0 mutable String, suffix)` requires realloc when `len + suffix.len > cap`.
+- Realloc = new `std::alloc::alloc` → new ptr → new handle.
+- But `&0 mutable String` = handle i64 by value — caller retains the OLD handle (i64 value on stack).
+- Callee realloc → ptr changes → new handle DOES NOT propagate back to caller → caller holds old handle
+  pointing to freed memory → use-after-free.
+- Tier D solution: handle-indirection (fat-pointer `{handle_ptr}`) or pointer-to-handle
+  in ABI. Requires ABI redesign — outside Slice 5 scope.
+
+---
+
+## §2 — Exclusivity: REUSE E2440, do not rewrite
+
+**Decision:** Exclusivity mechanisms `conflicts_with` (`checker.rs:113-124`) +
+`places_conflict` (`checker.rs:507`) already exist and have been verified (Phase-0). Do not
+rewrite, do not add new rules.
+
+**E2440 rules for `&0 mutable` — two parallel tiers:**
+
+1. **Typecheck (fatal first-line):** `borrow_check.rs` Pass-3 checks
+   `forms_conflict` (ADR-0025 §2) — rejected early in typecheck before reaching MIR.
 
 2. **MIR borrowck (defense-in-depth):** `checker.rs:113-124` `conflicts_with` —
-   `BorrowExclusiveMutable` → `true` cho MỌI form. Fire site `checker.rs:507-515`.
+   `BorrowExclusiveMutable` → `true` for EVERY form. Fire site `checker.rs:507-515`.
 
-- Hệ quả: một local có `&0 mutable` đang active → không ai có thể tạo borrow mới
-  trên cùng local (dù shared hay exclusive). Guard redundant tối thiểu 4 đường
+- Consequence: while a local has an active `&0 mutable` borrow → no one can create a new borrow
+  on the same local (whether shared or exclusive). Guarded redundantly across at least 4 paths
   (typecheck + MIR + E2450 drop-while-borrowed), over-defended.
 
-- Đây là đảm bảo exclusivity — aliasing XOR mutability.
+- This enforces the exclusivity guarantee — aliasing XOR mutability.
 
-**TECH-DEBT (O, 2026-06-08):** Hai tầng borrow-check song song (typecheck-era
-  v0.10 ADR-0025 + MIR-borrowck mới) là nợ kiến trúc. Teeth-isolation trên E2440
-  thất bại vì quá nhiều guard redundant — không sai (defense-in-depth) nhưng nên
-  hợp nhất khi Bậc C khép.
+**TECH-DEBT (O, 2026-06-08):** Two parallel borrow-checking tiers (typecheck-era
+v0.10 ADR-0025 + new MIR-borrowck) represent architectural debt. Teeth-isolation on E2440
+fails due to excessive redundant guards — not incorrect (defense-in-depth), but should be
+unified when Tier C closes.
 
 ---
 
-## §3 — ABI: handle i64 by-value, mutate in-place
+## §3 — ABI: handle i64 by value, mutate in-place
 
-**Quyết định:** `&0 mutable String` truyền handle i64 by-value, đồng nhất ABI với
-`&0 String` (shared) và `String` (owned). Callee nhận handle, mutate dữ liệu tại
+**Decision:** `&0 mutable String` passes handle i64 by value, identical ABI to
+`&0 String` (shared) and `String` (owned). Callee receives handle, mutates data at
 `handle + offset`.
 
-**Không thay đổi ABI.** JIT không cần biết Borrow vs MutableBorrow — cùng
+**No ABI change.** JIT does not need to distinguish Borrow vs MutableBorrow — same
 `use_var` path.
 
-**⚠ Bãi mìn realloc-dangling (ghi cho Bậc D):** Op grow (append/push) bị CẤM
-trong Bậc C. Lý do: realloc đổi ptr → handle caller trỏ memory freed. Giải pháp
-Bậc D = handle-indirection (fat-pointer chứa `*mut i64` trỏ handle thật, callee
-ghi handle mới qua con trỏ). Đây là lý do G nói "giết 90% compiler sơ khai" —
-fat-pointer là thay đổi ABI toàn diện, không phải thêm op.
+**⚠ Realloc-dangling landmine (noted for Tier D):** Grow ops (append/push) are FORBIDDEN
+in Tier C. Rationale: realloc changes ptr → caller handle points to freed memory. Tier D
+solution = handle-indirection (fat-pointer containing `*mut i64` pointing to the real handle,
+callee writes new handle through the pointer). This is why G noted "kills 90% of early compilers" —
+fat-pointer is a comprehensive ABI change, not simply adding an op.
 
 ---
 
-## §4 — Return-mut-borrow: CẮT (E1042 giữ)
+## §4 — Return-mut-borrow: CUT (retain E1042)
 
-**Quyết định:** `-> &0 mutable T` tiếp tục bị E1042 chặn (check.rs:398-399 chỉ
-whitelist `BorrowReadOnly`). Không cần action thêm.
+**Decision:** `-> &0 mutable T` continues to be blocked by E1042 (`check.rs:398-399` only
+whitelists `BorrowReadOnly`). No additional action required.
 
-**Lý do:**
-1. `is_propagated` skip E2450 hiện dựa trên giả định no-nested-scope (ADR-0046
-   TECH-DEBT). Kết hợp mutation + propagated loan chưa được audit.
-2. Return-mut-borrow mở ra exclusive mutable alias qua function boundary → cần
-   audit toàn bộ dataflow (ai mutate? ai read? order?). Quá lớn cho lát 5.
-3. E1042 đã chặn sẵn — chỉ whitelist BorrowReadOnly, mọi form khác (gồm
-   BorrowExclusiveMutable) bị từ chối.
+**Rationale:**
+1. `is_propagated` skipping E2450 currently relies on a no-nested-scope assumption (ADR-0046
+   TECH-DEBT). Combining mutation + propagated loans has not been audited.
+2. Return-mut-borrow introduces exclusive mutable aliases across function boundaries → requires
+   auditing full dataflow (who mutates? who reads? order?). Too extensive for Slice 5.
+3. E1042 already blocks this — only whitelists BorrowReadOnly, rejecting all other forms (including
+   BorrowExclusiveMutable).
 
 ---
 
@@ -123,64 +122,64 @@ whitelist `BorrowReadOnly`). Không cần action thêm.
 
 ### 93 — clear RUN (sine-qua-non)
 
-| Fixture | Directive | Nội dung |
-|---------|-----------|----------|
+| Fixture | Directive | Content |
+|---------|-----------|---------|
 | `93_clear_run.tri` | EXPECT: 0 | `clear(&0 mutable m)` → `length(m)` = 0 |
 
-Teeth: gỡ `write_unaligned(0)` trong shim (clear thành no-op) → length=5≠0 → đỏ.
+Teeth: removing `write_unaligned(0)` in shim (turning clear into a no-op) → length=5≠0 → fails.
 
 ### 94 — mut overlap (E2440)
 
-| Fixture | Directive | Nội dung |
-|---------|-----------|----------|
+| Fixture | Directive | Content |
+|---------|-----------|---------|
 | `94_mut_overlap.tri` | ERROR: E2440 | 2× `&0 mutable m` → exclusivity violation |
 
-Teeth: gỡ `BorrowExclusiveMutable => true` trong `conflicts_with` → lọt → đỏ.
+Teeth: removing `BorrowExclusiveMutable => true` in `conflicts_with` → slips through → fails.
 
 ### 95 — mut vs shared conflict (E2440)
 
-| Fixture | Directive | Nội dung |
-|---------|-----------|----------|
+| Fixture | Directive | Content |
+|---------|-----------|---------|
 | `95_mut_shared_conflict.tri` | ERROR: E2440 | `&0 mutable m` + `&0 m` → conflict |
 
-Teeth: gỡ check `conflicts_with` cho BorrowReadOnly vs BorrowExclusiveMutable → lọt → đỏ.
+Teeth: removing check `conflicts_with` for BorrowReadOnly vs BorrowExclusiveMutable → slips through → fails.
 
 ---
 
-## Kế hoạch triển khai
+## Implementation Plan
 
-| # | Việc | File chính | Mẫu |
-|---|------|-----------|-----|
-| 1 | ADR → commit | `docs/decisions/0048-mutable-borrow.md` | O+G ký |
-| 2 | Shim `__triet_string_clear` | `mir_lower.rs` (cạnh 1509) | `__triet_string_len` |
-| 3 | Typecheck overload `clear` | `env.rs` (cạnh 204-349) | `length` overloads |
-| 4 | Lower dispatch `clear` | `lib.rs` (cạnh 1316) | `contains` dispatch |
-| 5 | Đăng ký shim driver + harness | `main.rs` + `integration_tests.rs` | 1 shim × 2 |
-| 6 | Fixtures 93-95 | `fixtures/` | 3 fixture |
+| # | Task | Primary Files | Pattern |
+|---|------|---------------|---------|
+| 1 | ADR → commit | `docs/decisions/0048-mutable-borrow.md` | O+G sign-off |
+| 2 | Shim `__triet_string_clear` | `mir_lower.rs` (next to 1509) | `__triet_string_len` |
+| 3 | Typecheck overload `clear` | `env.rs` (next to 204-349) | `length` overloads |
+| 4 | Lower dispatch `clear` | `lib.rs` (next to 1316) | `contains` dispatch |
+| 5 | Register shim in driver + harness | `main.rs` + `integration_tests.rs` | 1 shim × 2 |
+| 6 | Fixtures 93-95 | `fixtures/` | 3 fixtures |
 | 7 | Gate + commit | `scripts/gate.sh` | |
 
 ---
 
 ## Q&A
 
-### O-Q1: Vì sao chỉ clear, không append?
+### O-Q1: Why only clear, not append?
 
-Append cần realloc → ptr đổi → handle caller trỏ memory freed. `clear` set len=0,
-ptr bất biến, không realloc. (§1)
+Append requires realloc → ptr changes → caller handle points to freed memory. `clear` sets len=0,
+pointer is immutable, no realloc. (§1)
 
-### O-Q2: Exclusivity có cần viết thêm rule không?
+### O-Q2: Does exclusivity require additional rules?
 
-Không. `conflicts_with` (checker.rs:113) đã có `BorrowExclusiveMutable => true`
-— conflict với MỌI form. Fire site (checker.rs:513) đã hoạt động. (§2)
+No. `conflicts_with` (`checker.rs:113`) already contains `BorrowExclusiveMutable => true`
+— conflicts with ALL forms. Fire site (`checker.rs:513`) is already functional. (§2)
 
-### G-Q1: ABI cho &0 mutable?
+### G-Q1: ABI for &0 mutable?
 
-Handle i64 by-value, đồng nhất &0/&0 mutable/String. JIT không phân biệt. (§3)
+Handle i64 by value, identical to `&0` / `&0 mutable` / `String`. JIT does not distinguish them. (§3)
 
-### G-Q2: Khi nào mở append/push?
+### G-Q2: When will append/push be opened?
 
-Bậc D — sau khi có handle-indirection/fat-pointer. Cần redesign ABI toàn diện. (§3)
+Tier D — after introducing handle-indirection/fat-pointers. Requires a comprehensive ABI redesign. (§3)
 
 ### G-Q3: Return-mut-borrow?
 
-CẮT. E1042 giữ chặn. Mở sau khi re-audit is_propagated×mutable. (§4)
+CUT. E1042 remains blocking. Will be reopened after re-auditing `is_propagated` × mutable. (§4)

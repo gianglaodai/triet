@@ -1,28 +1,28 @@
 # ADR 0011 — ABI metadata format
 
-**Trạng thái:** Quyết định. Áp dụng cho v0.4 Crate-Pack format và mọi linker/loader đọc cross-package interface kể từ v0.4. Format này tách biệt khỏi IR bytecode (ADR-0008) để cho phép linker reject mismatch trước khi load code.
+**Status:** Decision. Applicable to v0.4 Crate-Pack format and all linkers/loaders reading cross-package interfaces from v0.4 onwards. This format is decoupled from the IR bytecode (ADR-0008) to allow the linker to reject mismatches before loading code.
 
-**Issue:** v0.3 dừng ở mức single-package. Mỗi `.triv` file là một `IrProgram` flat — không có biên crate-pack, không có khái niệm "tôi expose gì cho người khác". Để v0.4 enable distribution + cross-package linking, cần một format binary mô tả **ABI surface** của một package:
+**Issue:** v0.3 was limited to single-package scope. Each `.triv` file was a flat `IrProgram`—lacking crate-pack boundaries and the concept of "exposed interface." To enable distribution and cross-package linking in v0.4, a binary format is required to describe the **ABI surface** of a package:
 
-- Danh sách function exports với signature đầy đủ (param types + return type).
-- Type definitions (struct, enum) mà export functions reference.
-- Generic constraints và type parameter slots.
-- Dependency declarations (package này phụ thuộc package nào, version range nào).
-- Capability claims (placeholder cho v0.6).
-- Version field cho semver linking policy (ADR-0013).
+- Function exports with full signatures (param types + return type).
+- Type definitions (struct, enum) referenced by exported functions.
+- Generic constraints and type parameter slots.
+- Dependency declarations (package dependencies and version ranges).
+- Capability claims (placeholder for v0.6).
+- Version field for semver linking policy (ADR-0013).
 
-VISION §3.3 cam kết: *"Compiler là gatekeeper: cross-package mismatch = refuse-to-link với diagnostic rõ ràng"*. Điều này yêu cầu ABI metadata phải:
+VISION §3.3 mandates: *"The compiler is the gatekeeper: cross-package mismatch = refuse-to-link with clear diagnostics."* This requires the ABI metadata to be:
 
-1. **Hash-stable** — same source ⇒ same bytes. Tiền đề cho v0.5 CAS.
-2. **Compact** — đọc cho linker rất nhanh, không cần decode toàn bộ code section.
-3. **Versioned** — backwards-compat encoding (additive only sau v1.0).
-4. **Self-describing** — tool ngoài compiler đọc được mà không cần Triết source.
+1. **Hash-stable** — same source ⇒ same bytes. Prerequisite for v0.5 CAS.
+2. **Compact** — fast to read for the linker, without needing to decode the entire code section.
+3. **Versioned** — backwards-compatible encoding (additive only after v1.0).
+4. **Self-describing** — readable by external tools without the Triet source.
 
-ADR này lock format binary cho ABI metadata + relationship với `.triv` (ADR-0008) và `.khi` (ADR-0014 sẽ ghi, container format).
+This ADR locks the binary format for ABI metadata and its relationship with `.triv` (ADR-0008) and `.khi` (ADR-0014, the container format).
 
-## Quyết định
+## Decision
 
-ABI metadata là **một section binary độc lập** trong `.khi` container, encode theo cùng convention với `.triv` (little-endian, LEB128 varint, length-prefixed UTF-8). Linker đọc **chỉ section này** để quyết định refuse/accept link, không cần load IR code section.
+ABI metadata is an **independent binary section** within the `.khi` container, encoded using the same convention as `.triv` (little-endian, LEB128 varint, length-prefixed UTF-8). The linker reads **only this section** to decide whether to refuse or accept a link, without needing to load the IR code section.
 
 ### 1. Top-level layout
 
@@ -30,11 +30,11 @@ ABI metadata là **một section binary độc lập** trong `.khi` container, e
 ┌─────────────────────────────────────────────────────────────┐
 │ ABI metadata section (in .tripack)                          │
 ├──────────────┬──────────────────────────────────────────────┤
-│ abi_version  │ u32 LE — bumped khi format thay đổi (start = 1) │
+│ abi_version  │ u32 LE — bumped when format changes (start = 1) │
 │ pkg_name     │ length-prefixed UTF-8 — e.g. "std", "user.app"  │
 │ pkg_version  │ semver triple (u32 major, u32 minor, u32 patch) │
-│ iface_hash   │ 32 bytes — BLAKE3 của canonical ABI surface     │
-│ impl_hash    │ 32 bytes — BLAKE3 của ABI + IR code (v0.5 prep) │
+│ iface_hash   │ 32 bytes — BLAKE3 of canonical ABI surface     │
+│ impl_hash    │ 32 bytes — BLAKE3 of ABI + IR code (v0.5 prep) │
 ├──────────────┴──────────────────────────────────────────────┤
 │ types        │ Type definition table (struct, enum, generic)  │
 │ exports      │ Function export table (signature + capability) │
@@ -45,7 +45,7 @@ ABI metadata là **một section binary độc lập** trong `.khi` container, e
 
 ### 2. Type definition table
 
-Mỗi entry mô tả một user-defined type được referenced bởi exports. Phân biệt struct vs enum vs generic-shell:
+Each entry describes a user-defined type referenced by exports. Distinguishes between struct vs. enum vs. generic-shell:
 
 ```
 type_count: varint
@@ -73,7 +73,7 @@ for each field:
 variant_count: varint
 for each variant:
     variant_name: length-prefixed UTF-8
-    payload_type: Option<TypeRef> (1 byte flag + TypeRef nếu Some)
+    payload_type: Option<TypeRef> (1 byte flag + TypeRef if Some)
 ```
 
 **TypeRef** (referenced types — primitive, defined, or type-param):
@@ -98,14 +98,14 @@ for each export:
     for each type param: name (length-prefixed UTF-8)
     param_count: varint
     for each param:
-        param_name: length-prefixed UTF-8
+        param_name: length/prefixed UTF-8
         param_type: TypeRef
     return_type: TypeRef
-    capability_count: varint (placeholder, 0 ở v0.4)
+    capability_count: varint (placeholder, 0 in v0.4)
     for each capability: (reserved encoding)
     body_offset: varint
-      // Offset vào IR code section của .khi — linker không cần đọc,
-      // chỉ runtime/JIT cần để dispatch. 0 = abstract (no body, future).
+      // Offset into the .khi IR code section — the linker does not need to read this;
+      // only runtime/JIT requires it for dispatch. 0 = abstract (no body, future).
 ```
 
 ### 4. Dependency table
@@ -119,94 +119,94 @@ for each dep:
     iface_hash_pin: 32 bytes  // 0s = no hash pin (allow any matching version)
 ```
 
-Khi `iface_hash_pin` non-zero, linker phải match exact hash → đây là cơ chế CAS-pinning của v0.5 (tiền đề, không enforce ở v0.4).
+When `iface_hash_pin` is non-zero, the linker must match the exact hash—this is the mechanism for v0.5 CAS-pinning (preliminary, not enforced in v0.4).
 
 ### 5. Capability claims (v0.6 placeholder)
 
 ```
-cap_count: varint  // luôn 0 ở v0.4
-// each entry sẽ encode: namespace (sys/dev/usr), capability name,
-// grant/deny trit. Format hoàn thiện ở v0.6 ADR.
+cap_count: varint  // always 0 in v0.4
+// each entry will encode: namespace (sys/dev/usr), capability name,
+// grant/deny trit. Format finalized in v0.6 ADR.
 ```
 
-### 6. Canonical encoding rules (cho hash stability)
+### 6. Canonical encoding rules (for hash stability)
 
-Để `iface_hash` ổn định qua re-compile (yêu cầu cho v0.5 CAS):
+To ensure `iface_hash` stability across re-compilation (required for v0.5 CAS):
 
-- **Type table order**: sort theo `name` lexicographically.
-- **Export table order**: sort theo `name` lexicographically.
-- **Dep table order**: sort theo `pkg_name` lexicographically.
-- **Type param names**: bảo toàn order khai báo trong source (positional).
-- **No comments / no whitespace** — binary format, mỗi byte có ý nghĩa.
-- **Variable encoding**: LEB128 không bao gồm trailing zero padding.
+- **Type table order**: sort lexicographically by `name`.
+- **Export table order**: sort lexicographically by `name`.
+- **Dep table order**: sort lexicographically by `pkg_name`.
+- **Type param names**: preserve declaration order from source (positional).
+- **No comments / no whitespace** — binary format, every byte is significant.
+- **Variable encoding**: LEB128 does not include trailing zero padding.
 
-`iface_hash` = BLAKE3 của bytes từ `pkg_name` end-to-end của `caps` section. Loại trừ `abi_version`, `pkg_version`, `impl_hash` (vì các field đó change mỗi commit dù ABI surface không đổi).
+`iface_hash` = BLAKE3 of the bytes from `pkg_name` to the end of the `caps` section. Excludes `abi_version`, `pkg_version`, and `impl_hash` (as those fields change with every commit even if the ABI surface remains unchanged).
 
-`impl_hash` = BLAKE3 của (`iface_hash` bytes + IR code section bytes). Khi impl đổi mà ABI không, `iface_hash` giữ nguyên, downstream không cần rebuild.
+`impl_hash` = BLAKE3 of (`iface_hash` bytes + IR code section bytes). If the implementation changes but the ABI does not, `iface_hash` remains constant, preventing downstream rebuilds.
 
 ### 7. ABI version policy
 
-`abi_version = 1` ở v0.4 launch. Bump khi:
-- Thêm trường mới mà không backwards-compat (rare — additive fields nên dùng reserved space).
-- Đổi encoding của trường hiện có (đừng).
+`abi_version = 1` at v0.4 launch. Bump when:
+- Adding new fields without backwards compatibility (rare—use reserved space for additive fields).
+- Changing the encoding of an existing field (avoid this).
 
-Bumping yêu cầu ADR mới. Linker với `abi_version > supported` → refuse với error code E2301.
+Bumping requires a new ADR. A linker encountering `abi_version > supported` → refuses with error code E2301.
 
-### 8. Relationship với `.triv` và `.khi`
+### 8. Relationship with `.triv` and `.khi`
 
-| Format | Mục đích | ADR |
+| Format | Purpose | ADR |
 |---|---|---|
-| `.triv` | IR bytecode của một compilation unit | ADR-0008 |
+| `.triv` | IR bytecode of a compilation unit | ADR-0008 |
 | ABI metadata | Interface surface, version, hashes, deps | **ADR-0011 (this)** |
 | `.khi` | Container: ABI metadata + N `.triv` units + manifest | ADR-0014 (TBD) |
 
 Linker workflow:
-1. Mở `.khi` → đọc ABI metadata section đầu tiên (cheap).
-2. Resolve deps (đọc ABI section của các `.khi` phụ thuộc).
-3. Version check per ADR-0013 → refuse hoặc accept.
-4. Khi accept: load `.triv` code section vào VM, build cross-package symbol table.
-5. Lúc runtime/JIT: witness table dispatch (ADR-0012) cho generic cross-pkg calls.
+1. Open `.khi` → read ABI metadata section first (cheap).
+2. Resolve deps (read ABI sections of dependent `.khi` files).
+3. Version check per ADR-0013 → refuse or accept.
+4. Upon acceptance: load `.triv` code section into the VM, build cross-package symbol table.
+5. At runtime/JIT: witness table dispatch (ADR-0012) for generic cross-pkg calls.
 
-## Hệ quả
+## Consequences
 
-### Đối với v0.5 (CAS)
+### For v0.5 (CAS)
 
-- `iface_hash` đã hash-stable → CAS resolver dùng được ngay.
-- Hai cấp `iface_hash` (ABI) + `impl_hash` (toàn nội dung) đã định nghĩa, không cần redesign.
+- `iface_hash` is hash-stable → ready for use by the CAS resolver.
+- Two-tier hashing (`iface_hash` (ABI) + `impl_hash` (full content)) is defined, avoiding future redesign.
 
-### Đối với v0.6 (Capability)
+### For v0.6 (Capability)
 
-- Capability claims slot đã reserved trong format. v0.6 chỉ cần populate, không bump `abi_version`.
+- Capability claims slot is reserved in the format. v0.6 only needs to populate it, without bumping `abi_version`.
 
-### Đối với linker performance
+### For linker performance
 
-- Linker đọc metadata ~1-10 KB vs full `.khi` ~100KB-1MB. Cheap version check trước khi load code.
-- Refuse-to-link diagnostic show diff metadata, không cần show IR.
+- Linker reads ~1-10 KB of metadata vs. a full ~100KB-1MB `.khi`. Enables cheap version checking before loading code.
+- Refuse-to-link diagnostics can show metadata differences without needing to show IR.
 
-### Đối với generic ABI stability
+### For generic ABI stability
 
-- Generic type slot encode bằng index (varint) thay vì monomorphized type → cross-pkg call site giữ nguyên metadata bytes khi caller đổi instantiation.
-- Witness table layout (ADR-0012) tham chiếu type table index → stable across recompiles.
+- Generic type slots are encoded via index (varint) rather than monomorphized types → cross-pkg call sites maintain constant metadata bytes even when the caller changes instantiation.
+- Witness table layout (ADR-0012) references type table indices → stable across recompiles.
 
-## Không làm
+## Alternatives Considered
 
-- **Không text format đi kèm**: binary only. Tool `triet pack inspect` dump human-readable nhưng không phải canonical.
-- **Không version field cho từng export riêng**: package-level versioning đủ. Granular versioning là Rust SemVer hell tránh được.
-- **Không capability runtime enforcement ở v0.4**: chỉ slot reserved. Refuse-to-link dựa trên capability mismatch chỉ áp dụng từ v0.6.
-- **Không cross-arch ABI** (32-bit vs 64-bit): IR là arch-independent (per ADR-0007 §4), ABI metadata kế thừa.
-- **Không phát minh hash scheme**: BLAKE3 — chuẩn industry, không patent, fast, 32-byte output.
+- **No accompanying text format**: binary only. The `triet pack inspect` tool dumps human-readable output, but it is not the canonical format.
+- **No per-export version field**: package-level versioning is sufficient. Granular versioning is avoided to prevent "Rust SemVer hell."
+- **No capability runtime enforcement in v0.4**: only a reserved slot. Refuse-to-link based on capability mismatch applies from v0.6 onwards.
+- **No cross-arch ABI** (32-bit vs. 64-bit): IR is architecture-independent (per ADR-0007 §4); ABI metadata inherits this.
+- **No custom hash scheme**: BLAKE3 — industry standard, patent-free, fast, 32-byte output.
 
 ## Prior art
 
-- **Swift `.swiftmodule` + `.swiftinterface`** — chính. Tách interface (text) và metadata (binary). Triết đi binary thuần để hash stability.
-- **Mojo `.mojopkg`** — container format với metadata. Triết design tương tự nhưng đơn giản hơn (không có Mojo-specific tracing).
-- **.NET assembly metadata tables** — same idea, nhiều entry kinds hơn. Triết minimal subset.
-- **Java `.class` files** — không phải prior art tốt; Java mix bytecode + ABI vào một format → khó tách concern.
+- **Swift `.swiftmodule` + `.swiftinterface`** — primary example. Separates interface (text) and metadata (binary). Triet uses pure binary for hash stability.
+- **Mojo `.mojopkg`** — container format with metadata. Triet's design is similar but simpler (no Mojo-specific tracing).
+- **.NET assembly metadata tables** — same concept, but with more entry kinds. Triet implements a minimal subset.
+- **Java `.class` files** — not a good prior art; Java mixes bytecode and ABI into a single format, making separation of concerns difficult.
 
-## Tham chiếu
+## References
 
-- [VISION §3.3 — Stable ABI: Interface-First Design](../../VISION.md)
-- [SPEC §10 — Memory model + ABI hooks (TBD ở v0.4)](../../SPEC.md)
+- [VISION §3.3 — Stable ABI: Interface-forst Design](../../VISION.md)
+- [SPEC §10 — Memory model + ABI hooks (TBD in v0.4)](../../SPEC.md)
 - [ADR-0007 — IR design](0007-ir-design.md)
 - [ADR-0008 — .triv binary format](0008-triv-binary-format.md)
 - [ADR-0012 — Witness table dispatch](0012-witness-table-dispatch.md) (companion)

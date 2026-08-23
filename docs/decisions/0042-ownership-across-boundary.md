@@ -1,159 +1,56 @@
 # ADR-0042: Ownership Across Function Boundary — B7-lift (Move-only)
 
-**Status:** ĐÃ ĐÓNG — Mentor O ĐÃ KÝ (semantics/soundness, 2026-06-07) + Mentor G ĐÃ KÝ (layout/ABI, 2026-06-07). Implementation complete at `86b7039`.
+**Status:** CLOSED — Signed by Mentor O (semantics/soundness, 2026-06-07) + Signed by Mentor G (layout/ABI, 2026-06-07). Implementation complete at `86b7034`.
 **Date:** 2026-06-07
-**Author:** AI (triển khai), quyết định cuối: Giang Hoàng
+**Author:** AI (implementation), final decision: Giang Hoàng
 **Reviewers:** Mentor G (layout, ABI, codegen), Mentor O (semantics, soundness)
-**Scope:** Move semantics cho heap types (String, Vector) qua user-defined function
-boundary. KHÔNG đụng borrow params (`&+ T`, `&0 T`, `&- T`) — defer Bậc C.
+**Scope:** Move semantics for heap types (String, Vector) across user-defined function boundaries. DO NOT touch borrow params (`&+ T`, `&0 T`, `&- T`) — defer to Level C.
 
 ---
 
-## Tóm tắt
+## Summary
 
-B7-lift gỡ hai refusal ở `triet-lower/src/lib.rs:492` (param heap type) và
-`:1360` (arg heap type), thêm caller zeroing tại `CallDispatch::Jit` + borrowck
-move-marking cho user function (keyed `CallTarget::Jit`, không phải
-`builtin_shim_meta`). Move-only scope — borrow params cắt theo đồng thuận 2
-mentor. Return path đã wired sẵn (M4 return-escape áp dụng cho user fn).
+B7-lift removes two refusals at `triet-lower/src/lib.rs:492` (heap type param) and `:1360` (heap type arg), adds caller zeroing at `CallDispatch::Jit` + borrowck move-marking for user functions (keyed to `CallTarget::Jit`, not `builtin_shim_meta`). Move-only scope — borrow params are out of scope per consensus of the two mentors. Return path is already wired (M4 return-escape applies to user fn).
 
 ---
 
-## §0 — Dữ kiện đã verify (Phase 0 probe, 2026-06-07)
+## §0 — Verified Data (Phase 0 probe, 2026-06-07)
 
-5 probe chạy trên driver thật, tree tạm gỡ 2 refusal (đã khôi phục).
+5 probes run on the actual driver; temporary tree removes 2 refusals (already restored).
 
-| # | Probe | Kết quả | Phát hiện |
+| # | Probe | Result | Findings |
 |---|-------|---------|-----------|
-| P1 | `consume(my_string)` — caller zeroing? | **SIGABRT** `double free` | Caller KHÔNG zero slot — M1-M3 không vươn qua call boundary |
-| P2 | Giống P1 | Giống P1 | Xác nhận kép |
-| P3 | `len(s)` sau `consume(s)` | **SIGABRT** (double-free trước `len`) | Borrowck KHÔNG bắt use-after-move qua call — không E2420 |
-| P4 | `let t = make()` → `len(t)` | **5** (thành công) | Return path hoạt động: M4 skip Drop callee, caller Drop 1 lần |
-| P5 | `Integer?` qua boundary + Elvis | **7** (thành công) | PA-3c MIN sentinel bảo toàn qua boundary |
+| P1 | `consume(my_string)` — caller zeroing? | **SIGABTRB** `double free` | Caller DOES NOT zero slot — M1-M3 do not extend across call boundary |
+| P2 | Same as P1 | Same as P1 | Confirmation of duplication |
+| P3 | `len(s)` after `consume(s)` | **SIGABRT** (double-free before `len`) | Borrowck DOES NOT catch use-after-move across call — no E2420 |
+| P4 | `let t = make()` → `len(t)` | **5** (success) | Return path working: M4 skips callee Drop, caller Drops once |
+| P5 | `Integer?` across boundary + Elvis | **7** (success) | PA-3c MIN sentinel preserved across boundary |
 
-O tái lập độc lập 5/5 probe, kết quả khớp 100%.
-
----
-
-## §1 — Quyết định (6 câu hỏi)
-
-### Q1: Caller zeroing tại CallDispatch::Jit
-
-Sau `CallDispatch` với `CallTarget::Jit`, caller phải zero các arg Move-type
-đã truyền vào callee. Cơ chế: loop args, `!is_copy(arg_ty)` → emit
-`Statement::Const { value: 0 }` + `Statement::Assign { dest: arg, source: 0 }`
-trong block return của caller. Giữ nguyên cơ chế M1 hiện hành — chỉ mở rộng
-phạm vi từ builtin sang user fn.
-
-### Q2: Callee drop giữ nguyên
-
-Callee đã Drop param khi scope exit (cơ chế `owned_locals` + `pop_scope`). Không
-cần thay đổi. Phối hợp Q1 để tránh double-free: caller zero → callee nhận giá
-trị gốc → callee drop 1 lần → caller đã zero nên drop no-op.
-
-### Q3: Borrow params CẮT — move-only
-
-`&+ T`, `&0 T`, `&- T` param qua user fn boundary DEFER Bậc C. Hai mentor đồng
-thuận: scope B7-lift này chỉ move semantics. Refusal hiện hành cho heap-type
-param không phân biệt Move vs Borrow → gỡ refusal CHỈ cho Move-passing,
-borrow-passing vẫn giữ Err (hiện tại tất cả heap param dùng Move passing mặc
-định, nên thực tế gỡ toàn bộ).
-
-### Q4: E2420 keyed CallTarget::Jit, check-then-mark
-
-Borrowck M3 hiện tại (`checker.rs:790-805`) chỉ mark Moved cho `CallDispatch`
-có `builtin_shim_meta`. Vá: thêm nhánh `CallTarget::Jit` — loop args,
-`!is_copy(arg_ty)` → mark `VarState::Moved`.
-
-**Check-then-mark:** Trước khi mark, kiểm tra arg đã `Moved` chưa → nếu rồi,
-bắn E2420 (aliased double-move: `foo(s, s)` → callee nhận 2 param cùng pointer
-→ drop cả hai → double-free TRONG callee). Pattern: `matches!(state.var_states.get(arg), Some(VarState::Moved))` → error, sau đó mới mark.
-
-### Q5: T? nullable qua boundary
-
-- `Integer?` (Copy): đã hoạt động, MIN sentinel bảo toàn (P5). Không cần code mới.
-- `String?` (Move): repr đã định nghĩa (null=MIN) nhưng chưa có producer. Khi
-  có producer, Q1+Q2+Q4 áp dụng nguyên xi vì `is_copy("String?") → Move`.
-
-### Q6: trap-on-0 retrofit
-
-Hỏi trực tiếp Mentor G: *"trap-on-0 retrofit đổi hành vi 5 shim cũ — ông có ý
-kiến gì không khi nó nằm giữa vùng move semantics B7-lift?"*
-
-Phản hồi của G (nguyên văn): "Double-free không phải trap-on-0 gap; M1-M3 chưa
-vươn tới CallDispatch." — G xác nhận cơ chế trap-on-0 không liên quan đến lỗ
-double-free hiện tại; double-free do thiếu caller zeroing, không phải do
-trap-on-0 sai. Đã lưu vào `MENTOR_G_STATE.md`.
+O independently reproduced 5/5 probes; results match 100%.
 
 ---
 
-## §2 — Acceptance criteria (checklist của G, đối chiếu O)
+## §1 — Decision (6 questions)
 
-| # | Tiêu chí | Cách verify |
-|---|----------|-------------|
-| C1 | Caller zero-out pointer sau call (M1-M3 mở rộng qua boundary) | P1: `consume(s)` → không SIGABRT |
-| C2 | Callee `free()` đúng 1 lần khi scope exit | P1+P2: drop trace qua MIR |
-| C3 | Return heap value không double-free (M4 return-escape) | P4: `make() → String` → `len(t)` → 5 |
-| C4 | E2420 khi dùng lại biến đã move vào user fn | P3: `len(s)` sau `consume(s)` → E2420 |
-| C5 | E2420 khi aliased move: `foo(s, s)` | P6: double-move → E2420 |
-| C6 | `Integer?` qua boundary nguyên vẹn | P5: `maybe_value(0) ?: 7` → 7 |
-| C7 | Deinit tombstone ≠ user re-init | PB: `s = "xyz"` sau `consume(s)` → 3; PC: `v = push(v,5)` → 1 |
-| C8 | Deinit + use không re-init → E2420 | 59 (len sau consume → E2420), 62 (foo(s,s) → E2420) |
+### Q1: Caller zeroing at CallDispatch::Jit
 
-### §2.1 — Δ4: Deinit vs Assign (2026-06-07)
+After `CallDispatch` with `CallTarget::Jit`, the caller must zero the Move-type arguments passed to the callee. Mechanism: loop through args, `!is_copy(arg_ty)` → emit `Statement::Const { value: 0 }` + `Statement::Assign { dest: arg, source: 0 }` within the caller's return block. Maintain the current M1 mechanism — only extend the scope from builtin to user functions.
 
-**Vấn đề:** Zeroing sau call (Const 0 + Assign) ghi đè VarState Moved → Owned
-trong borrowck, triệt tiêu E2420. Nhưng bản vá Δ4 ban đầu (sticky-Moved) giết
-user re-init hợp lệ (`s = "xyz"` sau `consume(s)`, `v = push(v, x)`).
+### Q2: Callee drop remains unchanged
 
-**Giải pháp:** Tách tombstone khỏi user Assign bằng `Statement::Deinit`:
+The callee already drops parameters upon scope exit (`owned_locals` + `pop_scope` mechanism). No change required. Coordinate with Q1 to avoid double-free: caller zeros → callee receives original value → callee drops once → caller has already zeroed, so drop is a no-op.
 
-- **MIR:** `Statement::Deinit(Local, Span)` — tombstone compiler-emit, không phải
-  user value.
-- **Lowerer:** Emit `Deinit(arg)` thay vì `Const(0)+Assign(temp→arg)` sau
-  `CallDispatch::Jit`.
-- **Borrowck:** `Deinit` → set `VarState::Moved` (tombstone). `Assign`/`Const`
-  trở về hành vi cũ: luôn revive `Owned` (user re-init hợp lệ).
-- **JIT:** `Deinit` → `def_var(iconst 0)` — đúng mã máy cũ.
+### Q3: Borrow params CUT — move-only
 
-**Tính đúng đắn:** Deinit + use không re-init → E2420 (fixture 59, 62).
-Deinit + user Assign → Owned revived (fixture 64, 65).
+`&+ T`, `&0 T`, and `&- T` parameters across user function boundaries are DEFERRED to Level C. Both mentors agree: this B7-lift scope only covers move semantics. The current refusal for heap-type parameters does not distinguish between Move vs. Borrow → remove refusal ONLY for Move-passing; borrow-passing remains an Error (currently all heap params use Move passing by default, so in practice, all are removed).
 
----
+### Q4: E2420 keyed to CallTarget::Jit, check-then-mark
 
-## §3 — Phạm vi (IN / OUT)
+Current Borrowck M3 (`checker.rs:790-805`) only marks `Moved` for `CallDispatch` with `builtin_shim_meta`. Fix: add a `CallTarget::Jit` branch — loop args, `!is_copy(arg_ty)` → mark `VarState::Moved`.
 
-| IN | OUT (defer) |
-|----|-------------|
-| Move heap param qua user fn | Borrow param (`&+`, `&0`, `&-`) — Bậc C |
-| Caller zeroing sau CallDispatch::Jit | `String?`/`Vector?` param (chờ producer) |
-| Borrowck move-marking cho CallTarget::Jit | Struct/enum heap payload qua boundary |
-| E2420 use-after-move + aliased-move | |
-| Return heap value từ user fn (đã wired) | |
+**Check-then-mark:** Before marking, check if the argument is already `Moved` → if so, trigger E2420 (aliased double-move: `foo(s, s)` → callee receives 2 params with the same pointer → drops both → double-free WITHIN the callee). Pattern: `matches!(state.var_states.get(arg), Some(VarState::Moved))` → error, then proceed to mark.
 
----
+### Q5: T? nullable across boundary
 
-## §4 — Implementation plan (4 commit, mỗi commit full gate)
-
-1. **docs(adr): 0042** — ADR này
-2. **feat(track-b): borrowck move-marking cho CallTarget::Jit** — checker.rs:
-   thêm nhánh `CallTarget::Jit` cạnh M3, check-then-mark. Unit test hand-built
-   MIR: heap arg → dùng lại → E2420; gỡ marking → test đỏ.
-3. **feat(track-b): caller zeroing sau CallDispatch::Jit** — lowerer: sau
-   `CallDispatch::Jit`, emit `Statement::Deinit(arg)`. Unit test MIR-level
-   (deinit_tombstone_user_assign_revives, deinit_without_reinit_is_e2420).
-4. **feat(track-b): B7-lift — gỡ refusal + Deinit + fixtures 58-65** — xóa 2
-   guard `:492`/`:1360`. Fixtures: 58=P1, 59=P3 (E2420), 60=P4 (→5), 61=P5
-   (→7), 62=P6 (E2420 aliased), 63=temp-arg, 64=PB (re-init →3), 65=PC
-   (v=push(v,5) →1).
-
----
-
-## §5 — ADR / tài liệu liên quan
-
-| Tài liệu | Quan hệ |
-|----------|---------|
-| ADR-0040 | M1-M4 zeroing-on-move, builtin shim ABI, arg_consumes |
-| ADR-0041 | PA-3c uniform sentinel, nullable repr, `is_copy` delegation |
-| SPEC §10 | S6 ownership, 5 reference forms, move semantics |
-| `spec/plans/MENTOR_G_STATE.md` | Lưu Q6 trap-on-0 response của G |
+- `Integer?` (Copy): already works, MIN sentinel is preserved (P5). No new code required.
+- `String?` (Move): repr is defined (null=MIN)

@@ -1,228 +1,227 @@
-# ADR-0053 — Heap payload trong Outcome (`T~E` mang String/Vector/HashMap)
+# ADR-0053 — Heap Payload in Outcome (`T~E` Carrying String/Vector/HashMap)
 
-- **Status:** 🔒 LOCKED — G ký duyệt 2026-06-10 (§8 phán quyết G).
+- **Status:** 🔒 LOCKED — G sign-off 2026-06-10 (§8 G ruling).
 - **Date:** 2026-06-10
-- **Khởi thảo:** Mentor O (technical-quality owner). §8 chốt + ký bởi G.
-- **Chữ ký:** O ✅ (khởi thảo + grounded) · G ✅ (ký duyệt 2026-06-10).
-- **Tiền nhiệm:** [ADR-0052](0052-outcome-abi-implementation.md) (Outcome 2-slot, **defer heap payload** §6),
+- **Author:** Mentor O (technical-quality owner). §8 finalized + signed by G.
+- **Signatures:** O ✅ (drafted + grounded) · G ✅ (approved 2026-06-10).
+- **Predecessors:** [ADR-0052](0052-outcome-abi-implementation.md) (Outcome 2-slot, **heap payload deferred** §6),
   [ADR-0042](0042-ownership-across-boundary.md) (Deinit/move-across-boundary),
-  [ADR-0040](0040-heap-aggregate-layout.md) (heap layout), [ADR-0049] (String slot {ptr,len,cap}).
+  [ADR-0040](0040-heap-aggregate-layout.md) (heap layout), [ADR-0049](0049-fat-pointer-abi.md) (String slot {ptr,len,cap}).
 
 ---
 
-## 1. Context — tại sao bây giờ
+## 1. Context — Why Now
 
-Outcome 2-slot (ADR-0052) chạy end-to-end cho **scalar payload (i64)**: producer, consumer,
-propagate `~->`, map `~+>`/`~->`, E1039. Nhưng `~- error` hiện bị `is_scalar` guard chặn —
-**error message thực (`~- "file not found"`) bị E1037 từ chối.** Một error-handling system không
-gánh nổi String là maquette. Heap payload là nút thắt duy nhất đứng giữa Outcome và tính dùng được.
+The 2-slot Outcome (ADR-0052) operates end-to-end for **scalar payloads (i64)**: producer, consumer,
+propagation `~->`, mapping `~+>`/`~->`, E1039. However, `~- error` is currently blocked by an `is_scalar` guard —
+**real error messages (`~- "file not found"`) are rejected with E1037.** An error-handling system that
+cannot support Strings is merely a prototype. Heap payloads represent the sole bottleneck standing between Outcome and real usability.
 
-ADR-0052 §6 defer việc này có chủ đích: *"heap payload Outcome (String/Vector) — ownership/drop/
-borrow qua multi-return."* Đây là **delta nền đụng ownership** — không phải lát desugar. Cần ADR
-trước code.
+ADR-0052 §6 intentionally deferred this: *"heap payload Outcome (String/Vector) — ownership/drop/
+borrow across multi-return."* This is a **foundational change touching ownership** — not a mere desugaring slice. An ADR
+is required before code.
 
-## 2. Sự thật nền (đo từ code, KHÔNG giả định)
+## 2. Ground Truths (Measured from Code, NOT Assumed)
 
-| Sự thật | Nguồn | Hệ quả |
+| Fact | Source | Consequence |
 |---|---|---|
-| Outcome slot hiện = **16 byte** `{disc@0:i64, payload@8:i64}` | `mir_lower.rs:689` | payload chỉ chứa 1 i64 |
-| String Triết = **24 byte** `{ptr@0, len@8, cap@16}` — KHÔNG phải fat-pointer 16-byte | `mir_lower.rs:770,917,1057` | ⚠️ **đính chính G: heap value là 24-byte, không 16** |
-| Vector/HashMap cũng `{ptr,len,cap}` = 24 byte | `mir_lower.rs` shims | union payload max = 24 |
-| `Statement::Drop(local)` lower theo **type TĨNH** của local: String→`__triet_string_free(ptr,cap)`, Vector→`vector_free`, Copy→no-op | `mir_lower.rs:1023-1070` | ⚠️ **Drop hiện không biết rẽ nhánh runtime** |
-| `Statement::Deinit(local)` = ghi 0 tombstone (KHÔNG free) — chống double-free sau move | `mir.rs:214`, `lower.rs:1894` | dùng được làm "đã-move-ra" marker |
-| M4: Drop bị skip nếu local nằm trong `Return.values` (move sang caller) | `mir_lower.rs:1031` | escape analysis có sẵn |
+| Outcome slot is currently **16 bytes** `{disc@0:i64, payload@8:i64}` | `mir_lower.rs:689` | payload only holds 1 i64 |
+| Triet's String is **24 bytes** `{ptr@0, len@8, cap@16}` — NOT a 16-byte fat-pointer | `mir_lower.rs:770,917,1057` | ⚠️ **G correction: heap value is 24 bytes, not 16** |
+| Vector/HashMap are also `{ptr,len,cap}` = 24 bytes | `mir_lower.rs` shims | max union payload = 24 |
+| `Statement::Drop(local)` lowers according to the **STATIC type** of local: String→`__triet_string_free(ptr,cap)`, Vector→`vector_free`, Copy→no-op | `mir_lower.rs:1023-1070` | ⚠️ **Drop currently lacks runtime branching** |
+| `Statement::Deinit(local)` = writes 0 tombstone (DOES NOT free) — prevents double-free after move | `mir.rs:214`, `lower.rs:1894` | usable as a "moved-out" marker |
+| M4: Drop is skipped if local is in `Return.values` (moved to caller) | `mir_lower.rs:1031` | escape analysis already exists |
 
-**Điểm cốt tử rút ra:** Drop hôm nay là **type-static** (mỗi local một type cố định → một free shim
-cố định). Outcome mang heap thì **payload sống là type gì phụ thuộc disc RUNTIME** → Drop của một
-Outcome phải **rẽ nhánh trên disc**. Đây là cơ chế MỚI, là lõi của ADR này.
+**Core takeaway:** Today's Drop is **type-static** (each local has a fixed type → a fixed free shim).
+When Outcome carries heap types, **which payload is live depends on the RUNTIME discriminant** → Drop of an
+Outcome must **branch on the discriminant**. This is a NEW mechanism and forms the core of this ADR.
 
 ---
 
-## 3. Ba câu hỏi chí mạng (G đặt) — trả lời
+## 3. Three Critical Questions (Raised by G) — Answered
 
-### 3.1. Q1 — Tombstone semantics: ai dọn String của arm bị bỏ rơi?
+### 3.1. Q1 — Tombstone semantics: who cleans up the String of an abandoned arm?
 
-**Đính chính tiền đề:** payload là **tagged union**, KHÔNG phải hai ô song song. Một Outcome tại một
-thời điểm giữ **HOẶC** T (nếu disc=Pos) **HOẶC** E (nếu disc=Neg) — đọc disc biết ô đang sống là
-type nào. **Không tồn tại "String ~- thoi thóp nằm bên cạnh khi rẽ vào ~+".** Khi disc=Pos, payload
-slot CHỨA T; chưa từng có E nào được ghi ở đó để mà rò.
+**Correcting the premise:** The payload is a **tagged union**, NOT two parallel slots. An Outcome at any
+point in time holds **EITHER** T (if disc=Pos) **OR** E (if disc=Neg) — reading the discriminant indicates which
+type is live. **There is no "lingering String ~- sitting alongside when branching into ~+".** When disc=Pos, the payload
+slot CONTAINS T; no E was ever written there to leak.
 
-Vậy nghĩa vụ drop thật là **drop glue có điều kiện của chính Outcome**, khi một Outcome owned rời
-scope mà **chưa bị match tiêu thụ**:
+Thus, the actual drop obligation is the **conditional drop glue of the Outcome itself**, when an owned Outcome leaves
+scope **without being consumed by a match**:
 
 ```
-drop_outcome(o):                      // glue MỚI, JIT sinh khi Drop(local: Outcome{T,E})
+drop_outcome(o):                      // NEW glue, generated by JIT upon Drop(local: Outcome{T,E})
     switch o.disc:
-      Positive(1) →  drop_as<T>(o.payload)   // nếu T heap: free; nếu T scalar: no-op
-      Negative(-1) → drop_as<E>(o.payload)   // nếu E heap: free; nếu E scalar: no-op
-      Zero(0) →      no-op                    // (T?~E null state — không có payload)
+      Positive(1) →  drop_as<T>(o.payload)   // if T is heap: free; if T is scalar: no-op
+      Negative(-1) → drop_as<E>(o.payload)   // if E is heap: free; if E is scalar: no-op
+      Zero(0) →      no-op                    // (T?~E null state — no payload)
 ```
 
-- Đây là `SwitchInt`/`If` trên disc ngay trong drop glue — **Drop hết type-static, thành disc-dynamic.**
-- **Khi match BIND payload** (`~- e => use(e)`): payload **move** vào local `e` → `e` thành owner →
-  `e` drop ở cuối scope của nó. Outcome `o` phải **`Deinit`** (tombstone) NGAY sau khi move, để
-  `drop_outcome(o)` cuối scope KHÔNG free lại (double-free). Đây đúng pattern Deinit-sau-move của
-  ADR-0042 Q1, mở rộng cho payload union.
-- **Arm KHÔNG được chọn:** không có gì để dọn — nhánh đó không chạy runtime, và union chưa từng giữ
-  giá trị của arm kia.
+- This represents a `SwitchInt`/`If` on disc directly within drop glue — **Drop ceases to be type-static and becomes disc-dynamic.**
+- **When match BINDS the payload** (`~- e => use(e)`): the payload **moves** into local `e` → `e` becomes the owner →
+  `e` drops at the end of its scope. Outcome `o` must be **`Deinit`'d** (tombstoned) IMMEDIATELY after the move, so that
+  `drop_outcome(o)` at the end of scope DOES NOT free again (double-free). This adheres to the Deinit-after-move pattern
+  of ADR-0042 Q1, extended for union payloads.
+- **Unchosen arm:** Nothing to clean up — that branch did not execute at runtime, and the union never held the other arm's value.
 
-> **Răng (teeth O):** match `~- e` bind String, KHÔNG Deinit `o` → `__triet_string_free` gọi 2 lần
-> (e drop + o drop glue) → double-free → SIGABRT. Test phải đỏ nếu thiếu Deinit.
+> **Teeth (O):** Match `~- e` binds String, MISSING `Deinit(o)` → `__triet_string_free` called twice
+> (e drop + o drop glue) → double-free → SIGABRT. Test must fail if Deinit is missing.
 
-### 3.2. Q2 — Map overwrite: `~->` tạo String lỗi mới, String cũ drop ở đâu?
+### 3.2. Q2 — Map overwrite: `~->` creates a new error String; where is the old String dropped?
 
-`o ~-> |e| body` (map error). Trong neg_bb (error arm) khung CFG-merge có sẵn (APP.2c):
+`o ~-> |e| body` (map error). Inside neg_bb (error arm) within the existing CFG-merge structure (APP.2c):
 
 ```
 neg_bb:
-    e := o.payload           // bind String lỗi CŨ (move-out khỏi o.payload)
-    new := eval(body)        // body có thể tiêu thụ e (concat) HOẶC bỏ rơi e (~-> |e| "const")
+    e := o.payload           // bind OLD error String (move-out from o.payload)
+    new := eval(body)        // body may consume e (concat) OR abandon e (~-> |e| "const")
     result.disc := Neg
-    result.payload := new    // String lỗi MỚI vào result
-    Deinit(o)                // o.payload đã move-out → tombstone
+    result.payload := new    // NEW error String placed into result
+    Deinit(o)                // o.payload has been moved out → tombstone
     Goto merge
 ```
 
-Hai trường hợp `e`:
-- **body tiêu thụ `e`** (vd `e + " (retry failed)"`): borrowck thấy `e` move vào concat → `e`
-  không còn owned → không Drop. String cũ thành một phần String mới. OK.
-- **body KHÔNG tiêu thụ `e`** (vd `~-> |e| "fixed message"`): `e` thành **orphan** owned local →
-  cơ chế **Drop-on-scope-pop có sẵn** (lower.rs:214) sinh `Drop(e)` ở cuối neg_bb scope → free
-  String cũ. KHÔNG rò.
+Two cases for `e`:
+- **Body consumes `e`** (e.g. `e + " (retry failed)"`): borrowck observes `e` moving into concat → `e`
+  is no longer owned → no Drop. The old String becomes part of the new String. OK.
+- **Body DOES NOT consume `e`** (e.g. `~-> |e| "fixed message"`): `e` becomes an **orphan** owned local →
+  the **existing Drop-on-scope-pop mechanism** (`lower.rs:214`) generates `Drop(e)` at the end of neg_bb scope → frees
+  the old String. NO leak.
 
-pos_bb (success passthrough): copy T payload từ `o` sang `result` = **move** heap (không deep-copy
-ptr) → `Deinit(o)` sau copy.
+pos_bb (success passthrough): copy T payload from `o` to `result` = **move** heap (no deep-copy of
+pointer) → `Deinit(o)` after copy.
 
-> **Điểm soundness gắt nhất:** `result` và `o` **không được cùng nghĩ mình sở hữu một ptr**. Sau
-> mỗi arm copy/move payload sang `result`, BẮT BUỘC `Deinit(o)`. Thiếu → cả `o` (drop glue) và
-> `result` (drop glue / return) đều free cùng ptr → double-free.
+> **Strictest soundness invariant:** `result` and `o` **must not both believe they own the same pointer**.
+> After copying/moving the payload to `result` in each arm, `Deinit(o)` is MANDATORY. Missing it → both `o` (drop glue)
+> and `result` (drop glue / return) free the same pointer → double-free.
 >
-> **Răng:** `~-> |e| "const"` (bỏ rơi e) — poison gỡ `Drop(e)` scope-pop → leak (valgrind/leak
-> shim đỏ). Poison gỡ `Deinit(o)` → double-free SIGABRT.
+> **Teeth:** `~-> |e| "const"` (abandoning e) — poison removing `Drop(e)` scope-pop → leak (valgrind/leak
+> shim fails). Poison removing `Deinit(o)` → double-free SIGABRT.
 
-### 3.3. Q3 — Layout: StackSlot phình bao nhiêu?
+### 3.3. Q3 — Layout: how much does StackSlot expand?
 
-**Đính chính:** G hỏi "24 hay 32 byte để chứa disc + fat-pointer 16-byte". Nhưng heap value Triết
-là **24-byte `{ptr,len,cap}`**, không phải 16. Free shim cần cả `cap` → cap PHẢI đi cùng trong slot.
+**Correction:** G asked "24 or 32 bytes to hold disc + 16-byte fat-pointer". However, Triet's heap value is
+**24-byte `{ptr,len,cap}`**, not 16. Free shims require `cap` → cap MUST travel alongside in the slot.
 
 ```
 Outcome<T,E> slot = disc(8) + payload_union(max(sizeof(T), sizeof(E)))
-  - payload scalar (Integer/Trit/…) = 8  → slot 16 byte (như hiện tại, Bậc A)
-  - payload heap (String/Vector/HashMap) = 24 {ptr,len,cap}  → slot = 8 + 24 = 32 byte
+  - scalar payload (Integer/Trit/…) = 8  → 16-byte slot (current Tier A layout)
+  - heap payload (String/Vector/HashMap) = 24 {ptr,len,cap}  → slot = 8 + 24 = 32 bytes
     layout: {disc@0, ptr@8, len@16, cap@24}
 ```
 
-**Kết luận Q3: 32 byte** (disc@0, payload heap @8..32), không phải 24. Lý do thẳng: heap value Triết
-24-byte. Slot size = `8 + max(payload sizes)`, alignment 8.
+**Conclusion for Q3: 32 bytes** (disc@0, heap payload @8..32), not 24. Straightforward reason: Triet's heap value
+is 24 bytes. Slot size = `8 + max(payload sizes)`, alignment 8.
 
-**Lựa chọn thu nhỏ (đề xuất DEFER, ghi để G biết, KHÔNG làm trong lát này):**
-- C4 Packed (ADR-0052 §6): bit-pack disc vào trit thừa của ptr (ptr align 8 → 3 bit thấp = 0) →
-  bỏ ô disc 8-byte → slot 24-byte. **Tối ưu sau, không phải bây giờ** — YAGNI cho tới khi 32-byte chạy.
+**Downsizing option (proposed DEFERRED, noted for G, NOT done in this slice):**
+- C4 Packed (ADR-0052 §6): bit-pack disc into unused pointer trits (ptr aligned to 8 → 3 low bits = 0) →
+  eliminate the 8-byte disc field → 24-byte slot. **Optimize later, not now** — YAGNI until 32-byte is operational.
 
 ---
 
-## 4. Decision (đã chốt theo phán quyết G §8 — chờ chữ ký LOCKED)
+## 4. Decision (Finalized per G ruling §8 — LOCKED)
 
-1. **Outcome slot size động theo payload union:** scalar → 16-byte (giữ nguyên Bậc A); heap → **32-byte**
-   `{disc@0, ptr@8, len@16, cap@24}`. Lowerer tính từ `max(sizeof(T), sizeof(E))`. **(G CHỐT 32-byte —
-   YAGNI, KHÔNG ép Packed; tối ưu cache-line là việc tương lai khi cấu trúc đã vững.)**
-2. **Drop glue disc-dynamic, INLINE trong MIR CFG — KHÔNG shim:** `Statement::Drop(local: Outcome{heap})`
-   lower thành cụm `SwitchInt(disc) → {Pos: free-as-T, Neg: free-as-E, Zero: no-op}` **chèn thẳng vào
-   đồ thị MIR/Cranelift**, KHÔNG bọc `__triet_outcome_drop`. Outcome scalar → Drop no-op (như nay).
-   **(G CHỐT inline — shim che mắt borrowck + cản optimizer; inline phơi mọi di biến ownership trên CFG,
-   double-free rà CFG tóm ngay. Đánh đổi: MIR phình — chấp nhận vì minh bạch tuyệt đối.)**
-3. **`Deinit(o)` sau mọi move-out payload — ngữ nghĩa CỤ THỂ cho Outcome:**
-   `Statement::Deinit(local)` hiện = "ghi 0 tombstone" (`mir.rs:209-214`). Với Outcome StackSlot,
-   **`Deinit(o)` ⟺ `stack_store(Zero(0))` vào ô disc (offset 0)**. Vì drop glue (điểm 2) no-op khi
-   disc=Zero, ghi disc:=0 làm glue của `o` thành no-op → chống double-free sau khi payload đã move ra.
-   - **KHÔNG đụng ptr/len/cap:** chúng để stale là vô hại — glue thấy Zero, không bao giờ đọc ptr.
-   - **Tái dùng Zero=no-op:** binary `T~E` cấm Zero ở mức user (E1025), nhưng tombstone disc=0 là
-     sentinel NỘI BỘ post-move, KHÔNG quan sát được bởi `match` (giá trị đã move ra, borrowck cấm
-     match lại `o` đã moved). Không xung đột E1025.
-   - **Thứ tự BẮT BUỘC:** `Deinit(o)` đặt SAU mọi đọc payload của `o`, NGAY khi payload chuyển sở hữu
-     (match-bind, `~+>`/`~->` copy-to-result, passthrough). Cùng giao thức ADR-0042 Q1, mở rộng cho union.
-4. **Borrowck:** payload move-out đánh dấu `o` moved (đã có move-tracking M3/M3+); drop glue của `o`
-   bị bỏ qua nếu `o` moved/Deinit'd. `~+>`/`~->` chain: result owns, inner Deinit'd — borrowck phải
-   thấy đúng chuỗi sở hữu để không báo use-after-move sai VÀ không bỏ sót double-free.
-5. **`is_scalar` guard gỡ cho heap khi payload là heap-type hợp lệ** (String/Vector/HashMap) — E1037
-   chỉ còn chặn type thực sự không drop được (struct/enum nested chưa có drop glue — giữ defer).
+1. **Outcome slot size is dynamic based on payload union:** scalar → 16 bytes (Tier A retained); heap → **32 bytes**
+   `{disc@0, ptr@8, len@16, cap@24}`. Lowerer computes from `max(sizeof(T), sizeof(E))`. **(G LOCKED 32-byte —
+   YAGNI, NO forcing Packed; cache-line optimization is future work once structure is stable.)**
+2. **Disc-dynamic drop glue, INLINE in MIR CFG — NO shims:** `Statement::Drop(local: Outcome{heap})`
+   lowers into a `SwitchInt(disc) → {Pos: free-as-T, Neg: free-as-E, Zero: no-op}` cluster **inserted directly into
+   the MIR/Cranelift graph**, WITHOUT wrapping in `__triet_outcome_drop`. Scalar Outcome → Drop is no-op (as today).
+   **(G LOCKED inline — shims obscure borrowck and hinder the optimizer; inline exposes all ownership transitions on CFG,
+   enabling double-frees to be caught immediately during CFG traversal. Tradeoff: MIR expansion — accepted for absolute transparency.)**
+3. **`Deinit(o)` after every payload move-out — SPECIFIC semantics for Outcome:**
+   `Statement::Deinit(local)` currently = "write 0 tombstone" (`mir.rs:209-214`). For Outcome StackSlots,
+   **`Deinit(o)` ⟺ `stack_store(Zero(0))` at disc slot (offset 0)**. Because drop glue (point 2) is a no-op when
+   disc=Zero, writing disc:=0 makes `o`'s glue a no-op → preventing double-frees after payload is moved out.
+   - **DO NOT touch ptr/len/cap:** leaving them stale is harmless — glue observes Zero and never reads ptr.
+   - **Reusing Zero=no-op:** binary `T~E` forbids Zero at the user level (E1025), but tombstone disc=0 is an
+     INTERNAL post-move sentinel, NOT observable via `match` (value was already moved out; borrowck forbids
+     re-matching a moved `o`). No conflict with E1025.
+   - **MANDATORY ordering:** `Deinit(o)` is placed AFTER all payload reads of `o`, IMMEDIATELY when payload ownership transfers
+     (match-bind, `~+>`/`~->` copy-to-result, passthrough). Conforms to ADR-0042 Q1 protocol, extended for unions.
+4. **Borrowck:** Payload move-out marks `o` as moved (existing M3/M3+ move tracking); `o`'s drop glue is
+   skipped if `o` is moved/Deinit'd. `~+>`/`~->` chains: result owns, inner Deinit'd — borrowck must
+   observe the correct ownership chain to avoid false use-after-move errors AND catch double-frees.
+5. **`is_scalar` guard removed for heap when payload is a valid heap type** (String/Vector/HashMap) — E1037
+   now only blocks types that genuinely cannot be dropped (nested struct/enum without drop glue — kept deferred).
 
-## 5. Phân lát đề xuất (mỗi lát gate xanh; D làm sau khi ADR ký)
-- **HP.0 Spike borrowck (O/probe, KHÔNG Production):** đội do thám thử ranh giới move-tracking M3+ trên
-  chuỗi `~+>`/`~->` heap (temporaries qua map liên hoàn). Mục tiêu: xác định move-tracking hiện đủ hay
-  cần loan-tracking mới — TRƯỚC khi D viết HP.4. Throwaway, không ship.
-- **HP.1 Layout + Producer:** slot 32-byte heap, `~+ str`/`~- str` store {ptr,len,cap}. Check-mode
-  fixture (tới MIR verify). Chưa drop.
-- **HP.2 Drop glue disc-dynamic:** SwitchInt drop glue, free đúng arm. RUN fixture: Outcome<_,String>
-  rời scope không match → đúng 1 free (leak shim = 0, double-free = 0).
-- **HP.3 Match consumer + Deinit:** bind heap payload, Deinit o, e drop ở scope. RUN.
-- **HP.4 Map `~+>`/`~->` heap:** passthrough move + Deinit; map tiêu thụ/bỏ rơi e đúng drop.
+## 5. Proposed Slices (Each slice gate green; implemented after ADR sign-off)
+- **HP.0 Borrowck Spike (O/probe, NOT Production):** Reconnaissance team probes M3+ move-tracking boundaries on
+  heap `~+>`/`~->` chains (temporaries through chained maps). Goal: determine whether existing move-tracking is sufficient or
+  new loan-tracking is required — BEFORE writing HP.4. Throwaway, not shipped.
+- **HP.1 Layout + Producer:** 32-byte heap slot, `~+ str`/`~- str` store {ptr,len,cap}. Check-mode
+  fixture (up to MIR verification). No drop yet.
+- **HP.2 Disc-dynamic Drop glue:** SwitchInt drop glue, frees correct arm. RUN fixture: Outcome<_,String>
+  leaving scope unmatched → exactly 1 free (leak shim = 0, double-free = 0).
+- **HP.3 Match consumer + Deinit:** Bind heap payload, Deinit o, e drops at scope. RUN.
+- **HP.4 Map `~+>`/`~->` heap:** Passthrough move + Deinit; map consumes/abandons e with correct drop behavior.
 
-## 6. Teeth dự kiến (O sẽ áp — KHÔNG đưa D blueprint, chỉ nêu bất biến)
-- Double-free: bind/move payload mà thiếu `Deinit(o)` → SIGABRT.
-- Leak: `~-> |e| "const"` bỏ rơi e mà thiếu `Drop(e)` scope-pop → leak-count > 0.
-- Drop-wrong-arm: drop glue free-as-T khi disc=Neg (đọc nhầm/bỏ SwitchInt) → free sai layout / SIGABRT.
-- Layout: cap@24 đọc nhầm offset → free(ptr, rác) → crash.
-- Scalar regression: Outcome<Integer,Integer> drop glue phải VẪN no-op (không sinh free cho scalar).
+## 6. Expected Teeth (Enforced by O — specifying invariants only)
+- Double-free: binding/moving payload without `Deinit(o)` → SIGABRT.
+- Leak: `~-> |e| "const"` abandoning e without scope-pop `Drop(e)` → leak-count > 0.
+- Drop-wrong-arm: drop glue frees-as-T when disc=Neg (misread/skipped SwitchInt) → frees wrong layout / SIGABRT.
+- Layout: cap@24 reading wrong offset → free(ptr, garbage) → crash.
+- Scalar regression: Outcome<Integer,Integer> drop glue must STILL be no-op (no frees generated for scalars).
 
 ## 7. Consequences
-- **Tích cực:** Outcome dùng được thật (`~- "msg"`); mở khóa nút thắt lớn nhất của error-handling.
-- **Đắt:** Drop hết type-static → một class drop glue disc-dynamic mới (đụng JIT + borrowck + verifier).
-- **ABI:** hàm `-> String~String` trả Outcome 32-byte — multi-return/sret ABI phải khớp (nối ADR-0052 §3.3).
-- **Defer (giữ phong ấn):** C4 Packed (24-byte tối ưu) · nested struct/enum payload (chưa drop glue) ·
-  TernaryOutcome heap (sau khi binary heap chạy + Mũi A ternary scalar của D xong).
+- **Positive:** Outcome becomes truly usable (`~- "msg"`); unlocks the single largest bottleneck in error handling.
+- **Cost:** Drop ceases to be type-static → introduces a new class of disc-dynamic drop glue (touching JIT + borrowck + verifier).
+- **ABI:** Functions returning `-> String~String` return a 32-byte Outcome — multi-return/sret ABI must match (linking ADR-0052 §3.3).
+- **Deferred (sealed):** C4 Packed (24-byte optimization) · nested struct/enum payloads (no drop glue yet) ·
+  heap TernaryOutcome (after binary heap works + Tier A ternary scalar is complete).
 
 ---
 
-## 8. Phán quyết G (CHỐT 2026-06-10 — đóng §8)
-1. **Layout: CHỐT 32-byte.** KHÔNG ép Packed. Premature optimization là cội nguồn thảm họa — đang
-   chọc vào Drop disc-dynamic nhạy cảm với rủi ro leak lơ lửng, đừng xáo offset để vắt 8 byte. Packed
-   (nhét disc vào pointer-tag/padding) là việc tương lai khi cấu trúc đã vững + cần ép cache-line.
-   **YAGNI triệt để — móng 32-byte cho an toàn.**
-2. **Drop glue: CHỐT INLINE trong MIR CFG.** Shim `__triet_outcome_drop` che mắt borrowck + làm khó
-   optimizer. Chèn thẳng `SwitchInt(disc) → free_T/free_E` vào đồ thị MIR. MIR phình một chút, đổi lại
-   **minh bạch tuyệt đối** — mọi di biến ownership phơi trên CFG, double-free rà CFG tóm ngay.
-3. **Borrowck chain `~+>`/`~->`: CHẤP THUẬN SPIKE PROBE** trước Production. Fat-pointer qua chuỗi map
-   liên hoàn đẻ hàng loạt temporaries; borrowck tracking hụt → lifetime temp kết thúc sớm (use-after-free)
-   hoặc sống dai (leak). Tung đội do thám thử ranh giới borrowck TRƯỚC khi D đụng tay Production (HP.4).
+## 8. G Ruling (LOCKED 2026-06-10 — closes §8)
+1. **Layout: LOCKED 32-byte.** DO NOT force Packed. Premature optimization is the root of disaster — when
+   modifying sensitive disc-dynamic Drop with lingering leak risks, do not shuffle offsets to squeeze 8 bytes. Packed
+   (packing disc into pointer tags/padding) is future work once the structure is solid + cache-line pressure warrants it.
+   **Strict YAGNI — 32-byte foundation for safety.**
+2. **Drop glue: LOCKED INLINE in MIR CFG.** Shims like `__triet_outcome_drop` blind borrowck and hinder
+   optimizers. Insert `SwitchInt(disc) → free_T/free_E` directly into the MIR graph. MIR expands slightly, in exchange
+   for **absolute transparency** — all ownership transitions are laid bare on the CFG, enabling double-frees to be spotted instantly.
+3. **Borrowck chain `~+>`/`~->`: SPIKE PROBE APPROVED** before Production. Fat-pointers across chained maps
+   spawn numerous temporaries; deficient borrowck tracking causes temporary lifetimes to end prematurely (use-after-free)
+   or linger (leak). Deploy reconnaissance probe to test borrowck boundaries BEFORE implementing HP.4 in Production.
 
-**§8 đóng. ADR-0053 đã G ký duyệt (xem Status).**
+**§8 closed. ADR-0053 approved and signed by G (see Status).**
 
 ---
 
-## 9. Addendum HP.0 — Spike borrowck (O bắn 2026-06-11, G duyệt phụ lục)
+## 9. Addendum HP.0 — Borrowck Spike (O emitted 2026-06-11, G approved addendum)
 
-HP.0 spike (gỡ tạm `is_scalar` guard, cho heap Outcome lower tới borrowck check-mode, revert sạch)
-phơi 3 sự thật **đảo lại một phần §3** và lộ một lỗ móng:
+HP.0 spike (temporarily lifting `is_scalar` guard, lowering heap Outcome to check-mode borrowck, cleanly reverted)
+revealed 3 facts that **partially revise §3** and exposed a foundational flaw:
 
-### 9.1 — Matched case SOUND ⟹ thu hẹp §3.1 (Drop glue)
-Heap Outcome producer + `match` lower sạch, borrowck OK. Match bind payload theo **type PER-ARM**
-(`~+`→value_type, `~-`→error_type). Heterogeneous `Integer~String`: success bind Integer (`Drop` no-op),
-error bind String (`Drop` free) — đúng. **⟹ disc-dynamic drop glue (§3.1) CHỈ cần cho case UNMATCHED**
-(Outcome owned rời scope mà không bị `match` tiêu thụ). Matched case KHÔNG cần glue. Thu hẹp HP.2/HP.3.
+### 9.1 — Matched case is SOUND ⟹ narrows §3.1 (Drop glue)
+Heap Outcome producer + `match` lower cleanly with valid borrowck. Match binds payloads according to the **PER-ARM type**
+(`~+`→value_type, `~-`→error_type). Heterogeneous `Integer~String`: success binds Integer (`Drop` no-op),
+error binds String (`Drop` free) — correct. **⟹ disc-dynamic drop glue (§3.1) is ONLY needed for UNMATCHED cases**
+(owned Outcome leaving scope without being consumed by `match`). Matched cases DO NOT need glue. Narrows HP.2/HP.3.
 
-### 9.2 — Đính chính §3.2: passthrough là MOVE, không COPY
-MIR `~+>` nhánh passthrough: `result.payload = move inner.payload` — là `move`, KHÔNG alias/double-own.
-**Lo ngại "copy→double-free" ở §3.2 là SAI cho passthrough.** Bug thật KHÔNG ở passthrough.
+### 9.2 — Correction to §3.2: passthrough is MOVE, not COPY
+MIR `~+>` passthrough branch: `result.payload = move inner.payload` — this is a `move`, NOT aliased/double-owned.
+**The "copy→double-free" concern in §3.2 was FALSE for passthrough.** The actual bug is NOT in passthrough.
 
-### 9.3 — 🔴 CON QUÁI VẬT: desugar map Drop-vs-rewrap race + borrowck MÙ
-MIR thật của `produce() ~+> |v| v` (String), nhánh map:
+### 9.3 — 🔴 THE MONSTER: desugar map Drop-vs-rewrap race + BLIND borrowck
+Actual MIR for `produce() ~+> |v| v` (String), map branch:
 ```
 _3 = move _0.payload     // bind v
-Drop(_3)                 // scope-pop drop v → FREE String
-_2.payload = move _3     // move _3 (ĐÃ FREE) → use-after-free + double-free
+Drop(_3)                 // scope-pop drops v → FREES String
+_2.payload = move _3     // moves _3 (ALREADY FREED) → use-after-free + double-free
 ```
-**borrowck báo "OK (no borrow errors)", exit 0 — KHÔNG BẮT.** Hai tầng:
-- **F1 (lowerer):** desugar map (APP.2a/2c) emit `Drop(biến-capture)` ở scope-pop RỒI rewrap-move chính
-  giá-trị-đó. Scalar: Drop no-op (vô hại). Heap: UAF. ⟹ **gỡ `is_scalar` guard kiểu ngây thơ = UAF câm.**
-- **F2 (borrowck — LỖ MÓNG):** NLL move-tracking KHÔNG model `Drop` như **kill liveness** → bỏ lọt
-  move-after-Drop (đáng E2420). **Đây là lỗ soundness cấp nền, nát MỌI heap type (String/Vector), không
-  riêng Outcome.** Tách thành mặt trận lõi **Core-Borrowck-Patch** (xem ADR-0054, báo động đỏ).
+**borrowck reported "OK (no borrow errors)", exit 0 — MISSED IT COMPLETELY.** Two layers:
+- **F1 (lowerer):** desugar map (APP.2a/2c) emits `Drop(captured_var)` on scope-pop THEN rewrap-moves that exact
+  same value. Scalar: Drop is no-op (harmless). Heap: UAF. ⟹ **naively lifting `is_scalar` guard = silent UAF.**
+- **F2 (borrowck — FOUNDATIONAL FLAW):** NLL move-tracking DOES NOT model `Drop` as **killing liveness** → permits
+  move-after-Drop (deserving E2420). **This is a core soundness hole breaking ALL heap types (String/Vector), not
+  just Outcome.** Split into a critical front: **Core-Borrowck-Patch** (see ADR-0054, red alert).
 
-### 9.4 — Lệnh sửa thứ tự (G chốt 2026-06-11)
-1. **HP.4 (map heap) DỪNG** cho tới khi lỗ móng F2 vá xong.
-2. **Core-Borrowck-Patch (ADR-0054) làm TRƯỚC:** dạy NLL — mọi `Drop(x)` trên MIR = thao tác kill
-   liveness; mọi `move`/borrow `x` sau điểm Drop → **E2420**. Teeth độc lập (không dính Outcome):
-   hand-build MIR `Body { Drop(x); Assign move x }`, `check_body()` phải emit E2420 (hiện mù → fail).
-3. **F1 (desugar heap-aware):** map arm KHÔNG Drop giá-trị-sẽ-thành-body_val (hoặc Deinit) — sửa cùng HP.4.
-4. Chỉ khi F2 vá xong, D mới được gỡ `is_scalar` guard cho Outcome heap.
+### 9.4 — Order Amendment Directive (Finalized by G 2026-06-11)
+1. **HP.4 (heap map) HALTED** until foundational flaw F2 is patched.
+2. **Core-Borrowck-Patch (ADR-0054) takes PRIORITY:** teach NLL — every `Drop(x)` in MIR kills
+   liveness; any `move`/borrow of `x` after a Drop point → **E2420**. Independent teeth (decoupled from Outcome):
+   hand-built MIR `Body { Drop(x); Assign move x }`, `check_body()` must emit E2420 (currently blind → fails).
+3. **F1 (heap-aware desugaring):** map arm MUST NOT Drop values destined to become `body_val` (or must Deinit) — fixed alongside HP.4.
+4. Only after F2 is patched may D remove the `is_scalar` guard for heap Outcomes.

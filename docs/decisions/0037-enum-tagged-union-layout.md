@@ -1,81 +1,77 @@
-# ADR 0037 — Enum tagged-union layout trên Bậc A StackSlot
+# ADR 0037 — Enum Tagged-Union Layout on Tier-A StackSlot
 
-**Trạng thái:** **Đã duyệt** (Author + Mentor sign-off 2026-06-05).
+**Status:** **Approved** (Author + Mentor sign-off 2026-06-05).
 
-## Tóm tắt
+## Summary
 
-Đặc tả memory model cho user-defined `enum` trên hạ tầng Bậc A (Cranelift StackSlot,
-mọi giá trị i64/8-byte aligned). Ba phần: (1) `EnumLayout` — kích thước + alignment
-của tagged union trên stack, (2) các MIR statements/terminators cần thêm để khởi tạo,
-đọc discriminant, và dispatch match, (3) ownership semantics: construct-move,
-destructure-copy (bất đối xứng, nhưng đều là behavior hiện có của borrowck).
+Memory model specification for user-defined `enum` types on the Tier-A infrastructure (Cranelift StackSlot, all values i64 / 8-byte aligned). Three parts: (1) `EnumLayout` — size + alignment of tagged unions on the stack, (2) new MIR statements/terminators required to initialize, read discriminants, and dispatch matches, (3) ownership semantics: construct-move, destructure-copy (asymmetric, but both conform to pre-existing borrowck behavior).
 
 ---
 
 ## §1 — EnumLayout (Implementer)
 
-### 1.1. Kích thước & alignment
+### 1.1. Size & alignment
 
-Bậc A constraint: mọi giá trị là i64, alignment 8 byte. Enum áp dụng cùng nguyên tắc:
+Tier-A constraint: all values are i64, 8-byte aligned. Enums follow the same principle:
 
 ```
 ┌──────────────────┬──────────────────────────────────────────┐
-│ discriminant     │ payload (union của các variant payload)  │
+│ discriminant     │ payload (union of variant payloads)      │
 │ i64 (8 bytes)    │ max_payload_size bytes                   │
 │ offset 0         │ offset 8                                 │
 └──────────────────┴──────────────────────────────────────────┘
 ```
 
-- **discriminant:** `i64` tại offset 0, alignment 8.
-- **payload:** tại offset 8 (đã 8-byte aligned). Kích thước = max của tất cả variant payload.
-  Với variant không payload (unit variant), payload area không được dùng —
-  nhưng vẫn chiếm chỗ trong layout (sized-by-max).
-- **total_size:** `8 + max_payload_size`, làm tròn lên alignment 8 (thường đã aligned sẵn
-  vì max_payload_size cũng là bội của 8 trong Bậc A).
+- **discriminant:** `i64` at offset 0, alignment 8.
+- **payload:** at offset 8 (already 8-byte aligned). Size = maximum of all variant payload sizes.
+  For variants without a payload (unit variants), the payload area is unused —
+  but still occupies space in the layout (sized-by-max).
+- **total_size:** `8 + max_payload_size`, rounded up to alignment 8 (typically already aligned
+  since max_payload_size is also a multiple of 8 in Tier A).
 - **alignment:** 8.
 
-**Ví dụ:** `enum Option<T> { Some(T), None }` với `T: Integer` (payload = 8 bytes):
+**Example:** `enum Option<T> { Some(T), None }` with `T: Integer` (payload = 8 bytes):
 total_size = 8 + 8 = 16 bytes.
 
-**Ví dụ:** `enum Color { Red, Green, Blue }` (toàn unit variants, không payload):
-max_payload_size = 0 → total_size = 8 + 0 = 8 bytes (chỉ chứa discriminant).
+**Example:** `enum Color { Red, Green, Blue }` (all unit variants, no payload):
+max_payload_size = 0 → total_size = 8 + 0 = 8 bytes (contains only the discriminant).
 
 ### 1.2. Discriminant encoding
 
 | Variant | Discriminant (i64) |
 |---------|-------------------|
-| Thứ nhất | 0 |
-| Thứ hai | 1 |
-| Thứ n | n-1 |
+| First | 0 |
+| Second | 1 |
+| n-th | n-1 |
 
-Đánh số từ 0 theo thứ tự khai báo trong source. Đây là mapping **deterministic**
-— cùng source enum → cùng discriminant trên mọi platform (deterministic compilation
+Numbered from 0 in declaration order in the source. This is a **deterministic** mapping
+— identical source enums produce identical discriminants across all platforms (deterministic compilation
 per ADR-0012 reproducibility).
 
-**Không dùng Trit encoding cho user-defined enum.** `T?` và `T~E` dùng trit discriminator
-vì chúng là built-in sum types với ≤ 3 states. User-defined enum có n variants tùy ý
-(n ≥ 2, có thể > 3) → cần integer discriminant. Dùng i64 giữ uniform representation
-với Bậc A "everything i64".
+**No Trit encoding for user-defined enums.** `T?` and `T~E` use trit discriminators
+because they are built-in sum types with ≤ 3 states. User-defined enums have arbitrary n variants
+(n ≥ 2, potentially > 3) → require integer discriminants. Using i64 maintains uniform representation
+with Tier A's "everything i64" model.
 
-**Giá trị discriminant trong MIR:** `ConstValue::Integer(i128)` hoặc literal i64.
-JIT sẽ `stack_store(I64, slot, 0)` để ghi tag.
+**Discriminant value in MIR:** `ConstValue::Integer(i128)` or literal i64.
+The JIT will perform `stack_store(I64, slot, 0)` to write the tag.
 
-### 1.3. `EnumLayout` struct (đề xuất cho `triet-mir`)
+### 1.3. `EnumLayout` struct (proposed for `triet-mir`)
 
 ```rust
 /// Layout of a user-defined enum on the stack (tagged union).
 pub struct EnumLayout {
     /// Enum name (e.g., "Option").
     pub name: String,
-    /// Byte offset of the discriminant field (always 0 for Bậc A).
+    /// Byte offset of the discriminant field (always 0 for Tier A).
     pub discriminant_offset: usize,
-    /// Size of the discriminant in bytes (always 8 for Bậc A — i64).
+    /// Size of the discriminant in bytes (always 8 for Tier A — i64).
     pub discriminant_size: usize,
-    /// Byte offset of the payload union (always 8 for Bậc A).
+    /// Byte offset of the payload union (always 8 for Tier A).
     pub payload_offset: usize,
     /// Total size in bytes, rounded up to `alignment`.
     pub total_size: usize,
-    /// Required alignment (always 8 for Bậc A).
+    /// Required alignment (always 8 for Tier A).
     pub alignment: usize,
     /// Per-variant metadata.
     pub variants: Vec<VariantLayout>,
@@ -102,15 +98,15 @@ pub struct PayloadLayout {
 }
 ```
 
-### 1.4. Tương tác với StructLayout
+### 1.4. Interaction with StructLayout
 
-Enum payload có thể là struct (named fields) hoặc tuple (positional fields) hoặc
-scalar đơn. `PayloadLayout.fields` dùng chung `FieldLayout` với `StructLayout` —
-cùng cơ chế offset-within-payload, cùng alignment 8 trong Bậc A.
+An enum payload can be a struct (named fields), a tuple (positional fields), or a
+single scalar. `PayloadLayout.fields` shares `FieldLayout` with `StructLayout` —
+identical offset-within-payload mechanism, identical 8-byte alignment in Tier A.
 
-`EnumLayout` và `StructLayout` là **riêng biệt** — enum có discriminant + union payload,
-struct có fixed fields. Không kế thừa, không composite pattern. Lý do: borrowck cần
-phân biệt enum projection (Downcast→Field) với struct projection (Field trực tiếp).
+`EnumLayout` and `StructLayout` are **distinct** — an enum has a discriminant + union payload,
+whereas a struct has fixed fields. No inheritance, no composite pattern. Rationale: borrowck needs
+to distinguish enum projections (Downcast→Field) from struct projections (direct Field).
 
 ---
 
@@ -118,15 +114,15 @@ phân biệt enum projection (Downcast→Field) với struct projection (Field t
 
 ### 2.1. Construction pipeline
 
-Để tạo `let a = Enum::Variant(x)`:
+To construct `let a = Enum::Variant(x)`:
 
 ```
 EnumAlloc(dest: _e, enum_name: "Option")
-    → allocate StackSlot kích thước EnumLayout.total_size
+    → allocate StackSlot of size EnumLayout.total_size
 SetDiscriminant(dest: _e, value: 0i64)
-    → ghi discriminant vào offset 0
+    → write discriminant to offset 0
 Assign(dest: _e.Payload("Some"), source: Place::local(x))
-    → copy/move payload vào offset 8 của slot
+    → copy/move payload into offset 8 of slot
 ```
 
 #### `Statement::EnumAlloc`
@@ -142,8 +138,8 @@ EnumAlloc {
 }
 ```
 
-Tương tự `StructAlloc` — chỉ allocate stack space, không ghi dữ liệu. JIT tạo
-`StackSlot` với `total_size` và `alignment` từ `EnumLayout`.
+Similar to `StructAlloc` — only allocates stack space, writes no data. JIT creates a
+`StackSlot` with `total_size` and `alignment` from `EnumLayout`.
 
 #### `Statement::SetDiscriminant`
 
@@ -158,38 +154,37 @@ SetDiscriminant {
 }
 ```
 
-Ghi `value` vào `enum_slot + discriminant_offset` (offset 0) dưới dạng i64.
-Tách riêng khỏi `Assign` vì:
-- Discriminant không phải là "place" thông thường — không có địa chỉ độc lập,
-  không borrow được.
-- `SetDiscriminant` là unconditional write, không đọc source.
-- Borrowck không cần track loan trên discriminant (tag không borrow được).
+Writes `value` to `enum_slot + discriminant_offset` (offset 0) as an i64.
+Separated from `Assign` because:
+- Discriminant is not a standard "place" — it has no independent address and cannot be borrowed.
+- `SetDiscriminant` is an unconditional write and does not read a source.
+- Borrowck does not need to track loans on the discriminant (tags cannot be borrowed).
 
-**Tại sao không dùng `Assign` + `Projection::Discriminant`?** Vì `Projection`
-được dùng để *theo dõi borrow* ở cấp field. Discriminant không bao giờ được
-borrow riêng — nó là metadata của enum, không phải user-accessible field.
-Dùng statement riêng giữ borrowck đơn giản.
+**Why not use `Assign` + `Projection::Discriminant`?** Because `Projection`
+is used to *track borrows* at the field level. Discriminants are never
+borrowed separately — they are enum metadata, not user-accessible fields.
+Using a dedicated statement keeps borrowck simple.
 
 #### Payload assignment
 
-Dùng `Statement::Assign` hiện có, với source là `Place::local(x)` và dest là
-`Place::local(_e)` với projection chain `[Payload("Some")]` (với variant đơn)
-hoặc `[Payload("Some"), Field("value")]` (với variant có named struct payload).
+Uses the existing `Statement::Assign`, with source `Place::local(x)` and dest
+`Place::local(_e)` with projection chain `[Payload("Some")]` (for single variants)
+or `[Payload("Some"), Field("value")]` (for variants with named struct payloads).
 
-`Projection::Payload(String)` mới — xem §2.3.
+New `Projection::Payload(String)` — see §2.3.
 
 ### 2.2. Match dispatch
 
-Để match `match a { Variant1(x) => bb1, Variant2 => bb2, ... }`:
+To match `match a { Variant1(x) => bb1, Variant2 => bb2, ... }`:
 
 ```
-// Đọc discriminant
-_disc = discriminant của _a  (đọc từ offset 0 của slot)
-// Switch n-way
+// Read discriminant
+_disc = discriminant of _a  (read from offset 0 of slot)
+// n-way Switch
 SwitchInt(discriminant: _disc, cases: [(0, bb_variant1), (1, bb_variant2)], default_bb: bb_trap)
 ```
 
-#### Terminator mới: `SwitchInt`
+#### New Terminator: `SwitchInt`
 
 ```rust
 SwitchInt {
@@ -198,51 +193,50 @@ SwitchInt {
     /// (discriminant_value, target_block) pairs.
     cases: Vec<(i64, BasicBlock)>,
     /// Default/fallthrough block for unknown discriminant values.
-    /// **Bậc A: always a Cranelift trap block, never Unreachable.**
+    /// **Tier A: always a Cranelift trap block, never Unreachable.**
     default_bb: BasicBlock,
     /// Source location.
     span: Span,
 }
 ```
 
-Khác với `If` terminator (branch trên Trilean condition với +/0/-):
-- `SwitchInt` branch trên integer i64 với n targets.
-- Không có zero_bb/negative_bb semantic của `If`.
-- `default_bb` bắt mọi discriminant không khớp cases.
+Different from `If` terminator (branching on a Trilean condition with +/0/-):
+- `SwitchInt` branches on an integer i64 with n targets.
+- Lacks the zero_bb/negative_bb semantics of `If`.
+- `default_bb` catches any discriminant not matching cases.
 
-**Tại sao không reuse `If` terminator?** `If` semantic là Ł3-aware 3-way branch
-trên trit (True/Unknown/False). Enum match là n-way branch trên integer
-discriminant — khác biệt về kiểu dữ liệu và số lượng target. Tách riêng
-giữ IR rõ ràng, borrowck biết chính xác semantic của từng terminator.
+**Why not reuse the `If` terminator?** `If` semantics represent an Ł3-aware 3-way branch
+on trits (True/Unknown/False). Enum match is an n-way branch on integer
+discriminants — differing in data type and target count. Separating them
+keeps the IR clear and allows borrowck to know the exact semantics of each terminator.
 
-#### `default_bb` = Cranelift trap (không Unreachable)
+#### `default_bb` = Cranelift trap (never Unreachable)
 
-**Quyết định:** `default_bb` luôn là một basic block kết thúc bằng Cranelift
-`trap` instruction, **không bao giờ** dùng `Terminator::Unreachable`.
+**Decision:** `default_bb` is always a basic block terminating in a Cranelift
+`trap` instruction, **never** `Terminator::Unreachable`.
 
-**Lý do:** Typecheck hiện tại chỉ có exhaustiveness check cho Outcome (E1026,
-`check_outcome_exhaustiveness`). Không có check exhaustive cho user-defined
-enum. Nếu `default_bb = Unreachable` và match thiếu arm → `br_table` rơi vào
+**Rationale:** The current type checker only performs exhaustiveness checking for Outcome (E1026,
+`check_outcome_exhaustiveness`). There is no exhaustive check for user-defined
+enums. If `default_bb = Unreachable` and a match arm is missing → `br_table` falls into
 unreachable → **undefined behavior** (Cranelift unreachable = UB).
 
-**Hệ quả:**
-1. **Non-exhaustive match = runtime error**, không phải compile-time error.
-   Đây là khoảng hở semantic — yếu hơn Rust (Rust bắt exhaustive match tại
-   compile-time). Ghi nhận trung thực.
-2. **TODO:** Enum-exhaustiveness checker (or-pattern + guard + wildcard) là
-   task riêng, không nằm trong Phase 4. Khi có exhaustiveness, đổi `default_bb`
-   từ trap sang `Unreachable` (và optimization passes có thể cắt dead trap block).
-3. **Borrowck:** trap block là reachable, rỗng (không chứa statement hay access
-   nào) → vô hại với borrowck.
-4. **JIT:** dead-trap cho match đã exhaustive (discriminant luôn khớp cases)
-   → vẫn tồn tại trong codegen nhưng không bao giờ thực thi. Chấp nhận được
-   cho Bậc A.
+**Consequences:**
+1. **Non-exhaustive match = runtime error**, not a compile-time error.
+   This is a semantic gap — weaker than Rust (Rust enforces exhaustive matches at
+   compile-time). Honestly documented.
+2. **TODO:** Enum-exhaustiveness checker (or-pattern + guard + wildcard) is a
+   separate task, outside Phase 4 scope. Once exhaustiveness checking exists, change `default_bb`
+   from trap to `Unreachable` (and optimization passes can prune dead trap blocks).
+3. **Borrowck:** The trap block is reachable and empty (contains no statements or accesses)
+   → harmless to borrowck.
+4. **JIT:** Dead traps for matches that are already exhaustive (discriminant always matches cases)
+   → still present in codegen but never executed. Acceptable for Tier A.
 
-#### Cần `Statement` để đọc discriminant
+#### Statement required to read discriminant
 
-Cần một statement để load discriminant vào một local trước khi SwitchInt.
-Hiện tại, `OutcomeDiscriminant` làm việc này cho Outcome (đọc trit tag). Đề xuất
-một statement tổng quát hơn:
+A statement is needed to load the discriminant into a local before SwitchInt.
+Currently, `OutcomeDiscriminant` performs this for Outcome (reading the trit tag). We propose
+a more general statement:
 
 ```rust
 GetDiscriminant {
@@ -255,16 +249,16 @@ GetDiscriminant {
 }
 ```
 
-JIT: `stack_load(I64, enum_slot, offset=0)` → ghi vào `dest`.
+JIT: `stack_load(I64, enum_slot, offset=0)` → write to `dest`.
 
-**Borrowck:** `source` được tính là một **use** của enum local (đọc discriminant).
-Nếu `source` đã Moved → **E2420 UseAfterMove**. Tương tự `OutcomeDiscriminant`
-trong `liveness.rs` hiện tại — `GetDiscriminant` không move enum, chỉ đọc tag.
+**Borrowck:** `source` is counted as a **use** of the enum local (reading discriminant).
+If `source` is already Moved → **E2420 UseAfterMove**. Similar to `OutcomeDiscriminant`
+in the current `liveness.rs` — `GetDiscriminant` does not move the enum; it only reads the tag.
 
-### 2.3. Projection mới: `Payload`
+### 2.3. New Projection: `Payload`
 
-Để truy cập payload của một variant cụ thể sau khi đã chứng minh enum đang ở
-variant đó (qua `SwitchInt`):
+To access the payload of a specific variant after proving the enum is in that variant
+(via `SwitchInt`):
 
 ```rust
 enum Projection {
@@ -276,225 +270,222 @@ enum Projection {
 }
 ```
 
-Dùng kết hợp với `Field` để truy cập field của struct payload:
+Used in combination with `Field` to access fields of a struct payload:
 
 ```
-// Truy cập field "value" của variant "Some"
+// Access field "value" of variant "Some"
 place = Place::local(_e)
     .project(Payload("Some"))
     .project(Field("value"))
 ```
 
-**Borrowck với `Payload` projection:** `Payload("Some")` là refinement type —
-borrowck biết (từ SwitchInt branch) rằng discriminant == 0 (Some). Trong
-branch này, access đến `Payload("Some")` là valid. Nếu access `Payload("None")`
-(unit variant) trong branch Some → lỗi type (payload không tồn tại, bị typecheck
-bắt trước borrowck).
+**Borrowck with `Payload` projection:** `Payload("Some")` is a refinement type —
+borrowck knows (from the SwitchInt branch) that discriminant == 0 (Some). In this
+branch, access to `Payload("Some")` is valid. Accessing `Payload("None")`
+(unit variant) inside the Some branch → type error (payload does not exist, caught by
+typecheck before borrowck).
 
-**`places_conflict` cho `Payload` — DEFER Bậc B/C.** Ở Bậc A:
-- Không có by-reference bind trong match (§3.4) → không có loan nào trên
-  `Payload` projection.
-- Destructure dùng copy (§3.2) → không có Partial-Moved tracking.
-- → `places_conflict(Payload(..))` không bao giờ được gọi ở Bậc A.
+**`places_conflict` for `Payload` — DEFER to Tier B/C.** In Tier A:
+- No by-reference binding in match (§3.4) → no loans on `Payload` projections.
+- Destructuring uses copy (§3.2) → no Partial-Moved tracking.
+- → `places_conflict(Payload(..))` is never called in Tier A.
 
-Implement `places_conflict` cho `Payload` bây giờ là dead code. Khi Bậc B/C
-thêm by-reference bind vào match, lúc đó mới cần định nghĩa conflict rule
-cho Payload projection (hai variant khác tên = disjoint trong type-level,
-nhưng alias bộ nhớ ở offset 8 — conflict rule phải dựa trên variant refinement
-đã chứng minh, không phải offset). **Ghi chú ở đây, không implement.**
+Implementing `places_conflict` for `Payload` now would be dead code. When Tier B/C
+adds by-reference binding to match, conflict rules for Payload projection will be defined then
+(two differently named variants = disjoint at type-level, but alias memory at offset 8 —
+conflict rules must be based on proven variant refinement, not raw offsets). **Documented here, not implemented.**
 
 ---
 
 ## §3 — Ownership Semantics (Author)
 
-### 3.1. Construction: move vào
+### 3.1. Construction: move in
 
 ```
 let x = 42;
-let a = Option::Some(x);  // x bị move vào a
+let a = Option::Some(x);  // x is moved into a
 ```
 
-- `x` được **moved** (consumed) vào payload của `a`.
-- Sau dòng 2, `x` không còn valid — compile error nếu dùng lại.
-- `a` sở hữu toàn bộ enum value, bao gồm cả discriminant và payload.
+- `x` is **moved** (consumed) into the payload of `a`.
+- After line 2, `x` is no longer valid — compile error upon reuse.
+- `a` owns the entire enum value, including both discriminant and payload.
 
-**MIR:** `Assign { dest: _a.Payload("Some"), source: _x }`. Source là plain local
-(không projection) → `is_field_read = false` → borrowck mark `_x` là `Moved`
-(`checker.rs:543`). Đây là behavior hiện có — enum payload hoạt động giống
-struct field construct.
+**MIR:** `Assign { dest: _a.Payload("Some"), source: _x }`. Source is a plain local
+(no projection) → `is_field_read = false` → borrowck marks `_x` as `Moved`
+(`checker.rs:543`). This is existing behavior — enum payload construction acts identically
+to struct field construction.
 
-> **Known divergence (pre-existing, không phải ADR-0037):** `Integer` là Copy type
-> theo SPEC §10.1 row 1 ("Stack primitives … Copy by value, no aliasing"),
-> nhưng borrowck mark-Moved mọi plain-source mà không type-aware. `Some(x)` với
-> `x: Integer` lẽ ra nên copy — gap này có sẵn từ trước Phase 4, cần borrowck
-> biết Copy-ness của type để fix. **Defer Bậc B/C.** Không sửa trong Phase 4.
+> **Known divergence (pre-existing, not ADR-0037):** `Integer` is a Copy type
+> per SPEC §10.1 row 1 ("Stack primitives … Copy by value, no aliasing"),
+> but borrowck marks all plain sources as Moved without type-awareness. `Some(x)` with
+> `x: Integer` should ideally copy — this gap existed prior to Phase 4 and requires
+> borrowck to be aware of type Copy-ness to fix. **Defer to Tier B/C.** Not fixed in Phase 4.
 
-### 3.2. Destructuring: copy ra
+### 3.2. Destructuring: copy out
 
 ```
 match a {
     Option::Some(y) => {
-        // y là by-value COPY của payload
+        // y is a by-value COPY of the payload
         consume(y);
     }
     Option::None => {
-        // không có payload
+        // no payload
     }
 }
-// a vẫn valid sau match — payload được copy, không move
+// a remains valid after match — payload was copied, not moved
 ```
 
-- `y` bind **by-value copy** payload của `a`.
-- Sau arm, `a` **vẫn valid** — payload chưa bị move ra.
-- `_a` có thể dùng lại sau match (miễn là không bị move toàn bộ bởi
-  một arm capture `a` không qua projection).
+- `y` binds a **by-value copy** of `a`'s payload.
+- After the arm, `a` **remains valid** — the payload has not been moved out.
+- `_a` can be reused after the match (as long as it was not moved in its entirety by
+  an arm capturing `a` without projection).
 
-**MIR:** `Assign { dest: _y, source: _a.Payload("Some") }`. Source có projection
-→ `is_field_read = true` → borrowck **KHÔNG** mark `_a` là Moved
-(`checker.rs:515-517`). Đây là behavior hiện có cho struct field read —
-enum payload copy cũng hoạt động tương tự.
+**MIR:** `Assign { dest: _y, source: _a.Payload("Some") }`. Source has a projection
+→ `is_field_read = true` → borrowck **DOES NOT** mark `_a` as Moved
+(`checker.rs:515-517`). This is existing behavior for struct field reads —
+enum payload copy behaves identically.
 
-**Tại sao copy, không move?**
+**Why copy instead of move?**
 1. SPEC §10.1 row 1: stack primitives (Integer/Trit/Tryte/Long/Trilean/Unit)
-   là "Copy by value, no aliasing". Bậc A mọi payload là i64 = stack primitive
-   → copy là **spec-mandated**, không phải chỉ "rẻ hơn".
-2. Payload i64 không có destructor, Drop là no-op → move vs copy không
-   observable ở runtime Bậc A.
-3. Behavior hiện có của borrowck (`is_field_read` cho projected source) đã
-   là copy — không cần code mới.
+   are "Copy by value, no aliasing". In Tier A, all payloads are i64 = stack primitive
+   → copy is **spec-mandated**, not merely "cheaper".
+2. i64 payload has no destructor, Drop is a no-op → move vs copy is not
+   observable at runtime in Tier A.
+3. Existing borrowck behavior (`is_field_read` for projected source) is already
+   copy → no new code required.
 
-### 3.3. Không Partial-Moved trong Bậc A
+### 3.3. No Partial-Moved in Tier A
 
-Vì destructure dùng copy, enum không bao giờ ở trạng thái Partial-Moved.
-Borrowck không cần track per-projection-path Moved state cho enum.
+Because destructuring uses copy, an enum is never in a Partial-Moved state.
+Borrowck does not need to track per-projection-path Moved state for enums.
 
-- Sau match, `_a` vẫn Owned.
-- Không có double-move risk (vì không có move-out).
-- Drop cho `_a`: discriminant + toàn bộ payload area vẫn valid (payload
-  được copy, không bị move).
+- After match, `_a` remains Owned.
+- No double-move risk (since there is no move-out).
+- Drop for `_a`: discriminant + entire payload area remain valid (payload
+  was copied, not moved).
 
-Move-out semantics (destructure thực sự chuyển ownership payload ra khỏi enum,
-làm enum Partial-Moved, cấm dùng lại payload đã move) → **defer Bậc B/C** khi
-heap payload (String/Vector/HashMap) làm move quan-sát-được và có destructor
-thực sự.
+Move-out semantics (where destructuring actually transfers payload ownership out of the enum,
+rendering the enum Partial-Moved and forbidding reuse of the moved payload) → **defer to Tier B/C** when
+heap payloads (String/Vector/HashMap) make moves observable and introduce real destructors.
 
-### 3.4. Bất đối xứng construct-move / destructure-copy
+### 3.4. Construct-move / destructure-copy asymmetry
 
 | | Construct (`Some(x)`) | Destructure (`Some(y) =>`) |
 |---|---|---|
-| Behavior | **MOVE** source vào payload | **COPY** payload ra bind |
+| Behavior | **MOVE** source into payload | **COPY** payload out to binding |
 | MIR source | Plain local | Projected (`_a.Payload("Some")`) |
-| Borrowck | Mark source Moved (`checker.rs:543`) | is_field_read → không mark (`checker.rs:517`) |
-| Code mới | 0 | 0 |
+| Borrowck | Marks source as Moved (`checker.rs:543`) | `is_field_read` → does not mark (`checker.rs:517`) |
+| New code | 0 | 0 |
 
-Bất đối xứng nhưng nhất quán với behavior hiện có của borrowck. Cả hai đều
-dùng `Statement::Assign` hiện tại, không cần logic borrowck mới. Khi SPEC
-§match được làm rõ về move-vs-copy cho pattern bind (và khi Bậc B/C có heap
-payload), bất đối xứng này sẽ được giải quyết.
+Asymmetric, but consistent with existing borrowck behavior. Both use the existing
+`Statement::Assign` without requiring new borrowck logic. When SPEC §match is clarified
+regarding move-vs-copy for pattern bindings (and when Tier B/C introduces heap payloads),
+this asymmetry will be resolved.
 
-### 3.5. So sánh với borrow-by-reference
+### 3.5. Comparison with borrow-by-reference
 
-Tương lai (Bậc B/C), pattern match có thể hỗ trợ bind-by-reference:
+In the future (Tier B/C), pattern matching may support bind-by-reference:
 
 ```
 match &0 a {
-    Option::Some(y) => {  // y: &0 Integer — tham chiếu shared vào payload
+    Option::Some(y) => {  // y: &0 Integer — shared reference into payload
         use(y);
     }
 }
 ```
 
-Lúc này `a` không bị move hay copy — `y` là reference tới payload của `a`.
-Borrowck tạo loan `{ source: _a.Payload("Some"), dest: _y, form: BorrowReadOnly }`.
-Khi `y` còn live, không thể move `a` hoặc mutate `a` (mượn shared).
+At this point `a` is neither moved nor copied — `y` is a reference to the payload of `a`.
+Borrowck creates loan `{ source: _a.Payload("Some"), dest: _y, form: BorrowReadOnly }`.
+While `y` remains live, `a` cannot be moved or mutated (shared borrow).
 
-**Quyết định:** Bậc A chỉ hỗ trợ by-value copy bind trong match. By-reference
-bind thêm ở Bậc B/C khi borrowck đã có per-field loan tracking đủ mạnh và
-`places_conflict(Payload)` được định nghĩa.
+**Decision:** Tier A only supports by-value copy bindings in match. By-reference
+bindings will be added in Tier B/C once borrowck has sufficiently robust per-field loan tracking
+and `places_conflict(Payload)` is defined.
 
 ---
 
-## §4 — Lộ trình
+## §4 — Roadmap
 
-| Bước | Nội dung | MIR thay đổi |
-|------|----------|-------------|
-| 4a | `EnumLayout` + `VariantLayout` trong `triet-mir` | Data structure mới |
-| 4b | Lowerer: thu thập enum definitions → `enum_layouts: Vec<EnumLayout>` | `lower_program` |
+| Step | Description | MIR Changes |
+|------|-------------|-------------|
+| 4a | `EnumLayout` + `VariantLayout` in `triet-mir` | New data structures |
+| 4b | Lowerer: collect enum definitions → `enum_layouts: Vec<EnumLayout>` | `lower_program` |
 | 4c | `Statement::EnumAlloc` + `Statement::SetDiscriminant` + `Statement::GetDiscriminant` | 3 statement variants |
 | 4d | `Terminator::SwitchInt` + `Terminator::Trap` | 2 terminator variants |
-| 4d' | Borrowck + liveness + JIT: `Trap` xử như `Unreachable` (leaf, 0 successor, 0 read), JIT lower thành Cranelift `trap` | plumbing |
+| 4d' | Borrowck + liveness + JIT: treat `Trap` like `Unreachable` (leaf, 0 successors, 0 reads); JIT lowers to Cranelift `trap` | plumbing |
 | 4e | `Projection::Payload(String)` | 1 projection variant |
 | 4f | Lowerer: `Expr::EnumLiteral` → `EnumAlloc` + `SetDiscriminant` + payload `Assign` | AST→MIR |
 | 4g | Lowerer: `match` → `GetDiscriminant` + `SwitchInt` + per-arm payload access | AST→MIR |
 | 4h | JIT: `EnumAlloc` → StackSlot, `SetDiscriminant`/`GetDiscriminant` → stack access, `SwitchInt` → Cranelift `br_table` + trap default block | JIT codegen |
-| 4i | **MIR verifier:** INV coverage cho 5 cấu trúc mới (xem bên dưới) | verifier assertions |
+| 4i | **MIR verifier:** INV coverage for 5 new constructs (see below) | verifier assertions |
 
 ### 4i. MIR verifier invariants
 
-Verifier hiện tại (`triet-mir/src/lib.rs:828`) là **structural** — kiểm block-bounds
-(INV-1: mọi block reference tồn tại trong `body.basic_blocks`) và local-bounds
-(INV-2: mọi local reference nằm trong `local_decls`). Không có dominator tree,
-không có reaching-def analysis, không flow-sensitive.
+The current verifier (`triet-mir/src/lib.rs:828`) is **structural** — checking block-bounds
+(INV-1: all block references exist in `body.basic_blocks`) and local-bounds
+(INV-2: all local references are within `local_decls`). No dominator tree,
+no reaching-def analysis, not flow-sensitive.
 
-**Phân loại invariant theo khả năng của verifier hiện tại:**
+**Invariant classification according to current verifier capabilities:**
 
-| Invariant | Loại | Khả thi? | Xử lý |
-|-----------|------|-----------|-------|
-| `EnumAlloc.dest` có type enum (tra `local_decls[dest].ty`) | structural | ✅ | Assert trong verifier |
-| `SetDiscriminant.value` ∈ `[0, n_variants)` | structural | ✅ | Assert trong verifier |
-| `GetDiscriminant.source` có type enum | structural | ✅ | Assert trong verifier |
-| `SwitchInt`: mọi block trong `cases` + `default_bb` tồn tại | structural (= mở rộng INV-1) | ✅ | Dạy INV-1 duyệt `SwitchInt.cases` + `default_bb` |
-| `SwitchInt.default_bb` kết thúc bằng trap, không phải `Unreachable` | structural | ✅ | Assert trong verifier |
-| `SetDiscriminant`/`GetDiscriminant`: dest/source đã được `EnumAlloc` | reaching-def, flow-sensitive | ❌ | **Lowerer responsibility** — lowerer sinh MIR đúng; verifier full-dataflow = Bậc C defense-in-depth |
-| `Payload(..)`: chỉ xuất hiện trong block dominate bởi case-target tương ứng của `SwitchInt` | dominator tree, flow-sensitive | ❌ | **Lowerer responsibility** — lowerer 4g dựng match → tự sinh Payload đúng block theo cấu trúc nó tạo; verifier dominance = Bậc C |
+| Invariant | Type | Feasible? | Handling |
+|-----------|------|-----------|----------|
+| `EnumAlloc.dest` has enum type (lookup `local_decls[dest].ty`) | structural | ✅ | Verifier assertion |
+| `SetDiscriminant.value` ∈ `[0, n_variants)` | structural | ✅ | Verifier assertion |
+| `GetDiscriminant.source` has enum type | structural | ✅ | Verifier assertion |
+| `SwitchInt`: all blocks in `cases` + `default_bb` exist | structural (= extends INV-1) | ✅ | Extend INV-1 to traverse `SwitchInt.cases` + `default_bb` |
+| `SwitchInt.default_bb` terminates with trap, not `Unreachable` | structural | ✅ | Verifier assertion |
+| `SetDiscriminant`/`GetDiscriminant`: dest/source has been `EnumAlloc`ed | reaching-def, flow-sensitive | ❌ | **Lowerer responsibility** — lowerer generates correct MIR; verifier full-dataflow = Tier C defense-in-depth |
+| `Payload(..)`: only appears in block dominated by corresponding case-target of `SwitchInt` | dominator tree, flow-sensitive | ❌ | **Lowerer responsibility** — lowerer 4g constructs match → automatically generates Payload in correct block per structure; verifier dominance = Tier C |
 
-**Quy tắc Bậc A:** Lowerer chịu trách nhiệm sinh MIR đúng cho Payload placement
-và EnumAlloc-before-use. Verifier chỉ check structural invariants (type enum,
-range discriminant, block existence, trap default_bb). Dominator analysis +
-reaching-def là defense-in-depth cho Bậc C, không nằm trong scope Phase 4.
+**Tier A Rule:** Lowerer is responsible for generating correct MIR for Payload placement
+and EnumAlloc-before-use. Verifier only checks structural invariants (enum type,
+discriminant range, block existence, trap default_bb). Dominator analysis +
+reaching-def represent defense-in-depth for Tier C, outside Phase 4 scope.
 
-**Các invariant structural cụ thể (implement trong 4i):**
+**Specific structural invariants (implemented in 4i):**
 
-| # | Invariant | Cơ chế |
-|---|-----------|--------|
-| 4i-1 | `EnumAlloc.dest`: `local_decls[dest].ty` là enum type (có entry trong `enum_layouts`) | structural: type lookup |
-| 4i-2 | `SetDiscriminant.dest`: `local_decls[dest].ty` là enum type | structural: type lookup |
+| # | Invariant | Mechanism |
+|---|-----------|-----------|
+| 4i-1 | `EnumAlloc.dest`: `local_decls[dest].ty` is an enum type (has entry in `enum_layouts`) | structural: type lookup |
+| 4i-2 | `SetDiscriminant.dest`: `local_decls[dest].ty` is an enum type | structural: type lookup |
 | 4i-3 | `SetDiscriminant.value` ∈ `[0, enum_layout.variants.len())` | structural: range check |
-| 4i-4 | `GetDiscriminant.source`: `local_decls[source].ty` là enum type | structural: type lookup |
-| 4i-5 | `SwitchInt`: mọi `(_, bb)` trong `cases` + `default_bb` tồn tại trong `body.basic_blocks` | structural: mở rộng INV-1 |
-| 4i-6 | `SwitchInt.default_bb` kết thúc bằng `Terminator::Trap` (không phải `Unreachable`) | structural: terminator check |
-| 4i-7 | `Payload(name)`: `name` là variant có trong `enum_layout` của base local | structural: variant lookup |
+| 4i-4 | `GetDiscriminant.source`: `local_decls[source].ty` is an enum type | structural: type lookup |
+| 4i-5 | `SwitchInt`: every `(_, bb)` in `cases` + `default_bb` exists in `body.basic_blocks` | structural: extends INV-1 |
+| 4i-6 | `SwitchInt.default_bb` terminates with `Terminator::Trap` (not `Unreachable`) | structural: terminator check |
+| 4i-7 | `Payload(name)`: `name` is a variant present in `enum_layout` of the base local | structural: variant lookup |
 
 ---
 
-## Không làm
+## Alternatives Considered
 
-- **Trit discriminant cho user enum.** `T?`/`T~E` dùng trit tag vì ≤ 3 states.
-  User enum có n bất kỳ → i64 đơn giản, uniform, dễ codegen. Trit packing
-  (3 trit = 1 tryte, 9 trit = 3 tryte...) để dành cho Bậc C nếu cần tối ưu
-  kích thước.
+- **Trit discriminant for user enums.** `T?`/`T~E` use trit tags because ≤ 3 states.
+  User enums have arbitrary n variants → i64 is simple, uniform, and easy to codegen. Trit packing
+  (3 trits = 1 tryte, 9 trits = 3 trytes...) is deferred to Tier C if size
+  optimization is needed.
 - **Nested enum flattening / niche optimization.** `Option<Option<Integer>>`
-  lãng phí 2 discriminant. Rust dùng niche optimization (Option<&T> = pointer
-  với null sentinel). Triết Bậc A **không làm** — uniform layout đơn giản,
-  oracle tier. Bậc C có thể thêm.
-- **Tag+payload amalgamation cho unit variant.** Enum toàn unit variant
-  (như `Color { Red, Green, Blue }`) không cần payload area. Hiện tại vẫn
-  allocate 8 byte payload (max_payload_size = 0 → total = 8). OK cho Bậc A.
-- **`Payload` làm việc với `Index`/`Deref`.** `Payload` chỉ valid sau
-  `Downcast` logic (chứng minh variant). Kết hợp `Payload` với `Index` hoặc
-  `Deref` không có use case hiện tại và bị JIT từ chối (giống nested
-  projection hiện tại).
-- **`places_conflict(Payload)` — defer Bậc B/C.** Ở Bậc A không có loan trên
-  Payload (toàn copy + không by-reference bind) → implement giờ là dead code.
-- **Enum exhaustiveness checker — defer, TODO riêng.** Hiện tại non-exhaustive
-  match = runtime trap. Exhaustiveness check (or-pattern + guard + wildcard)
-  là task riêng, không nằm trong Phase 4. Khi có, `default_bb` được đổi từ
-  trap sang `Unreachable`.
-- **Partial-Moved tracking cho enum — defer Bậc B/C.** Destructure dùng copy
-  ở Bậc A → không cần. Khi heap payload có destructor thực sự, move-out
-  semantics mới có giá trị.
-- **Enum variant resolution là context-free (2026-06-05 addendum).**
-  > ⚠️ **Superseded by [ADR-0071](0071-path-separator-and-module-import.md) Lát 2
+  wastes 2 discriminants. Rust uses niche optimization (Option<&T> = pointer
+  with null sentinel). Triet Tier A **does not do this** — uniform layout is simple,
+  serving as an oracle tier. Tier C can add this later.
+- **Tag+payload amalgamation for unit variants.** Enums composed entirely of unit variants
+  (like `Color { Red, Green, Blue }`) do not need a payload area. Currently still
+  allocates 8 bytes payload (max_payload_size = 0 → total = 8). OK for Tier A.
+- **`Payload` working with `Index`/`Deref`.** `Payload` is only valid after
+  `Downcast` logic (proving variant). Combining `Payload` with `Index` or
+  `Deref` has no current use case and is rejected by JIT (similar to current nested
+  projections).
+- **`places_conflict(Payload)` — defer to Tier B/C.** In Tier A, there are no loans on
+  Payload (all copy + no by-reference bindings) → implementing it now is dead code.
+- **Enum exhaustiveness checker — defer, separate TODO.** Currently non-exhaustive
+  match = runtime trap. Exhaustiveness checking (or-patterns + guards + wildcards)
+  is a separate task, outside Phase 4. Once implemented, `default_bb` will be switched
+  from trap to `Unreachable`.
+- **Partial-Moved tracking for enums — defer to Tier B/C.** Destructuring uses copy
+  in Tier A → not needed. When heap payloads have real destructors, move-out
+  semantics will provide actual value.
+- **Enum variant resolution is context-free (2026-06-05 addendum).**
+  > ⚠️ **Superseded by [ADR-0071](0071-path-separator-and-module-import.md) Slice 2
   > (2026-06-26).** The bare-name global-scan + E1018 + `TypeName.Variant`
   > dot-form below are ALL retired. A user variant is now referenced ONLY via
   > the qualified `Enum::Variant` form (or an import-bound symbol via `use`); a
@@ -502,18 +493,18 @@ reaching-def là defense-in-depth cho Bậc C, không nằm trong scope Phase 4.
   > `AmbiguousEnumVariant` no longer exists. The text below is the historical
   > 2026-06-05 design.
 
-  Type checker resolve bare variant name (`None`, `SomeInt`) dựa trên global scan
-  tất cả enum types trong root frame. Type annotation (`let n: CD = None`)
-  **không** được dùng để disambiguate — nếu 2 enum cùng có variant `None`,
-  compiler emit E1018 bắt user qualify (`CD.None`). Compiler không đoán ý định
-  từ type context. Qualified syntax (`TypeName.Variant`) luôn hoạt động cho cả
-  unit variant (FieldAccess) và payload variant (MethodCall/Call+FieldAccess).
+  Type checker resolves bare variant names (`None`, `SomeInt`) based on a global scan
+  of all enum types in the root frame. Type annotations (`let n: CD = None`)
+  are **not** used to disambiguate — if two enums both contain variant `None`,
+  the compiler emits E1018 requiring the user to qualify (`CD.None`). The compiler does not guess intent
+  from type context. Qualified syntax (`TypeName.Variant`) always works for both
+  unit variants (FieldAccess) and payload variants (MethodCall/Call+FieldAccess).
 
-## Tham chiếu
+## References
 
-- [ADR-0034](0034-jit-aggregate-coverage.md) — Bậc A uniform boxing, enum opcode delegate-to-VM (cũ, triet-ir).
-- [ADR-0036](0036-typetag-opaque-aggregate.md) — `TypeTag::Opaque` cho aggregate (cũ, triet-ir).
-- [ADR-0020](0020-outcome-error-handling.md) — Outcome `T~E`/`T?~E` với trit discriminator (built-in sum types).
+- [ADR-0034](0034-jit-aggregate-coverage.md) — Tier A uniform boxing, enum opcode delegate-to-VM (legacy, triet-ir).
+- [ADR-0036](0036-typetag-opaque-aggregate.md) — `TypeTag::Opaque` for aggregates (legacy, triet-ir).
+- [ADR-0020](0020-outcome-error-handling.md) — Outcome `T~E`/`T?~E` with trit discriminator (built-in sum types).
 - [SPEC.md](../../SPEC.md) §match — exhaustive match semantics, enum variant patterns.
 - `spec/schema/triet-schema.yaml` — `Expr::EnumLiteral`, `Type::UserEnum`, `EnumVariant`.
-- `spec/plans/phase3-cranelift-backend.md` — Rổ C: enum là Phase 4 scope.
+- `spec/plans/phase3-cranelift-backend.md` — Bucket C: enums are Phase 4 scope.

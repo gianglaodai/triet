@@ -1,28 +1,28 @@
-# ADR-0057 — JIT Outcome-slot Assign-move: teach `Statement::Assign` to move a StackSlot Outcome
+# ADR-0057 — JIT Outcome-Slot Assign-Move: Teaching `Statement::Assign` to Move a StackSlot Outcome
 
-- **Status:** 🔒 LOCKED — G ký duyệt 2026-06-11. Khởi thảo Mentor O 2026-06-11, grounded từ JIT spike (scalar merge → 5).
+- **Status:** 🔒 LOCKED — G sign-off 2026-06-11. Drafted by Mentor O 2026-06-11, grounded from JIT spike (scalar merge → 5).
 - **Date:** 2026-06-11
-- **Khởi thảo:** Mentor O (mổ JIT Assign + spike pre-alloc/slot-copy/tombstone, revert sha-identical).
-- **Chữ ký:** O ✅ (grounded từ spike: scalar Outcome merge end-to-end, no regression) · G ✅ (ký duyệt + đóng dấu 2026-06-11).
-- **Liên quan:** [ADR-0052](0052-outcome-abi-implementation.md) (Outcome 2-reg ABI), [ADR-0053](0053-heap-payload-outcome.md) (32-byte slot), [ADR-0056](0056-heap-value-merge.md) (lower types merge result — tiền đề). **Phong ấn → ADR-0058** (Heap Error Consume: bind `~- e` xong USE ra rác — projection offset sai). **Tách → `fix(lower)`** Bug A dead-block synthetic return (lowerer, KHÔNG thuộc ADR này).
+- **Author:** Mentor O (dissected JIT Assign + spike pre-alloc/slot-copy/tombstone, revert sha-identical).
+- **Signatures:** O ✅ (grounded from spike: scalar Outcome merge end-to-end, no regression) · G ✅ (approved + sealed 2026-06-11).
+- **Related:** [ADR-0052](0052-outcome-abi-implementation.md) (Outcome 2-reg ABI), [ADR-0053](0053-heap-payload-outcome.md) (32-byte slot), [ADR-0056](0056-heap-value-merge.md) (lowerer types merge result — prerequisite). **Sealed → ADR-0058** (Heap Error Consume: binding `~- e` and using it yielded garbage — projection offset bug). **Separated → `fix(lower)`** Bug A dead-block synthetic return (lowerer, OUTSIDE this ADR).
 
 ---
 
-## 1. Context — `Statement::Assign` mù hoàn toàn khi thấy một Outcome
+## 1. Context — `Statement::Assign` is Completely Blind to Outcomes
 
-Sau ADR-0056, `if`/`match` value-merge type kết quả từ giá trị nhánh. Với
-Fat-Pointer (String/Vector) → chạy (JIT typed-Assign copy {ptr,len,cap}). Với
-**Outcome** vẫn vỡ:
+Following ADR-0056, `if`/`match` value-merges type their results from branch values. For
+Fat-Pointers (String/Vector) → works (JIT typed-Assign copies {ptr,len,cap}). For
+**Outcome**, execution still breaks:
 
 ```triet
 function f(c: Color) -> Integer ~ Integer = match c { Red => ~+ 5, Blue => ~- -1 }
 // JIT error: "OutcomeDiscriminant access on non-Outcome local"
 ```
 
-Merge result `_2` được lower type là Outcome (ADR-0056), nhưng JIT KHÔNG cấp
-StackSlot cho nó và `Statement::Assign` chỉ copy 1-word — bỏ rơi cả 32-byte slot.
+The merge result `_2` is typed as Outcome by the lowerer (ADR-0056), but the JIT DOES NOT allocate a
+StackSlot for it, and `Statement::Assign` only copies a single word — abandoning the rest of the 32-byte slot.
 
-## 2. Root cause — ĐO TỪ CODE + SPIKE, KHÔNG ĐOÁN
+## 2. Root Cause — MEASURED FROM CODE + SPIKE, NOT GUESSED
 
 MIR merge (`match c {Red=>~+5, Blue=>~--1}`):
 ```
@@ -30,110 +30,110 @@ bb2: { _3 = Outcome; _3.disc=1; _3.payload=5;  _2 = move _3;  Goto(bb1) }
 bb1: { _13 = move _2.disc; _14 = move _2.payload; Return(_13,_14) }
 ```
 
-**Hai khuyết trong `triet-jit/src/mir_lower.rs`:**
-1. `outcome_slots` CHỈ populate cho `Statement::OutcomeAlloc { dest }` (line 758-767).
-   Merge result `_2` (alloc + `_2 = move _3`) KHÔNG qua OutcomeAlloc → **không có slot**.
-2. `Statement::Assign` handler (line ~1010): `load_place`+`store_place` = copy 1-word.
-   Có nhánh slot-copy cho **String** (struct_slots), **KHÔNG có nhánh Outcome**.
+**Two flaws in `triet-jit/src/mir_lower.rs`:**
+1. `outcome_slots` was ONLY populated for `Statement::OutcomeAlloc { dest }` (lines 758-767).
+   Merge result `_2` (alloc + `_2 = move _3`) did NOT pass through OutcomeAlloc → **had no slot**.
+2. `Statement::Assign` handler (line ~1010): `load_place` + `store_place` = 1-word copy.
+   A slot-copy branch existed for **String** (struct_slots), but **NO branch existed for Outcome**.
 
-→ `_2 = move _3` chỉ copy 1 word, `_2` không slot → bb1 `_2.disc`
-(OutcomeDiscriminant) refuse tại `mir_lower.rs:332-336` ("non-Outcome local").
+→ `_2 = move _3` only copied 1 word, `_2` had no slot → bb1 `_2.disc`
+(OutcomeDiscriminant) was rejected at `mir_lower.rs:332-336` ("non-Outcome local").
 
-**SPIKE chốt (O đâm, revert sha-identical):** 3 điểm chạm bên dưới → scalar
-Outcome merge `match c {Red=>~+5, Blue=>~--1}` consume qua match → **5** (trước:
-JIT refuse). Driver 38 + jit tests không regress. → JIT CÓ THỂ học move slot;
-fix lower-only-không-đủ, phải đụng JIT (đúng instinct G).
+**SPIKE Proof (executed by O, cleanly reverted sha-identical):** The 3 touch points below → scalar
+Outcome merge `match c {Red=>~+5, Blue=>~--1}` consumed via match → **5** (previously:
+JIT rejected). Driver 38 + JIT tests showed no regressions. → JIT CAN learn slot-move;
+lowerer-only fix was insufficient, JIT modification was necessary (confirming G's intuition).
 
-## 3. Decision (G chốt scope — KÝ DUYỆT 2026-06-11)
+## 3. Decision (Scope Locked by G — APPROVED 2026-06-11)
 
-**Phạm vi KHOÁ: Scalar Outcome Merge.** Dạy `Statement::Assign` move một StackSlot
-Outcome. **CHỈ scalar** (success+error đều scalar). Heap-payload Outcome merge phụ
-thuộc ADR-0058 (heap-error-consume), KHÔNG thuộc đây.
+**LOCKED Scope: Scalar Outcome Merge.** Teach `Statement::Assign` to move a StackSlot
+Outcome. **SCALAR ONLY** (both success and error are scalar). Heap-payload Outcome merges depend
+on ADR-0058 (heap-error-consume), OUTSIDE this scope.
 
-**3 điểm chạm + lưới an toàn (`mir_lower.rs`):**
+**3 Touch Points + Safety Guards (`mir_lower.rs`):**
 
-1. **Pre-alloc** (cạnh String 704-715): cấp + đăng ký `outcome_slots` cho MỌI
-   Outcome-typed local (`outcome_slot_size`), KHÔNG chỉ OutcomeAlloc dest. Merge
-   result được slot.
-2. **Assign Outcome-branch** (handler ~1010): khi dest+source (projection rỗng)
-   đều ∈ `outcome_slots` → copy slot-to-slot từng word `[0, outcome_slot_size)`.
-3. **Double-free guard:** sau copy, **tombstone source disc=0** (stack_store 0 @ offset 0)
-   → Drop source thành no-op (G: "đập nát source là đòn kết liễu Double-Free").
-4. **Memory-leak guard (G thêm):** **`Deinit(dest)` trước copy** — đề phòng dest đã
-   lỡ giữ Outcome cũ (SSA hiếm, nhưng giăng lưới). Drop-glue cũ của dest chạy trước
-   khi đè.
+1. **Pre-allocation** (alongside String lines 704-715): allocate + register in `outcome_slots` for EVERY
+   Outcome-typed local (`outcome_slot_size`), NOT just OutcomeAlloc dest. Merge
+   results receive slots.
+2. **Assign Outcome Branch** (handler ~1010): when dest + source (empty projection)
+   are both in `outcome_slots` → copy slot-to-slot word by word `[0, outcome_slot_size)`.
+3. **Double-Free Guard:** after copy, **tombstone source disc=0** (stack_store 0 @ offset 0)
+   → source Drop becomes a no-op (G: "crushing the source is the fatal blow to Double-Frees").
+4. **Memory-Leak Guard (added by G):** **`Deinit(dest)` before copy** — in case dest
+   already held a prior Outcome (rare in SSA, but sets a safety net). Dest's old drop-glue runs before
+   being overwritten.
 
-**Lằn ranh:**
-- CHỈ JIT Assign + slot pre-alloc. KHÔNG đụng lower (ADR-0056 đã type result).
-- KHÔNG đụng heap-error-consume (ADR-0058). Teeth heap Outcome merge → defer.
-- KHÔNG đụng dead-block (Bug A `fix(lower)` riêng).
+**Boundaries:**
+- JIT Assign + slot pre-allocation ONLY. Lowerer UNTOUCHED (ADR-0056 already types results).
+- Heap-error-consume UNTOUCHED (ADR-0058). Teeth for heap Outcome merge → deferred.
+- Dead-blocks UNTOUCHED (separate Bug A `fix(lower)`).
 
 ## 4. Teeth (route-lower / .tri run — scalar Outcome merge)
 
-| Ô | Form | Sau fix | Poison-revert |
+| Cell | Form | Post-Fix | Poison Revert |
 |---|---|---|---|
-| if Outcome ~+ | `= if c {~+5} else {~--1}` consume match | 5 | "non-Outcome local" 🔴 |
-| if Outcome ~- | nhánh else lấy ~- | -1 | 🔴 |
-| match Outcome ~+ | `match c {Red=>~+5, Blue=>~--1}` → consume | 5 | 🔴 |
+| if Outcome ~+ | `= if c {~+5} else {~--1}` consumed via match | 5 | "non-Outcome local" 🔴 |
+| if Outcome ~- | else branch evaluates to ~- | -1 | 🔴 |
+| match Outcome ~+ | `match c {Red=>~+5, Blue=>~--1}` → consumed | 5 | 🔴 |
 | match Outcome ~- | Blue arm → ~- | -1 | 🔴 |
-| **double-free** | merge Outcome, free-count source+dest | free đúng (tombstone) | tước tombstone → count↑ |
-| **regression** | 110-129 Outcome fixtures + ADR-0055/0056 | xanh | — |
+| **double-free** | merge Outcome, free-count source+dest | frees correctly (tombstone) | strip tombstone → count increases |
+| **regression** | 110-129 Outcome fixtures + ADR-0055/0056 | green | — |
 
-**KHÔNG có ô heap Outcome merge** (String/Vector payload) — phụ thuộc ADR-0058;
-ai thêm = lệch scope, REJECT.
+**NO heap Outcome merge cells** (String/Vector payload) — dependent on ADR-0058;
+adding heap cases here represents scope drift and will be REJECTED.
 
-## 5. Thứ tự thi công
-1. Teeth §4 (scalar Outcome merge) — ĐỎ trước.
-2. 3 điểm chạm + 2 lưới (tombstone + Deinit-dest) theo §3.
-3. Teeth đỏ→xanh; poison (tước slot-copy / tước tombstone) chứng minh đỏ.
-4. Regression Outcome + ADR-0055/0056. Gate raw 4 mục.
+## 5. Execution Order
+1. Teeth in §4 (scalar Outcome merge) — RED first.
+2. 3 touch points + 2 safety nets (tombstone + Deinit-dest) per §3.
+3. Teeth red → green; poison (stripping slot-copy / stripping tombstone) demonstrates failure.
+4. Outcome regression + ADR-0055/0056. 4-item raw gate clean.
 
 ## 6. Consequences
-- **Tích cực:** Outcome value chảy qua merge (if/match) — mở error-handling biểu thức.
-- **Phạm vi:** `mir_lower.rs` (pre-alloc + Assign branch), 0 lower, 0 ABI.
-- **Rủi ro:** pre-alloc-cho-mọi-Outcome có thể đụng OutcomeAlloc (double-alloc) —
-  spike đã xác nhận KHÔNG regress, nhưng implementer phải đảm bảo OutcomeAlloc dest
-  dùng đúng slot (single source). Double-free/leak: tombstone-source + Deinit-dest.
-- **Phong ấn ADR-0058 (Heap Error Consume):** bind `~- e` heap xong USE → rác (142
-  HP.5 chỉ bind không xài nên ăn may). JIT projection offset nhánh `~-` nghi sai.
-  Điều tra riêng SAU 0057.
+- **Positive:** Outcome values flow through merges (if/match) — unlocks expression-level error handling.
+- **Scope:** `mir_lower.rs` (pre-allocation + Assign branch), 0 lowerer changes, 0 ABI changes.
+- **Risks:** pre-allocating for all Outcomes could conflict with OutcomeAlloc (double-allocation) —
+  spike confirmed NO regression, but implementer must ensure OutcomeAlloc dest
+  uses the correct slot (single source of truth). Double-free/leak prevented via tombstone-source + Deinit-dest.
+- **Sealed for ADR-0058 (Heap Error Consume):** binding heap `~- e` followed by USE → garbage (fixture 142
+  HP.5 only bound without using, so it passed by accident). Suspected JIT projection offset error on `~-` branch.
+  Investigated separately AFTER ADR-0057.
 
-## 7. Chỉ thị tác chiến cho người lãnh
-- Slot-copy dùng `outcome_slot_size` (16 scalar / 32 heap) — nhưng teeth CHỈ scalar.
-- Tombstone source disc=0 SAU copy; Deinit(dest) TRƯỚC copy — cả hai bắt buộc.
-- CẤM đụng heap-error-consume / dead-block / lower.
-- Route-lower hoặc .tri run; double-free phải đo free-count (không chỉ exit-code —
-  bài học ADR-0055 death-cell). Poison phải đỏ. Gate raw 4 mục.
-- O teeth tay code cuối: poison slot-copy→"non-Outcome"; poison tombstone→free-count↑;
-  regression Outcome + 0055/0056 xanh.
+## 7. Operational Directive for Implementer
+- Slot-copy uses `outcome_slot_size` (16 scalar / 32 heap) — but teeth are SCALAR ONLY.
+- Tombstone source disc=0 AFTER copy; Deinit(dest) BEFORE copy — both are mandatory.
+- FORBIDDEN to touch heap-error-consume / dead-blocks / lowerer.
+- Route-lower or .tri run; double-free must measure free-count (not just exit code —
+  lesson from ADR-0055 death-cell). Poison must fail. 4-item raw gate clean.
+- Mentor O will manually verify final code: poison slot-copy → "non-Outcome"; poison tombstone → free-count increases;
+  Outcome regression + 0055/0056 green.
 
-## 8. Amendment 2026-06-11 — double-free teeth DEFER + latent leak-guard hazard (append-only)
+## 8. Amendment 2026-06-11 — Double-Free Teeth DEFERRED + Latent Leak-Guard Hazard (Append-Only)
 
-**Bối cảnh:** implement xong, O teeth tay code cuối (poison + revert sha-identical):
-- **slot-copy** poison→1-word: 158-161 garbage 🔴 (cơ chế sống).
-- **refactor** `emit_outcome_drop_glue` (extract HP.2 drop-glue, shared Drop+leak-guard):
-  byte-identical; poison double-free neg-arm → **138/141 SIGABRT 134** (helper LIVE+faithful).
-- **tombstone** poison (xóa `stack_store zero src_slot 0`): 158-161 **VẪN XANH**.
+**Context:** Implementation completed; Mentor O manually tested the final code (poison + revert sha-identical):
+- **slot-copy** poison → 1-word: 158-161 garbage 🔴 (mechanism alive).
+- **refactor** `emit_outcome_drop_glue` (extracted HP.2 drop-glue, shared Drop + leak-guard):
+  byte-identical; poison double-free neg-arm → **138/141 SIGABRT 134** (helper LIVE and faithful).
+- **tombstone** poison (removed `stack_store zero src_slot 0`): 158-161 **STILL GREEN**.
 
-**RULING O (chuẩn thuận đề xuất D):** **double-free free-count teeth (§4 dòng "double-free")
-DEFER sang ADR-0058.** Grounded: scalar Outcome Drop = no-op (`emit_outcome_drop_glue`
-trả Ok(true) trước khi emit free vì `!is_any_heap`). Tombstone bảo vệ một no-op → không
-observable bằng free-count/behavior trong scope scalar. Ba ràng buộc mâu thuẫn (free-count
-cần heap · heap merge bị §4 cấm · hand-build MirBuilder bị cấm) → teeth bất khả thi ở đây,
-KHÔNG phải D né. Tombstone+leak-guard **read-verified đúng §3.3/§3.4**; drop-glue chúng
-dùng chung đã teeth LIVE (138/141). **ADR-0058 BẮT BUỘC mang teeth double-free tombstone**
-(heap merge `_2=move _3` payload thật free → poison tombstone → count↑).
+**O RULING (Approving D's Proposal):** **Double-free free-count teeth (§4 row "double-free")
+DEFERRED to ADR-0058.** Rationale: scalar Outcome Drop is a no-op (`emit_outcome_drop_glue`
+returns Ok(true) before emitting frees because `!is_any_heap`). Tombstoning protects a no-op → not
+observable via free-count/runtime behavior in scalar scope. Three conflicting constraints (free-counts
+require heap · heap merge is forbidden by §4 · hand-built MirBuilder is forbidden) → teeth are impossible here,
+NOT an evasion by D. Tombstone + leak-guard were **read-verified per §3.3/§3.4**; the shared drop-glue
+was proven LIVE (138/141). **ADR-0058 MUST carry double-free tombstone teeth**
+(heap merge `_2=move _3` frees actual payload → poison tombstone → count increases).
 
-**🔴 LATENT HAZARD cho ADR-0058 (O phát hiện khi đào leak-guard):** leak-guard
-`emit_outcome_drop_glue(dest)` chạy trên merge-result `_2` — slot pre-alloc **KHÔNG
-zero-init**, disc rác tới lần ghi đầu. Scalar: vô hại (bail tại `!is_any_heap` TRƯỚC khi
-`stack_load(disc)`). **Heap (ADR-0058): leak-guard sẽ `stack_load` disc RÁC từ `_2` chưa
-init → branch → free con trỏ hoang → UB/crash.** Thêm nữa trong SSA merge `_2` ghi-một-lần-
-mỗi-path → leak-guard chống kịch bản không xảy ra (G: "SSA rarity"); với heap nó GÂY bug
-thay vì chặn. **ADR-0058 PHẢI:** zero-init disc merge-result slot TRƯỚC leak-guard, HOẶC
-bỏ leak-guard cho merge-result (fresh, không có Outcome cũ để drop). Ghi để không quên.
+**🔴 LATENT HAZARD for ADR-0058 (Discovered by O during leak-guard inspection):** leak-guard
+`emit_outcome_drop_glue(dest)` runs on merge-result `_2` — pre-allocated slot is **NOT
+zero-initialized**, containing garbage in disc until the first write. Scalar: harmless (bails on `!is_any_heap` BEFORE
+`stack_load(disc)`). **Heap (ADR-0058): leak-guard would `stack_load` GARBAGE disc from uninitialized `_2`
+→ branch → free wild pointer → UB/crash.** Furthermore, in SSA merge `_2` is written-once-per-path
+→ leak-guard guards against an impossible scenario (G: "SSA rarity"); for heap it CAUSES bugs
+rather than preventing them. **ADR-0058 MUST:** zero-init the merge-result slot disc BEFORE leak-guard, OR
+remove leak-guard for merge-results (fresh, no previous Outcome to drop). Recorded to prevent oversight.
 
-- **Chữ ký amendment:** O ✅ (teeth tay 3 mũi + latent hazard 2026-06-11) · G ✅ (ký duyệt
-  2026-06-11 — defer double-free teeth → ADR-0058, latent leak-guard hazard ghi án lệ;
-  G chốt ADR-0058 sẽ XÉ BỎ leak-guard cho merge-result `_2` (SSA fresh, không Outcome cũ).
-  §3 decision KHÔNG đổi).
+- **Amendment Signatures:** O ✅ (manual testing on 3 axes + latent hazard 2026-06-11) · G ✅ (approved
+  2026-06-11 — defer double-free teeth → ADR-0058, recorded latent leak-guard hazard as precedent;
+  G finalized that ADR-0058 will TEAR OUT leak-guard for merge-result `_2` (fresh SSA, no old Outcome).
+  §3 decisions UNCHANGED).

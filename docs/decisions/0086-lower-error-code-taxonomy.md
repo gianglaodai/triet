@@ -1,141 +1,135 @@
-# ADR 0086 — Taxonomy mã lỗi `LowerError` (`triet::lower::E11XX`)
+# ADR 0086 — `LowerError` Error Code Taxonomy (`triet::lower::E11XX`)
 
-**Trạng thái:** Quyết định (WO-Front-A, O + G ký). Áp dụng từ Bậc C.
-Chuyển `LowerError` (`crates/triet-lower/src/lib.rs`) từ struct phẳng
-`{message, span}` KHÔNG mã lỗi sang `enum` 8 biến thể, mỗi biến thể mang một
-mã `triet::lower::E11XX` + `#[derive(miette::Diagnostic)]`, mirror
+**Status:** Decision (WO-Front-A, signed by O + G). Applicable from Tier C.
+Transforms `LowerError` (`crates/triet-lower/src/lib.rs`) from a flat struct
+`{message, span}` WITHOUT error codes into an `enum` with 8 variants, each bearing a
+`triet::lower::E11XX` code + `#[derive(miette::Diagnostic)]`, mirroring
 `CapabilityError` (`crates/triet-typecheck/src/capability_check.rs`).
 
-> **AMEND (ADR-0089 §3 cleanup pass, 2026-07-26):** thêm biến thể thứ 9,
-> `E1143 BreakContinueOutsideLoop`, cùng lớp User error — xem hàng E1143
-> trong bảng dưới. Toàn bộ phần thân ADR bên dưới mô tả quyết định GỐC
-> (8 mã); không viết lại lịch sử, chỉ ghi amend tại đây + tại hàng bảng.
+> **AMENDMENT (ADR-0089 §3 cleanup pass, 2026-07-26):** adds a 9th variant,
+> `E1143 BreakContinueOutsideLoop`, in the User error category — see row E1143
+> in the table below. The remainder of the ADR body describes the ORIGINAL decision
+> (8 codes); preserving history without retroactive rewriting, recording the amendment here and in the table row.
 
-**Issue:** `LowerError` là struct duy nhất trong pipeline compiler KHÔNG có
-mã lỗi và KHÔNG impl `miette::Diagnostic` — vi phạm CLAUDE.md §Error code
-namespace (mọi tầng khác đã có: lexer E0000, parser E000X, typecheck E10XX,
-modules E21XX, capability E22XX, borrowck E24XX, actor E25XX) và ADR-0027
-(diagnostic format standard). Driver in lỗi bằng `eprintln!("{path}: lowerer
-error: {e}")` — chữ trần, không span, không code, không cùng khuôn dạng với
-parse/typecheck/borrowck (vốn render qua `miette::Report` +
-`GraphicalReportHandler`). Có ~47 điểm dựng `LowerError` trong lowerer (8 hàm
-dựng đặt tên + ~39 điểm dựng nội tuyến) — không có mã để tra cứu, không có
-cách phân biệt "chương trình user sai" với "compiler chưa hỗ trợ" với
-"invariant nội bộ vỡ (ICE)" ngoài việc đọc chuỗi message.
+**Issue:** `LowerError` was the only struct in the compiler pipeline lacking error
+codes and lacking a `miette::Diagnostic` implementation — violating CLAUDE.md §Error code
+namespace (all other compiler layers have namespaces: lexer E0000, parser E000X, typecheck E10XX,
+modules E21XX, capability E22XX, borrowck E24XX, actor E25XX) and ADR-0027
+(diagnostic format standard). The driver printed errors via `eprintln!("{path}: lowerer
+error: {e}")` — bare unformatted text, lacking spans, lacking codes, inconsistent with
+parse/typecheck/borrowck diagnostics (which render via `miette::Report` +
+`GraphicalReportHandler`). There were ~47 `LowerError` construction sites in the lowerer (8 named
+helper constructors + ~39 inline construction sites) — with no lookup codes, and no way to
+distinguish "invalid user programs" from "unsupported compiler features" from
+"broken internal invariants (ICE)" without parsing the error message string.
 
-## Quyết định
+## Decision
 
-**8 mã, 4 lớp ngữ nghĩa**, dựa trên recon toàn bộ ~47 điểm dựng lỗi hiện có
-trong `crates/triet-lower/src/lib.rs`:
+**8 codes across 4 semantic categories**, derived from a complete reconnaissance of all ~47 existing
+error construction sites in `crates/triet-lower/src/lib.rs`:
 
-| Mã | Variant | Lớp | Ý nghĩa |
+| Code | Variant | Category | Meaning |
 |---|---------|-----|---------|
-| `E1100` | `ConstructNotYetLowered` | Compiler-completeness gap | AST construct hợp lệ về ngữ nghĩa nhưng backend hiện tại chưa lower — KHÔNG phải lỗi chương trình user. |
-| `E1120` | `NullableEnumPayloadUnsupported` | Design fence | `Enum?` payload-bearing trong aggregate — disc-niche nullable repr (ADR-0065 §12.7) chỉ sound cho unit-only enum. Khóa kiến trúc, không phải "chưa làm". |
-| `E1121` | `NullableStructReturnHeapField` | Design fence | `Struct?` return có field heap-bearing — sret buffer tag-prepend không có drop-glue (ADR-0065 §4 B8). Khóa kiến trúc. |
-| `E1122` | `EscapingClosureSealed` | Design fence | Closure escaping/first-class (`Expr::Lambda`) bị niêm phong CÓ CHỦ Ý (YAGNI, ADR-0039 recon) — không phải lỗ hổng compiler. |
-| `E1140` | `UndefinedLocal` | User error | Biến local không tồn tại trong scope. |
-| `E1141` | `NullLiteralWithoutExpectedType` | User error | Constructor `~+`/`~0`/`~-` thiếu expected type từ ngữ cảnh để suy ra kiểu đích. |
-| `E1142` | `LiteralOutOfRange` | User error | Giá trị literal (Trit/Tryte/Long/Integer trong pattern match) vượt phạm vi biểu diễn được của kiểu. |
-| `E1143` | `BreakContinueOutsideLoop` | User error | **Bổ sung sau (ADR-0089 §3 cleanup pass, 2026-07-26), NGOÀI 8 mã gốc của ADR này** — `break`/`continue` không nằm trong `loop`/`while`/`for` nào. Trước đó helper `break_continue_outside_loop` mượn nhầm `E1140 UndefinedLocal` (sai danh tính: user thấy "Undefined Local" cho `break;` sẽ tưởng compiler lỗi biến). Parser KHÔNG chặn trường hợp này (`E0006 BreakValueOutsideLoop` là dead code, 0 điểm dựng) và typecheck no-op `Stmt::Break`/`Stmt::Continue`, nên lowerer là tuyến phòng thủ DUY NHẤT — mã riêng cho đúng. |
-| `E1190` | `InternalInvariant` | ICE (Internal Compiler Error) | Một bất biến nội bộ lowerer dựa vào (name resolution đã resolve, exhaustiveness scan, fixpoint hội tụ, …) bị vi phạm. Đây là **compiler bug**, không phải lỗi chương trình user — help text yêu cầu report kèm input tối thiểu. |
+| `E1100` | `ConstructNotYetLowered` | Compiler-completeness gap | AST construct is semantically valid but current backend has not yet lowered it — NOT a user program error. |
+| `E1120` | `NullableEnumPayloadUnsupported` | Design fence | Payload-bearing `Enum?` inside aggregates — discriminant niche nullable repr (ADR-0065 §12.7) is sound only for unit-only enums. Architectural fence, not an "unimplemented feature". |
+| `E1121` | `NullableStructReturnHeapField` | Design fence | `Struct?` return containing heap-bearing fields — sret buffer tag-prepend lacks drop-glue (ADR-0065 §4 B8). Architectural fence. |
+| `E1122` | `EscapingClosureSealed` | Design fence | Escaping/first-class closures (`Expr::Lambda`) are INTENTIONALLY sealed (YAGNI, ADR-0039 recon) — not a compiler gap. |
+| `E1140` | `UndefinedLocal` | User error | Local variable does not exist in scope. |
+| `E1141` | `NullLiteralWithoutExpectedType` | User error | Constructor `~+`/`~0`/`~-` lacks expected type from context to infer destination type. |
+| `E1142` | `LiteralOutOfRange` | User error | Literal value (Trit/Tryte/Long/Integer in pattern match) exceeds representable range of the type. |
+| `E1143` | `BreakContinueOutsideLoop` | User error | **Added post-facto (ADR-0089 §3 cleanup pass, 2026-07-26), OUTSIDE original 8 codes** — `break`/`continue` outside `loop`/`while`/`for`. Previously helper `break_continue_outside_loop` mistakenly borrowed `E1140 UndefinedLocal` (semantic mismatch: users seeing "Undefined Local" for `break;` suspect a variable resolution bug). Parser DOES NOT block this case (`E0006 BreakValueOutsideLoop` is dead code with 0 sites) and typecheck no-ops `Stmt::Break`/`Stmt::Continue`, making the lowerer the SOLE line of defense — dedicated code for clarity. |
+| `E1190` | `InternalInvariant` | ICE (Internal Compiler Error) | An internal invariant relied upon by lowerer (resolved name resolutions, exhaustiveness scan, converging fixpoints, …) was violated. This is a **compiler bug**, not a user error — help text requests issue report with minimal reproduction. |
 
-### Vì sao E1190 gom TẤT CẢ 35/47 site còn lại vào MỘT mã ICE
+### Why E1190 Consolidates ALL Remaining 35/47 Sites into a SINGLE ICE Code
 
-Sau khi tách 4 mã "design fence" (E1120/E1121/E1122 — khóa kiến trúc có ADR
-riêng) + 3 mã "user error" (E1140/E1141/E1142 — chương trình user thật sự có
-thể viết ra để kích hoạt) + 1 mã "completeness gap" (E1100 — construct hợp lệ
-chưa lower), phần còn lại (35/47 điểm dựng nội tuyến) đều là các nhánh
-**"typecheck lẽ ra đã từ chối trước khi tới đây"**:
+After isolating 4 "design fence" codes (E1120/E1121/E1122 — architectural fences with dedicated
+ADRs) + 3 "user error" codes (E1140/E1141/E1142 — actual user code triggers) + 1 "completeness gap"
+code (E1100 — valid constructs not yet lowered), all remaining (35/47 inline construction sites)
+fall into branches where **"typecheck should have rejected this prior to reaching lowerer"**:
 
-- Trùng lặp arm (`duplicate ~+ arm`, `duplicate ~0 arm`, `duplicate catch-all`)
-  — exhaustiveness/uniqueness đã được typecheck kiểm tra (SPEC §A1.2); nếu
-  lowerer thấy trùng nghĩa là lowerer đang chạy trên AST mà typecheck lẽ ra
-  phải chặn.
-- Pattern sai hình dạng (`unsupported sub-pattern in ~+ arm`, `~- arm on
-  nullable type`, …) — cùng lý do: typechecker gate hình dạng pattern theo
-  kiểu scrutinee trước khi lowerer thấy nó.
-- Name resolution chưa resolve (`unresolved enum variant`, `unknown enum`,
-  `unknown variant`) — `pattern_resolutions`/`method_resolutions` là output
-  của typecheck; một entry thiếu là lowerer đọc bảng sai, không phải input
-  user sai.
-- Fixpoint không hội tụ (`struct/enum layout sizing did not converge`) —
-  ADR-0068 cấm kiểu đệ quy/Box nên đồ thị kiểu luôn là DAG hữu hạn; không
-  hội tụ nghĩa là bất biến "DAG hữu hạn" bị vi phạm ở đâu đó ngược dòng.
-- Elision bất biến vỡ (`return-borrow elision expects exactly 1 ref-param`) —
-  comment tại chỗ đã ghi rõ "typecheck E2400 should have rejected this".
+- Duplicate match arms (`duplicate ~+ arm`, `duplicate ~0 arm`, `duplicate catch-all`)
+  — exhaustiveness/uniqueness is validated by typecheck (SPEC §A1.2); if lowerer
+  encounters duplicates, lowerer is executing on an AST that typechecker should have rejected.
+- Malformed patterns (`unsupported sub-pattern in ~+ arm`, `~- arm on
+  nullable type`, …) — same rationale: typechecker gates pattern structure based on
+  scrutinee type before lowerer inspects it.
+- Unresolved name resolutions (`unresolved enum variant`, `unknown enum`,
+  `unknown variant`) — `pattern_resolutions`/`method_resolutions` are outputs of
+  typecheck; a missing entry indicates lowerer misreading resolution tables, not invalid user input.
+- Non-converging fixpoints (`struct/enum layout sizing did not converge`) —
+  ADR-0068 forbids recursive types/Box, ensuring type graph is always a finite DAG; non-convergence
+  indicates the "finite DAG" invariant was violated upstream.
+- Broken elision invariants (`return-borrow elision expects exactly 1 ref-param`) —
+  in-place comment explicitly states "typecheck E2400 should have rejected this".
 
-Gom vào một mã thay vì 35 mã riêng vì: (a) không có ADR/spec section nào cho
-mỗi trường hợp — chúng không phải quyết định thiết kế, chúng là "điều này
-không nên xảy ra"; (b) hành động sửa của người dùng là GIỐNG NHAU cho cả 35
-site (không phải sửa chương trình — báo compiler bug); (c) tách nhỏ hơn sẽ
-tạo ảo giác rằng mỗi nhánh là một "loại lỗi user" riêng biệt, trong khi thực
-tế cả 35 đều thuộc một lớp: "một tầng trước lowerer lẽ ra phải chặn cái này".
-Message text giữ nguyên tại mỗi site (không đổi), nên thông tin chi tiết
-(tên biến/variant/pattern cụ thể) không mất — chỉ gom chung một mã tra cứu.
+Consolidated into one code rather than 35 individual codes because: (a) no dedicated ADR/spec section
+exists for each case — these are not design choices, they are "this should never happen"; (b) user
+remediation action is IDENTICAL across all 35 sites (do not fix user code — report compiler bug);
+(c) finer granularity creates the false illusion that each branch represents a distinct "user error type",
+when in reality all 35 belong to a single class: "an upstream pipeline phase should have rejected this".
+Message text is preserved at each site (unchanged), so detailed diagnostic context
+(specific variable/variant/pattern names) is fully retained — consolidated solely under a single lookup code.
 
-### 2 ruling biên (site không tự nhiên khớp 3 lớp trên)
+### 2 Boundary Rulings (Sites not naturally fitting the 3 categories)
 
-- **`:5419` (bản gốc, dòng trôi theo edit) → `E1100`**, không phải `E1190`.
-  Site này refuse trả về `Vector`/`HashMap`/`Enum`/`Reference` từ trait
-  method (`callee_ret` không phải scalar) — comment tại chỗ ghi rõ "nợ #2
-  scope": đây là backend CHƯA CÓ ABI cho các trường hợp trả-về này (multi-
-  value return, Outcome 2-reg ABI, …), không phải một bất biến bị vi phạm.
-  Chương trình user hoàn toàn hợp lệ (trait method trả `Vector` là ngữ nghĩa
-  đúng) — chỉ là backend hiện tại chưa lower được. Đây là compiler-
-  completeness gap kinh điển → `E1100`.
+- **`:5419` (original codebase, line drifting with edits) → `E1100`**, not `E1190`.
+  This site refuses returning `Vector`/`HashMap`/`Enum`/`Reference` from trait
+  methods (`callee_ret` is non-scalar) — in-place comment notes "debt #2
+  scope": backend DOES NOT YET HAVE ABI support for these return cases (multi-value
+  return, Outcome 2-register ABI, …), not an invariant violation.
+  The user program is entirely valid (trait methods returning `Vector` is valid semantics) —
+  merely unsupported in current backend. This is a textbook compiler-completeness gap → `E1100`.
 
-- **`:5935` (bản gốc) → `E1122`**, không phải `E1100` hay `E1190`. Site này
-  refuse `Expr::Lambda` (closure escaping/first-class). Comment tại chỗ ghi
-  rõ đây là niêm phong CÓ CHỦ Ý (YAGNI theo ADR-0039 recon Phase 14.0) —
-  các họ toán tử nullable/Outcome (`~+>`, `~->`) lower qua AST node riêng,
-  không có consumer nào cần closure escaping thật. Đây KHÔNG phải "chưa làm
-  xong" (E1100) — làm xong sẽ không bao giờ xảy ra vì thiết kế chủ động
-  không có đường vào. Cũng không phải ICE (E1190) — không có bất biến nào bị
-  vi phạm, đây là refuse có chủ đích trên input hợp lệ về cú pháp/type. Do
-  đó cần mã riêng `E1122` thay vì rơi vào một trong hai lớp còn lại.
+- **`:5935` (original codebase) → `E1122`**, not `E1100` or `E1190`. This site
+  refuses `Expr::Lambda` (escaping/first-class closures). In-place comment explicitly
+  notes this is an INTENTIONAL seal (YAGNI per ADR-0039 recon Phase 14.0) —
+  nullable/Outcome operator families (`~+>`, `~->`) lower via dedicated AST nodes,
+  with no consumers requiring true escaping closures. This is NOT "unfinished work"
+  (E1100) — completion will not occur because design intentionally provides no pathway.
+  Nor is it an ICE (E1190) — no invariant was violated; this is an intentional refusal on
+  syntactically/semantically valid input. Hence, requires dedicated code `E1122` rather than
+  falling into other categories.
 
-## Các phương án đã cân nhắc
+## Alternatives Considered
 
-| # | Phương án | Ưu | Nhược | Kết luận |
-|---|-----------|---|-------|----------|
-| 1 | Giữ struct phẳng, chỉ thêm field `code: &'static str` | Ít việc nhất | Không có `#[diagnostic]`/miette rendering, không type-safe (code là string rời rạc với message), driver vẫn phải tự lắp `Report` thủ công | Loại — không đạt parity với typecheck/borrowck/capability. |
-| 2 | Enum 47 biến thể (1 biến thể / 1 điểm dựng) | Độ chi tiết tối đa | 35/47 site không có ADR/ý nghĩa riêng biệt để đặt tên — tạo ảo giác 35 "loại lỗi" khác nhau trong khi cùng một lớp "invariant vỡ"; bảo trì nặng (mỗi refactor lowerer phải sửa tên biến thể) | Loại — vi phạm "Simplicity First" (CLAUDE.md §2). |
-| 3 | Enum 8 biến thể theo 4 lớp ngữ nghĩa (đã chọn) | Cân bằng: đủ chi tiết để phân biệt user-error/design-fence/gap/ICE, message text giữ nguyên nên không mất thông tin cụ thể | Lớp ICE (E1190) gom 35 site khác nhau dưới 1 mã — cần ADR này để giải trình rõ ranh giới | **Chọn.** |
+| # | Alternative | Pros | Cons | Conclusion |
+|---|-------------|------|------|------------|
+| 1 | Retain flat struct, adding only `code: &'static str` field | Minimal work | Lacks `#[diagnostic]`/miette rendering, lacks type-safety (code is string disconnected from message), driver must assemble `Report` manually | Rejected — fails parity with typecheck/borrowck/capability. |
+| 2 | Enum with 47 variants (1 variant per site) | Maximum granularity | 35/47 sites lack distinct ADR/semantic rationale — creates illusion of 35 distinct "error types" when all share "broken invariant" class; heavy maintenance burden (each lowerer refactor requires renaming variants) | Rejected — violates "Simplicity First" (CLAUDE.md §2). |
+| 3 | Enum with 8 variants across 4 semantic categories (chosen) | Balanced: distinguishes user errors / design fences / completeness gaps / ICE, preserving exact message strings without losing context | ICE class (E1190) bundles 35 sites under 1 code — requires this ADR to document boundary rationale | **CHOSEN.** |
 
-## Hậu quả
+## Consequences
 
-### Tích cực
-- `LowerError` đạt parity với `TypeError`/`BorrowError`/`CapabilityError`/
-  `ConcurrencyError` — tất cả đều `miette::Diagnostic` với mã `triet::<area>::EXXXX`.
-  CLAUDE.md §Error code namespace bổ sung dòng `triet::lower::E11XX`.
-- Driver in lỗi lowerer bằng cùng khuôn dạng `miette::Report` +
-  `NamedSource` như parse/typecheck/borrowck (span highlight thay vì chữ trần).
-- 8 named constructor giữ nguyên signature — 47/47 call site không cần sửa
-  chữ ký gọi hàm, chỉ 39 điểm dựng nội tuyến đổi `LowerError { .. }` thành
+### Positive
+- `LowerError` achieves parity with `TypeError`/`BorrowError`/`CapabilityError`/
+  `ConcurrencyError` — all implementing `miette::Diagnostic` with `triet::<area>::EXXXX` codes.
+  CLAUDE.md §Error code namespace updated with `triet::lower::E11XX`.
+- Driver renders lowerer errors using uniform `miette::Report` +
+  `NamedSource` formatting matching parse/typecheck/borrowck (span highlighting instead of bare text).
+- 8 named constructors preserve signatures — 47/47 call sites retain invocation
+  signatures, with only 39 inline construction sites updating `LowerError { .. }` to
   `LowerError::Variant { .. }`.
-- Test `tests/diagnostics.rs` (mới) khóa cứng 8 mã bằng assertion trực tiếp
-  trên `miette::Diagnostic::code()`; 2 trong 8 (`E1120`, `E1121`) trigger qua
-  fixture thật (414, 440) thay vì hand-built, chứng minh mã thật sự phát ra
-  từ pipeline, không chỉ từ construct-tay.
+- Test `tests/diagnostics.rs` (new) locks all 8 codes via direct assertions
+  on `miette::Diagnostic::code()`; 2 of the 8 (`E1120`, `E1121`) trigger via
+  real fixtures (414, 440) rather than hand-built instances, proving codes emit naturally
+  from the pipeline.
 
-### Tiêu cực
-- Mã `E1190` mất độ chi tiết: 35 nguyên nhân gốc khác nhau chia sẻ một mã
-  tra cứu. Người đọc log phải đọc `message` (giữ nguyên, đủ chi tiết) để biết
-  chính xác bất biến nào vỡ — mã chỉ nói "đây là ICE".
-- `crates/triet-lower/Cargo.toml` thêm 2 dependency (`thiserror`, `miette`)
-  — build time crate này tăng nhẹ (không đáng kể so với `triet-typecheck` đã
-  có sẵn hai dep này).
+### Negative
+- Code `E1190` trades lookup granularity: 35 distinct root causes share a single
+  lookup code. Log readers must inspect `message` (preserved with full detail) to determine
+  the exact broken invariant — code signifies "this is an ICE".
+- `crates/triet-lower/Cargo.toml` adds 2 dependencies (`thiserror`, `miette`)
+  — minor crate build-time increase (negligible compared to `triet-typecheck` which
+  already depends on both).
 
-### Rủi ro cần mitigate
-- Nếu một site tương lai nào đó thuộc E1190 hóa ra CÓ THỂ bị kích hoạt bởi
-  chương trình user hợp lệ (nghĩa là tầng typecheck KHÔNG chặn được như giả
-  định) — đó là một lỗ hổng typecheck cần vá riêng, không phải lý do đổi mã
-  của site đó sang user-error. Việc gán nhầm lớp chỉ nên sửa SAU KHI đã chứng
-  minh (Rule #7 refuse-over-guess) rằng typecheck thực sự không chặn được.
+### Risks to Mitigate
+- If a future site categorized under E1190 turns out to BE triggerable by valid
+  user code (meaning typechecker failed to reject as assumed) — that is an upstream
+  typecheck bug to fix, not a reason to reclassify the site as a user error. Misclassifications
+  should only be adjusted AFTER proving (Rule #7 refuse-over-guess) that typechecker genuinely cannot block it.
 
-## Ngày hiệu lực
+## Effective Date
 
-- Bậc C+ — áp dụng ngay khi WO-Front-A merge.
-- Không áp dụng hồi tố cho log/báo cáo cũ đã dùng message trần (git history
-  giữ nguyên struct cũ, không cần migrate ngược).
+- Tier C+ — applicable immediately upon merging WO-Front-A.
+- Not retroactive for legacy logs/reports using bare text (git history preserves
+  old struct representations without reverse migration).

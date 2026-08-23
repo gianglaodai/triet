@@ -1,8 +1,8 @@
 # ADR 0021 — Compile-time `Trilean!` refinement for strict `if`
 
-**Trạng thái:** Quyết định. Áp dụng cho v0.7.4.3-error.3c onward. Closes long-standing TODO in [`crates/triet-typecheck/src/check.rs:397-412`](../../crates/triet-typecheck/src/check.rs) (comment: *"A future pass could refine this"*). Aligns implementation với [SPEC §7.1.1](../../SPEC.md) (which has always specified compile-time error for plain-`if` on possibly-Unknown conditions). Refines [ADR-0010 §1](0010-ternary-native-ir.md) (which made the runtime panic the primary safety mechanism — now demoted to defense-in-depth).
+**Status:** Decided. Applicable from v0.7.4.3-error.3c onward. Closes long-standing TODO in [`crates/triet-typecheck/src/check.rs:397-412`](../../crates/triet-typecheck/src/check.rs) (comment: *"A future pass could refine this"*). Aligns implementation with [SPEC §7.1.1](../../SPEC.md) (which has always specified compile-time error for plain-`if` on possibly-Unknown conditions). Refines [ADR-0010 §1](0010-ternary-native-ir.md) (which made the runtime panic the primary safety mechanism — now demoted to defense-in-depth).
 
-**Issue:** Triết v0.7.4.3-error.3b ships với three-layer error story:
+**Issue:** Triet v0.7.4.3-error.3b ships with a three-layer error model:
 
 | Layer | Mechanism | Triggered by |
 |---|---|---|
@@ -10,7 +10,7 @@
 | Bug-tier (panic) | `VmError` E22XX | Unsoundness — division-by-zero, force-unwrap-null, unwrap-wrong-arm |
 | **Plain `if` on possibly-Unknown** | **Runtime panic via `BrTrilean` unknown_block** | **`if cond` when cond *might* be Trilean::Unknown** |
 
-The third layer is the outlier. SPEC §7.1.1 has always called it a "compile error". ADR-0010 §1 documented runtime-panic as the implementation strategy because the type checker "can't tell statically whether a Trilean is always known". The typecheck source-of-truth file confirms the gap:
+The third layer is the outlier. SPEC §7.1.1 has always designated it a "compile error". ADR-0010 §1 documented runtime-panic as the implementation strategy because the type checker "cannot tell statically whether a Trilean is always known". The typecheck source-of-truth file confirms the gap:
 
 ```rust
 // crates/triet-typecheck/src/check.rs:397-412
@@ -28,15 +28,15 @@ fn check_condition_type(&mut self, cond_ty: Type, ...) {
 }
 ```
 
-Author 2026-05-18 (during v0.7.4.3-error error-handling work): *"Hiện tại chúng ta đang để panic ở runtime. Điều này không tốt, hãy để lỗi ở compile time. `if` chỉ nhận boolean mà thôi."* The Outcome work (ADR-0020) closed the recoverable-error gap; this ADR closes the strict-`if` gap symmetrically.
+Author directive on 2026-05-18 (during v0.7.4.3-error error-handling work): *"Currently we are leaving this to panic at runtime. This is not good; let's report errors at compile time. `if` must only accept boolean."* The Outcome work (ADR-0020) closed the recoverable-error gap; this ADR closes the strict-`if` gap symmetrically.
 
-Two consistency bugs surface during this audit:
+Two consistency issues surfaced during this audit:
 
-1. **SPEC §7.1.1 vs ADR-0010 §4 conflict.** SPEC says `if cond == true` "chỉ true mới chạy, unknown đối xử false". But ADR-0010 §4 explicitly states `Unknown == true → Unknown`, which means `if (cond == true)` with `cond = Unknown` still panics under ADR-0010. SPEC §7.1.1 is incorrect on this point. Fixed in §6 below.
+1. **SPEC §7.1.1 vs ADR-0010 §4 conflict.** SPEC states `if cond == true` "only true executes, unknown treated as false". But ADR-0010 §4 explicitly states `Unknown == true → Unknown`, which means `if (cond == true)` with `cond = Unknown` still panics under ADR-0010. SPEC §7.1.1 is incorrect on this point. Fixed in §6 below.
 
 2. **Comparison ops type-erase refinement.** `Integer == Integer` and `Integer < Integer` *cannot* produce Unknown (Integer has no Unknown state), yet currently return generic `Type::Trilean` indistinguishable from `Trilean::Unknown`-bearing comparisons. The checker has no way to prove `if (a == b)` is safe.
 
-This ADR fixes both via a **refinement type** layered on top of the existing `Type::Trilean` — no new primitive type, no new wire format, no new VM opcodes. The refinement lives entirely in the typecheck crate.
+This ADR resolves both via a **refinement type** layered on top of the existing `Type::Trilean` — no new primitive type, no new wire format, and no new VM opcodes. The refinement lives entirely in the typecheck crate.
 
 ## §1 — `Trilean!` refinement type
 
@@ -57,7 +57,7 @@ Type lattice (refinement direction):
 ```
 
 - **`Trilean!`** is a subtype of `Trilean`. Any value of type `Trilean!` can be passed wherever `Trilean` is expected — the widening is implicit and always sound.
-- **`Trilean` → `Trilean!`** narrowing is never implicit. The author writes `.assume_known()` (runtime check, panic if Unknown), uses pattern matching (`match cond { true => ..., false => ..., unknown => ... }`), or uses `if?` (treats Unknown as one of the three arms).
+- **`Trilean` $\rightarrow$ `Trilean!`** narrowing is never implicit. The author writes `.assume_known()` (runtime check, panics if Unknown), uses pattern matching (`match cond { true => ..., false => ..., unknown => ... }`), or uses `if?` (treats Unknown as one of the three arms).
 
 Surface syntax: the `!` suffix is the **only** distinguishing marker. It appears in error messages, type annotations, and diagnostic output. Authors rarely write `Trilean!` directly — it arises through inference (see §2). Display form per SPEC convention follows `!`-as-strict marker (cf. `expect!` in Rust prelude, `!`-banged methods).
 
@@ -68,7 +68,7 @@ Surface syntax: the `!` suffix is the **only** distinguishing marker. It appears
 - No new IR opcode — branch and comparison opcodes are unchanged.
 - No new `.triv` wire format version bump — refinement is erased at IR lowering.
 
-The runtime tier remains free to carry an Unknown value in a register typed `Trilean!`, but **typecheck guarantees no source-level path can construct such a state** without an explicit narrowing call. If the runtime ever sees Unknown in a `Trilean!`-typed slot, that is a typecheck bug, not a user error.
+The runtime tier remains free to carry an Unknown value in a register typed `Trilean!`, but **typecheck guarantees no source-level path can construct such a state** without an explicit narrowing call. If the runtime ever sees Unknown in a `Trilean!`-typed slot, that is a compiler bug, not a user error.
 
 ## §2 — Operator and literal refinement rules
 
@@ -82,7 +82,7 @@ The refinement is *propagated* through operations, not declared. The typecheck r
 | `false` | `Trilean!` |
 | `unknown` | `Trilean` |
 
-Rationale: `true` / `false` literals are statically proven non-Unknown at the source level. The `unknown` literal is the canonical Trilean::Unknown.
+Rationale: `true` / `false` literals are statically proven non-Unknown at the source level. The `unknown` literal is the canonical `Trilean::Unknown`.
 
 ### 2.2 — Equality and ordering
 
@@ -93,9 +93,9 @@ Comparisons follow ADR-0010 §4 ("Ł3-aware Eq/Ne") but track refinement:
 | Integer | Integer | `Trilean!` | `Trilean!` |
 | Tryte | Tryte | `Trilean!` | `Trilean!` |
 | Long | Long | `Trilean!` | `Trilean!` |
-| Trit | Trit | `Trilean` (Trit::Zero ↔ Unknown propagation per ADR-0010 §3) | `Trilean!` (Trit ordering is total) |
+| Trit | Trit | `Trilean` (Trit::Zero $\leftrightarrow$ Unknown propagation per ADR-0010 §3) | `Trilean!` (Trit ordering is total) |
 | String | String | `Trilean!` | `Trilean!` (lexicographic, total) |
-| `Trilean!` | `Trilean!` | `Trilean!` (both ≠ Unknown ⇒ result ≠ Unknown) | N/A (Trilean has no ordering) |
+| `Trilean!` | `Trilean!` | `Trilean!` (both $\ne$ Unknown $\Rightarrow$ result $\ne$ Unknown) | N/A (Trilean has no ordering) |
 | `Trilean` | `Trilean!` or `Trilean` | `Trilean` (might be Unknown) | N/A |
 | `Trilean!` | `Trilean` | `Trilean` (one side might be Unknown) | N/A |
 | `T?` | `T?` / `T` / `null` | `Trilean` (null propagates Unknown per ADR-0001 + ADR-0010 §3) | (same) |
@@ -115,7 +115,7 @@ The key rule: **non-nullable, non-Trilean primitives compare to `Trilean!`** bec
 
 Rationale: in Łukasiewicz Ł3, the truth table for `True ∧ True`, `True ∧ False`, `False ∧ False` never produces Unknown — Unknown is only produced when at least one operand is Unknown. Same for `∨`, `→`, `↔`. The refinement is closed under these operations.
 
-The `!` unary-not operator: `!Trilean!` → `Trilean!`, `!Trilean` → `Trilean`. (Negation cannot introduce Unknown.)
+The `!` unary-not operator: `!Trilean!` $\rightarrow$ `Trilean!`, `!Trilean` $\rightarrow$ `Trilean`. (Negation cannot introduce Unknown.)
 
 ### 2.4 — `assume_known()` method
 
@@ -133,7 +133,7 @@ This makes the narrowing intent reviewable at the call site, mirroring `.unwrap_
 
 The `NullCheck` IR opcode (ADR-0010 §3) returns a Trit-encoded discriminator: Positive = non-null, Zero = null. When the lowerer materializes this into a Trilean-typed register (for `if`/branch purposes), the static type is `Trilean!` — the check definitively answers Positive or Zero, never Unknown.
 
-Practical effect: `if x.is_null() { … }` (sugar shortly to add) typechecks under the refinement system.
+Practical effect: `if x.is_null() { … }` (sugar shortly to be added) typechecks under the refinement system.
 
 ### 2.6 — Match arm narrowing
 
@@ -147,7 +147,7 @@ match cond {
 }
 ```
 
-This is automatic flow-sensitive narrowing — same mechanism that lets `if (cond == true)` work *if* and only if `cond` is already `Trilean!`. The third arm (`unknown`) does NOT widen back to `Trilean!` because the value at that point IS Unknown.
+This is automatic flow-sensitive narrowing — the same mechanism that lets `if (cond == true)` work *if* and only if `cond` is already `Trilean!`. The third arm (`unknown`) does NOT widen back to `Trilean!` because the value at that point IS Unknown.
 
 ### 2.7 — Function return types
 
@@ -183,7 +183,7 @@ error[E1033]: condition might be Trilean::Unknown — plain `if` requires Trilea
 2 │     if t { "yes" } else { "no" }
   │        ^ this is `Trilean` (might be Unknown)
   │
-  = note: plain `if` panics on Unknown per ADR-0010 — Triết forbids that path
+  = note: plain `if` panics on Unknown per ADR-0010 — Triet forbids that path
           statically. Choose one of:
 
           1) Use `if?` to treat Unknown as false:
@@ -295,7 +295,7 @@ E1033 — `PossiblyUnknownCondition` — joins the v0.7.4.3-error.2 batch (E1024
 
 **Lock:** Zero impact on IR, VM, `.triv` wire format, or any backend.
 
-- `BrTrilean` unknown_block continues to exist. Post-3d, it becomes **defense-in-depth** rather than primary safety: every reachable plain-`if` site has typecheck-proof its cond is `Trilean!`, so `unknown_block` should never fire in well-typed code. The opcode is retained because (a) `if?` paths still legitimately route Unknown through `unknown_block` to the else branch, and (b) the VM is allowed to be paranoid about IR it didn't produce itself (e.g., loaded `.triv` files where typecheck was skipped).
+- `BrTrilean` unknown_block continues to exist. Post-3d, it becomes **defense-in-depth** rather than primary safety: every reachable plain-`if` site has typecheck-proof its cond is `Trilean!`, so `unknown_block` should never fire in well-typed code. The opcode is retained because (a) `if?` paths still legitimately route Unknown through `unknown_block` to the else branch, and (b) the VM is allowed to be paranoid about IR it did not produce itself (e.g., loaded `.triv` files where typecheck was skipped).
 - `Eq` / `Lt` / `Gt` etc. opcodes unchanged — refinement is erased at lowering.
 - `Constant::Trilean` unchanged — refinement is not encoded in constants.
 - `.triv` wire format stays at v5 (no version bump for type-level-only changes — per ADR-0010 §"wire format compatibility" precedent).
@@ -307,10 +307,10 @@ ADR-0010 §1 originally documented `BrTrilean { unknown_block }` as the **primar
 **Lock:** SPEC §7.1.1 line 706 currently says:
 
 > ```triet
-> if cond == true { ... }         // chỉ true mới chạy, unknown đối xử false
+> if cond == true { ... }         // only true executes, unknown treated as false
 > ```
 
-This is **incorrect** per ADR-0010 §4 ("Trilean::Unknown == true ⇒ Trilean::Unknown"). With ADR-0021, the line is corrected:
+This is **incorrect** per ADR-0010 §4 ("Trilean::Unknown == true $\Rightarrow$ Trilean::Unknown"). With ADR-0021, the line is corrected:
 
 | `cond` static type | `cond == true` | `if (cond == true)` behavior |
 |---|---|---|
@@ -319,7 +319,7 @@ This is **incorrect** per ADR-0010 §4 ("Trilean::Unknown == true ⇒ Trilean::U
 
 SPEC §7.1.1 is updated alongside this ADR (the `.3c` commit) to:
 
-1. Remove the "chỉ true mới chạy, unknown đối xử false" line for `if cond == true`.
+1. Remove the "only true executes, unknown treated as false" line for `if cond == true`.
 2. Add a note: "If `cond: Trilean!` then `cond == true` is `Trilean!` and safe in plain `if`. If `cond: Trilean` then `cond == true` is `Trilean` and `if` rejects it — use `if?`, `match`, or `.assume_known()`."
 3. Cross-reference ADR-0021 from §7.1.1.
 
@@ -327,7 +327,7 @@ SPEC §7.1.1 is updated alongside this ADR (the `.3c` commit) to:
 
 **Lock:** No deprecation warning period. v0.7.4.3-error.3d ships E1033 as a hard compile error.
 
-Author 2026-05-18 directive: "xử lý ngay" — no warning-period. Rationale: SPEC §7.1.1 has always specified compile-time error since pre-v0.2. Programs relying on the runtime-panic fallback were depending on undocumented behavior. The migration is mechanical — every offending site has at least one of the four §3 remediations applicable.
+Author 2026-05-18 directive: "handle immediately" — no warning period. Rationale: SPEC §7.1.1 has always specified compile-time error since pre-v0.2. Programs relying on the runtime-panic fallback were depending on undocumented behavior. The migration is mechanical — every offending site has at least one of the four §3 remediations applicable.
 
 Corpus audit (2026-05-18, pre-`.3d`):
 
@@ -344,16 +344,16 @@ Corpus audit (2026-05-18, pre-`.3d`):
 
 ## §8 — Coexistence with existing features
 
-- **`assume_known()`** — already exists per `check/methods.rs` (Trilean → Trilean). ADR-0021 changes the *type* of the result to `Trilean!`. The runtime semantics (panic if Unknown) are unchanged. Method signature gains a `message: String` argument per `feedback_explicit_strictness` — same as `unwrap_value(message)` / `unwrap_error(message)` from ADR-0020. Old callers must add a message argument; this is its own small migration in `.3e`.
+- **`assume_known()`** — already exists per `check/methods.rs` (Trilean $\rightarrow$ Trilean). ADR-0021 changes the *type* of the result to `Trilean!`. The runtime semantics (panic if Unknown) are unchanged. Method signature gains a `message: String` argument per `feedback_explicit_strictness` — same as `unwrap_value(message)` / `unwrap_error(message)` from ADR-0020. Old callers must add a message argument; this is its own small migration in `.3e`.
 - **`NullCheck`** — IR opcode result already returns Trit-encoded. The typecheck wrapper exposing it via syntax (e.g. `x.is_null()` sugar) types as `Trilean!`. (No such sugar exists yet — when it ships, it lands with `Trilean!`.)
-- **`Trilean::True` / `False` / `Unknown` constructors** — Triết doesn't expose these as user-callable constructors. Literals `true` / `false` / `unknown` are the only source-level way to materialize Trilean values, and §2.1 already specifies their types.
+- **`Trilean::True` / `False` / `Unknown` constructors** — Triet does not expose these as user-callable constructors. Literals `true` / `false` / `unknown` are the only source-level way to materialize Trilean values, and §2.1 already specifies their types.
 - **Pattern match exhaustiveness** — match on `Trilean!` need only cover `true` and `false`; the `unknown` arm is statically unreachable. The exhaustiveness checker is updated to allow 2-arm `match` on `Trilean!` (E1015 `NonExhaustiveMatch` does not fire). Same shape as exhaustiveness on `Outcome` with `allow_null_state: false` (per ADR-0020 §5).
 
 ## §9 — Memory / serialization
 
 No memory or serialization impact. Refinement is type-level only. The `Trilean { refined: bool }` field adds 1 bit (rounded to 1 byte) per Type instance in the typecheck crate's in-memory representation — negligible.
 
-`.triv` wire format unchanged — refinement is erased before lowering. A `.triv` file produced by a Triết v0.7.4.3-error.3d compiler is byte-identical to one produced by v0.7.4.3-error.3b for any program that didn't use the strict-`if`-on-`Trilean` path.
+`.triv` wire format unchanged — refinement is erased before lowering. A `.triv` file produced by a Triet v0.7.4.3-error.3d compiler is byte-identical to one produced by v0.7.4.3-error.3b for any program that did not use the strict-`if`-on-`Trilean` path.
 
 ## §10 — Test plan
 
@@ -377,32 +377,32 @@ No memory or serialization impact. Refinement is type-level only. The `Trilean {
 
 End-to-end in `crates/triet-cli/tests/`:
 
-16. Source program with `if (n > 0)` runs cleanly through parse → typecheck → lower → VM.
+16. Source program with `if (n > 0)` runs cleanly through parse $\rightarrow$ typecheck $\rightarrow$ lower $\rightarrow$ VM.
 17. Source program with `if (trilean_var)` fails at typecheck with E1033 (test inspects the diagnostic).
 18. Migrated `demos/02-module-system/alu.tri` typechecks cleanly after `.3e`.
 
-## §11 — Không làm
+## §11 — Rejected Alternatives
 
-- **Not introduce a separate `Bool` type** (rejected approach). Considered: a 2-state type distinct from Trilean. Rejected because it dilutes the "tam phân first-class" identity (VISION §5) — Triết is built around Trilean as the canonical truth type. A `Bool` would imply that 2-valued is the "default" and 3-valued is "extended", reversing the philosophy.
+- **Not introduce a separate `Bool` type** (rejected approach). Considered: a 2-state type distinct from Trilean. Rejected because it dilutes the "ternary first-class" identity (VISION §5) — Triet is built around Trilean as the canonical truth type. A `Bool` would imply that 2-valued is the "default" and 3-valued is "extended", reversing the philosophy.
 - **Not flow-sensitive refinement (occurrence typing)**. Rejected scope creep: tracking "after this `if (x == true) { … }` block, x is narrowed to Trilean! True" requires Hindley–Milner-with-refinements machinery far beyond the v0.2 type checker. Authors can use `match` or `.assume_known()` for the rare narrowing case.
 - **Not effect tracking for unknown-introduction**. Rejected: would require annotating every function as "might-introduce-unknown" or not. Refinement on types is sufficient — Trilean values traveling through generic-Trilean-typed signatures stay generic-Trilean.
 - **Not retroactively make `BrTrilean { unknown_block }` an error at IR-construction time**. Backends that load `.triv` files from less-strict producers must still handle Unknown — the runtime safety net is retained per §5.
-- **Not warning-period**. Per author 2026-05-18 directive: "xử lý ngay". 12-site migration corpus is small enough; rip-the-band-aid approach matches "stability over speed" interpretation (one painful migration is better than two years of `if?`-vs-`if`-equivalent confusion).
+- **Not warning-period**. Per author 2026-05-18 directive: "handle immediately". 12-site migration corpus is small enough; rip-the-band-aid approach matches "stability over speed" interpretation (one painful migration is better than two years of `if?`-vs-`if`-equivalent confusion).
 - **Not enforce `Trilean!` in function parameter positions automatically.** Function parameters declared `Trilean` accept `Trilean!` (widening). Function parameters declared `Trilean!` accept only `Trilean!`. Authors choose the right declaration; no automatic narrowing.
 
-## §12 — Prior art
+## §12 — Prior Art
 
-- **Rust `bool` vs `Option<bool>`**: bare `bool` is 2-state, `Option<bool>` is 3-state (None for unknown). Distinction is via wrapper type. Triết uses refinement on the same Trilean type — closer to subtype than wrapper, lighter weight.
-- **Refinement types (Liquid Haskell, F\*)**: arbitrary predicate refinement. Triết uses a single-bit refinement which is much weaker but doesn't require SMT solving — fits the v0.2 type-checker.
-- **Kotlin null-safety (`String` vs `String?`)**: 2-state nullability. Triết already has `T?` for this; ADR-0021 applies the same compile-time-refusal pattern to Trilean::Unknown.
-- **Java Optional / Stream API**: nominal types, no refinement. Anti-pattern reference — Triết wants the typechecker to do the work, not the author writing `.orElseThrow()` at every use site.
+- **Rust `bool` vs `Option<bool>`**: bare `bool` is 2-state, `Option<bool>` is 3-state (None for unknown). Distinction is via wrapper type. Triet uses refinement on the same Trilean type — closer to subtype than wrapper, lighter weight.
+- **Refinement types (Liquid Haskell, F\*)**: arbitrary predicate refinement. Triet uses a single-bit refinement which is much weaker but does not require SMT solving — fits the v0.2 type-checker.
+- **Kotlin null-safety (`String` vs `String?`)**: 2-state nullability. Triet already has `T?` for this; ADR-0021 applies the same compile-time-refusal pattern to `Trilean::Unknown`.
+- **Java Optional / Stream API**: nominal types, no refinement. Anti-pattern reference — Triet wants the typechecker to do the work, not the author writing `.orElseThrow()` at every use site.
 - **CMU CCured (referenced in ADR-0010)**: 3-state qualifier propagation (safe/uncheckable/wild). ADR-0021 follows the same "qualifier on a base type" mental model.
 - **Setun JZ instruction**: the hardware 3-way branch motivated ADR-0010's BrTrilean. ADR-0021 layers compile-time discipline on top; the hardware path stays open for v∞ trytecode.
 
-## §13 — Tham chiếu
+## §13 — References
 
 - [SPEC §7.1.1 — if/if? semantics + unknown handling](../../SPEC.md) (updated alongside this ADR)
-- [VISION §5 — Bản sắc Triết: ternary first-class](../../VISION.md)
+- [VISION §5 — Triet Identity: ternary first-class](../../VISION.md)
 - [ADR-0001 — Nullable memory layout](0001-nullable-memory-layout.md) (refinement applies symmetrically to NullCheck per §2.5)
 - [ADR-0010 — Ternary-native IR](0010-ternary-native-ir.md) (this ADR refines §1 + §4; adds Addendum §C)
 - [ADR-0017 — Trilean policy hook](0017-trilean-policy-hook.md) (capability resolver continues to return generic `Trilean` — `Trilean!` is at compile time only)

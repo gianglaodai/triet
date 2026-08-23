@@ -1,6 +1,6 @@
 # ADR 0005 — Module system: Java JPMS aesthetic, dot paths, Python imports
 
-**Trạng thái:** Quyết định. Áp dụng cho v0.2.x. Đây là trụ cột #2 trong [VISION.md](../../VISION.md).
+**Status:** Decision. Applicable to v0.2.x. This is pillar #2 in [VISION.md](../../VISION.md).
 
 > ⚠️ **Import syntax superseded by [ADR-0071](0071-path-separator-and-module-import.md) (2026-06-25).**
 > The `import std.io` / `from std.io import …` keywords + dot-separated import
@@ -10,20 +10,20 @@
 > only the surface import syntax changed. The body below is kept verbatim as the
 > historical record; read it for the module model, not the import keywords.
 
-**Issue:** Triết đã đến giới hạn của single-file program. Code base demo đã 11 file `.tri` ở cùng namespace phẳng. Library nội bộ và phân chia codebase đòi hỏi module system thực sự. Đây cũng là tiền đề kiến trúc cho stable ABI (v0.4), CAS packaging (v0.5), và capability namespaces (v0.6) — module system thiết kế sai sẽ kéo theo phá vỡ ba trụ cột về sau.
+**Issue:** Triet has reached the limit of single-file programs. The demo codebase already contains 11 `.tri` files within a single flat namespace. Internal libraries and codebase separation require a true module system. This is also the architectural prerequisite for a stable ABI (v0.4), CAS packaging (v0.5), and capability namespaces (v0.6)—a poorly designed module system would break these three future pillars.
 
-## Quyết định
+## Decision
 
-Triết áp dụng **hierarchical module tree theo phong cách Java JPMS**, với cú pháp **verbose keywords** + **dot-separated paths** + **Python-style imports**, **explicit `public` export**, và **không bind cứng vào filesystem**.
+Triet adopts a **hierarchical module tree following the Java JPMS style**, utilizing **verbose keywords** + **dot-separated paths** + **Python-style imports**, **explicit `public` exports**, and **no hard binding to the filesystem**.
 
-### Cú pháp
+### Syntax
 
 ```triet
-// Trong file `pkg.tri` (root của crate `pkg`):
-module foo                            // declare submodule, compiler tìm `foo.tri`
-module bar                            // declare submodule `bar`
+// In file `pkg.tri` (root of crate `pkg`):
+module foo                            // declares submodule, compiler looks for `foo.tri`
+module bar                            // declares submodule `bar`
 
-// Trong file `foo.tri`:
+// In file `foo.tri`:
 public function hello() -> String =   // exported
     "hello"
 
@@ -37,31 +37,31 @@ module inline {                       // inline submodule
 
 ### Path syntax
 
-Triết dùng dấu chấm `.` làm path separator (giống Java/Python, khác Rust/C++). Không dùng `::`.
+Triet uses the dot `.` as a path separator (similar to Java/Python, unlike Rust/C++). It does not use `::`.
 
-| Path | Ý nghĩa |
+| Path | Meaning |
 |---|---|
-| `crate.foo.bar` | Absolute path từ crate root |
+| `crate.foo.bar` | Absolute path from crate root |
 | `self.foo` | Relative — current module |
 | `super.foo` | Relative — parent module |
 | `std.io.println` | Stdlib path |
-| `sys.*`, `dev.*`, `usr.*` | **Reserved** ở v0.2.x (chưa enforce; v0.6 sẽ enforce capability) |
+| `sys.*`, `dev.*`, `usr.*` | **Reserved** in v0.2.x (not yet enforced; v0.6 will enforce capabilities) |
 
-`crate`, `self`, `super` là reserved path keywords (ADR-0005 §"Reserved top-level namespaces"), không thể dùng làm identifier.
+`crate`, `self`, and `super` are reserved path keywords (see ADR-0005 §"Reserved top-level namespaces") and cannot be used as identifiers.
 
 ### Visibility levels
 
 ```triet
 public function open() = ...          // visible everywhere
-public(package) function detail() = ... // visible within same crate-pack only
+public(package) function detail() = ... // visible within the same crate-pack only
 function helper() = ...               // private to current module (default)
 ```
 
-**Triết SIMPLIFIES Rust's visibility:** chỉ 3 cấp (`public`, `public(package)`, private). Bỏ `public(super)`, `public(in path)` để giữ ABI surface đơn giản. Có thể bổ sung ở v1.0+ nếu thực sự cần.
+**Triet SIMPLIFIES Rust's visibility:** only 3 levels (`public`, `public(package)`, and private). We omit `public(super)` and `public(in path)` to keep the ABI surface simple. These may be added in v1.0+ if strictly necessary.
 
 ### Imports — Python style
 
-Triết dùng cú pháp Python `from ... import ...` cho selective import, và `import ...` cho whole-module import.
+Triet uses Python syntax `from ... import ...` for selective imports, and `import ...` for whole-module imports.
 
 ```triet
 from crate.foo import bar             // single name
@@ -71,17 +71,17 @@ from std.io import println, print
 import std.io                         // import whole module (use as `std.io.println`)
 ```
 
-**KHÔNG hỗ trợ:**
-- Glob imports (`from foo import *`) — vi phạm explicit export principle, làm ABI surface mơ hồ. Có thể revisit ở v1.0+ nếu có ngữ cảnh thuyết phục.
-- Re-exports (`public from X import Y` hoặc tương đương) — defer sang v0.3+ khi nhu cầu rõ.
+**NOT supported:**
+- Glob imports (`from foo import *`) — violates the explicit export principle and makes the ABI surface ambiguous. This may be revisited in v1.0+ if a compelling use case arises.
+- Re-exports (`public from X import Y` or equivalent) — deferred to v0.3+ when the requirement is clear.
 
 ### File resolution
 
-Compiler tìm file theo thứ tự:
-1. `module foo` ở `path/to/parent.tri` → tìm `path/to/foo.tri` **hoặc** `path/to/foo/foo.tri`.
-2. Inline `module foo { ... }` → không tìm file.
+The compiler searches for files in the following order:
+1. `module foo` in `path/to/parent.tri` $\rightarrow$ looks for `path/to/foo.tri` **or** `path/to/foo/foo.tri`.
+2. Inline `module foo { ... }` $\rightarrow$ does not look for a file.
 
-Một module có submodule = directory chứa cả file `foo.tri` (chính module) và children `foo/bar.tri`. Đơn giản hơn Rust 2018 (không có `mod.rs` nữa, tránh nhiều file cùng tên).
+A module with a submodule is represented as a directory containing both the `foo.tri` file (the module itself) and its children in `foo/bar.tri`. This is simpler than Rust 2018 (no `mod.rs` required, avoiding multiple files with the same name).
 
 ```
 mypkg/
@@ -93,13 +93,13 @@ mypkg/
 └── bar.tri                # module `bar`, no children
 ```
 
-**Chú ý:** filesystem layout là **convention**, không phải ngữ nghĩa. Compiler chỉ resolve theo `module` declarations. Mapping được thiết kế sao cho:
-- Dev mới đọc filesystem hiểu ngay structure (helpful).
-- Refactor (đổi tên, di chuyển) chỉ cần sửa `module` declarations + đổi tên file (flexible).
+**Note:** The filesystem layout is a **convention**, not a semantic requirement. The compiler resolves based solely on `module` declarations. The mapping is designed so that:
+- New developers can immediately understand the structure by reading the filesystem (helpful).
+- Refactoring (renaming, moving) only requires updating `module` declarations and renaming files (flexible).
 
 ### Cyclic imports
 
-**Cấm.** Compiler error tại name resolution. Diagnostic chỉ rõ chu trình:
+**Forbidden.** The compiler will trigger an error during name resolution. The diagnostic will explicitly identify the cycle:
 
 ```
 error[E2100]: cyclic module dependency
@@ -111,163 +111,163 @@ error[E2100]: cyclic module dependency
 
 ### Reserved top-level namespaces
 
-Ở v0.2.x các root namespace sau **được giữ chỗ** (compiler từ chối user khai báo):
+In v0.2.x, the following root namespaces are **reserved** (the compiler will reject user declarations):
 
-| Root | Mục đích | Phase enforce |
+| Root | Purpose | Phase of enforcement |
 |---|---|---|
-| `std` | Standard library | v0.2.x (đã có) |
+| `std` | Standard library | v0.2.x (already exists) |
 | `sys` | Syscall surface | v0.6 (capability) |
 | `dev` | Driver / hardware | v0.6 (capability) |
-| `usr` | User application | v0.6 (capability) |
+| `usr` | User application | v0.6 (capability)
 | `core` | Minimal stdlib (no_std style) | v1.0+ |
 
-Reserve sớm = không phải break user code khi v0.6 enforce.
+Early reservation prevents breaking user code when v0.6 is released.
 
-## Lý do
+## Rationale
 
-### Tại sao verbose keywords?
+### Why verbose keywords?
 
-Triết là **AI-first language**. Mục tiêu: LLM sinh code đúng ngay lần đầu, dev đọc code không phải tra từ điển từ tắt.
+Triet is an **AI-first language**. The goal is: LLMs generate correct code on the first attempt, and developers read code without needing a dictionary for abbreviations.
 
-- `function` / `public` / `mutable` / `constant` / `module` — dài hơn vài ký tự, nhưng zero ambiguity. `fn` có thể là Function-key, `pub` có thể là pub(lication), `mut` có thể là mutex, `mod` có thể là modulo.
-- LLM context tokens dày: verbose keywords chiếm 1–2 BPE tokens, không đắt hơn ký hiệu nhiều.
-- Java đã chứng minh hệ sinh thái lớn không bị tắc bởi keyword dài.
-- Theo nguyên tắc thiết kế #1 trong VISION.md: "explicit > implicit, regular > exception, keyword > ký hiệu khi mơ hồ, low ambiguity > terseness."
+- `function` / `public` / `mutable` / `constant` / `module` — these are a few characters longer, but they provide zero ambiguity. `fn` could be a Function-key, `pub` could be publication, `mut` could be a mutex, and `mod` could be modulo.
+- LLM context tokens are dense: verbose keywords consume only 1–2 BPE tokens, which is not significantly more expensive than symbols.
+- Java has proven that large ecosystems are not hindered by long keywords.
+- Following design principle #1 in VISION.md: "explicit > implicit, regular > exception, keyword > symbol when ambiguous, low ambiguity > terseness."
 
-### Tại sao dot path, không `::`?
+### Why dot paths, not `::`?
 
-- `.` đã là field access trong Triết — trải nghiệm nhất quán cho người mới (đặc biệt từ Java/Python/JS).
-- `::` là di sản C++ phân biệt namespace với member; Triết dùng resolver hai pha (load → resolve) nên không cần phân biệt cú pháp tại lex.
-- Field access và path resolution không ambiguous trong Triết: parser quyết định bởi context (sau `import`/`from`/type annotation = path; sau expression = field). Module path luôn xuất hiện ở vị trí xác định.
-- Java/Python/Kotlin/Swift đều dùng `.` ở cả module path và field access, không gặp vấn đề thực tiễn.
+- `.` is already used for field access in Triet — providing a consistent experience for newcomers (especially those from Java/Python/JS).
+- `::` is a C++ legacy used to distinguish namespaces from members; Triet uses a two-phase resolver (load $\rightarrow$ resolve), so there is no need for syntactic distinction during lexical analysis.
+- Field access and path resolution are unambiguous in Triet: the parser decides based on context (after `import`/`from`/type annotation = path; after an expression = field). Module paths always appear in a deterministic position.
+- Java/Python/Kotlin/Swift all use `.` for both module paths and field access without practical issues.
 
-### Tại sao Python-style `from X import Y`?
+### Why Python-style `from X import Y`?
 
-- Tách rõ "module nào" với "tên nào" — dễ đọc dễ refactor.
-- Multi-import gói gọn: `from std.io import println, print` súc tích hơn `import std.io.println; import std.io.print`.
-- Aliasing cùng cú pháp với selective: `from std.io import println as out` — không cần keyword riêng.
-- Khác `import std.io.println` (Java) — yêu cầu viết tên cuối ở lần đầu, ép dev đặt tên rõ.
-- Mọi LLM đã thấy hàng triệu dòng Python — sinh code đúng ngay.
+- Clearly separates "which module" from "which name" — making it easy to read and refactor.
+- Compact multi-imports: `from std.io import println, print` is more concise than `import std.io.println; import std.io.print`.
+- Aliasing uses the same syntax as selective imports: `from std.io import println as out` — no separate keyword required.
+- Unlike `import std.io.println` (Java), it requires the terminal name to be written on the first mention, forcing developers to use explicit names.
+- Every LLM has seen millions of lines of Python — it can generate correct code immediately.
 
-### Tại sao Java-style `module foo`?
+### Why Java-style `module foo`?
 
-- Java JPMS (Java 9+) đã chứng minh module declaration là first-class concept, tách hẳn khỏi filesystem.
-- Triết áp dụng tinh thần đó: `module foo` là declaration thật trong source, không phải implicit từ thư mục.
-- Chấp nhận filesystem layout là convention (xem §"File resolution"), nhưng ngữ nghĩa do `module` keyword quyết định — refactor chỉ cần sửa keyword + đổi tên file.
+- Java JPMS (Java 9+) has proven that module declaration is a first-class concept, decoupled from the filesystem.
+- Triet adopts that spirit: `module foo` is an actual declaration in the source, not an implicit result of the directory structure.
+- We accept that the filesystem layout is a convention (see §"File resolution"), but the semantics are determined by the `module` keyword — refactoring only requires updating the keyword and the filename.
 
-### Tại sao đơn giản hóa visibility?
+### Why simplify visibility?
 
-Rust có 5 cấp: `pub`, `pub(crate)`, `pub(super)`, `pub(in path)`, private. Đa số code base dùng 80% `pub` + `pub(crate)`. `pub(super)` và `pub(in path)` ít gặp và phức tạp hóa ABI surface.
+Rust has 5 levels: `pub`, `pub(crate)`, `pub(super)`, `pub(in path)`, and private. Most codebases use 80% `pub` + `pub(crate)`. `pub(super)` and `pub(in path)` are rare and complicate the ABI surface.
 
-Triết v0.2.x chỉ cần `public` (export) + `public(package)` (internal) + private (default). Đơn giản dễ học cho LLM-generated code. Có thể mở rộng ở v1.0+ nếu thực sự cần (theo nguyên tắc "stability over speed", thêm dễ hơn xóa).
+Triet v0.2.x only requires `public` (export) + `public(package)` (internal) + private (default). This is simple and easy to learn for LLM-generated code. It can be expanded in v1.0+ if necessary (following the "stability over speed" principle: adding is easier than removing).
 
-### Tại sao không glob imports?
+### Why no glob imports?
 
-Glob imports (`from foo import *`) vi phạm explicit export principle:
-- Người đọc không biết tên nào được import.
-- Refactor ở `foo` (thêm symbol) có thể shadow accidental ở scope local.
-- ABI metadata phải scan toàn bộ `foo` để biết surface.
+Glob imports (`from foo import *`) violate the explicit export principle:
+- Readers do not know which names are being imported.
+- Refactoring in `foo` (adding a symbol) could cause accidental shadowing in the local scope.
+- ABI metadata would require scanning the entirety of `foo` to determine the surface.
 
-Cấm ở v0.2.x. **Có thể revisit ở v1.0+** với constraint chặt (ví dụ: chỉ trong test module).
+Forbidden in v0.2.x. **May be revisited in v1.0+** with strict constraints (e.g., only within test modules).
 
-### Tại sao path dùng `crate.` chứ không `pkg.`?
+### Why use `crate.` instead of `pkg.` for paths?
 
-"Crate" đã là terminology trong Triết (workspace có `crates/`). Đổi sang `pkg.` chỉ vì khác Rust là không lý do đủ. Reserve `pkg.` cho concept "Crate-Pack distributable" ở v0.4 (sẽ là thứ khác).
+"Crate" is already established terminology in Triet (workspaces contain `crates/`). Changing to `pkg.` simply to differ from Rust lacks sufficient reasoning. We reserve `pkg.` for the "Crate-Pack distributable" concept in v0.4 (which will be something else).
 
-### Tại sao reserve `sys`/`dev`/`usr` từ v0.2.x?
+### Why reserve `sys`/`dev`/`usr` from v0.2.x?
 
-Ba namespace này là core của trụ cột #5 (capability system, v0.6). Reserve sớm:
-- Không break user code khi v0.6 ship.
-- Định hướng người viết library: stdlib system thì đặt ở `sys`, app thì `usr`.
-- Cho phép typecheck cảnh báo sớm (v0.5+) nếu user import sai namespace.
+These three namespaces are core to pillar #5 (the capability system, v0.6). Early reservation ensures:
+- User code does not break when v0.6 is shipped.
+- Library authors are guided: the stdlib system belongs in `sys`, applications in `usr`.
+- Early typecheck warnings (v0.5+) can be issued if a user imports the wrong namespace.
 
-### Cyclic imports — vì sao cấm cứng?
+### Cyclic imports — why a hard ban?
 
-- Cycle phá compile-time: linker không biết khởi tạo theo thứ tự nào.
-- Cycle là dấu hiệu thiết kế sai (high coupling).
-- Mọi ngôn ngữ system production (Rust, Go, OCaml) đều cấm hoặc warn nặng.
+- Cycles break compile-time logic: the linker does not know the initialization order.
+- Cycles are a sign of poor design (high coupling).
+- All production-grade systems languages (Rust, Go, OCamle) either forbid or heavily warn against them.
 
-Diagnostic chỉ rõ chu trình giúp dev fix nhanh.
+Diagnostics that explicitly identify the cycle help developers fix the issue quickly.
 
 ## Alternatives considered
 
 ### A1. Filesystem-strict (Java pre-Jigsaw / Python 2)
-**Reject.** Refactor unfriendly. Java đã từ bỏ.
+**Reject.** Refactor-unfriendly. Java has already abandoned this.
 
 ### A2. First-class modules (OCaml functor)
-**Defer.** Đẹp về lý thuyết (parametric modules) nhưng phức tạp impl + LLM khó học. Có thể bổ sung ở v2.0+ nếu cần thực sự.
+**Defer.** Theoretically beautiful (parametric modules) but complex to implement and difficult for LLMs to learn. May be added in v2.0+ if truly needed.
 
 ### A3. ES modules (file = module, default exports)
-**Reject.** Implicit namespace từ filesystem. Default export tốt cho ergonomics nhưng làm ABI surface mơ hồ. Triết ưu tiên explicit.
+**Reject.** Implicit namespace derived from the filesystem. Default exports are good for ergonomics but make the ABI surface ambiguous. Triet prioritizes explicitness.
 
 ### A4. Mojo modules
-**Reference, không adopt full.** Mojo theo Python module model có một số điểm tham khảo (file = module), nhưng Mojo cũng đang định hình. Chờ Mojo settle trước khi học chi tiết.
+**Reference, but do not fully adopt.** Mojo follows the Python module model and has some points of reference (file = module), but Mojo is still evolving. We will wait for Mojo to settle before adopting details.
 
 ### A5. Single-file packages (Go)
-**Reject.** Go gộp toàn bộ file trong cùng directory thành 1 namespace. Đơn giản nhưng không hỗ trợ nested namespace tự nhiên.
+**Reject.** Go merges all files in the same directory into a single namespace. While simple, it does not support natural nested namespaces.
 
 ### A6. Rust-style `::` paths + `mod`/`use`
-**Reject.** Tham chiếu C++; trong Triết không có ambiguity giữa namespace và member access nên không cần ký hiệu riêng. Verbose keyword + dot path đẹp mắt và thuận với background Java/Python phổ biến hơn.
+**Reject.** A C++ legacy; in Triet, there is no ambiguity between namespace and member access, so a separate symbol is unnecessary. Verbose keywords + dot paths are more aesthetically pleasing and align better with the common Java/Python background.
 
-## Hậu quả
+## Consequences
 
-**Tích cực:**
-- Codebase Triết có thể scale tới hàng chục/trăm module mà không name collision.
-- Library nội bộ có thể tách `crate.core`, `crate.utils`, `crate.api`.
-- Stdlib được tổ chức lại từ flat (`std.io.println` ở v0.2 monolith) thành proper hierarchy (`std.io.println` qua module system).
-- ABI surface (v0.4) chỉ cần scan items có `public` — fast.
-- Capability enforcement (v0.6) có anchor là top-level namespace.
+**Positive:**
+- The Triet codebase can scale to dozens or hundreds of modules without name collisions.
+- Internal libraries can be separated into `crate.core`, `crate.utils`, and `crate.api`.
+- The stdlib is reorganized from a flat structure (`std.io.println` in the v0.2 monolith) into a proper hierarchy (`std.io.println` via the module system).
+- The ABI surface (v0.4) only needs to scan items marked `public` — making it fast.
+- Capability enforcement (v0.6) has a clear anchor in the top-level namespace.
 
-**Tiêu cực:**
-- Verbose keywords dài hơn ký hiệu — accept tradeoff (xem "Tại sao verbose keywords?").
-- Người mới đến từ Rust/C++ sẽ thấy thiếu `::` — accept (xem "Tại sao dot path").
-- v0.2 đã ship cú pháp `import std.io.println` (đặt tên cuối ngay sau `import`) khác Python `import std.io`. Sẽ chuẩn hóa khi v0.2.x ship module system: cú pháp `from std.io import println` chính thức thay thế cho selective import; `import std.io` (whole module) vẫn giữ.
+**Negative:**
+- Verbose keywords are longer than symbols — an accepted tradeoff (see "Why verbose keywords?").
+- Developers coming from Rust/C++ will find the lack of `::` noticeable — accepted (see "Why dot paths").
+- v0.2 shipped the `import std.io.println` syntax (terminal name immediately following `import`), which differs from Python's `import std.io`. This will be standardized when the v0.2.x module system ships: the `from std.io import println` syntax will officially replace selective imports; `import std.io` (whole module) will remain.
 
 **Migration strategy:**
-- v0.2 baseline: chỉ có `import std.io.println` form (dot-path with terminal name).
-- v0.2.x: thêm `from X import Y` form. `import std.io.println` form được giữ làm "import whole sub-path with named tail" tương đương `from std.io import println`.
-- v0.3: cú pháp ổn định, không thay đổi thêm.
+- v0.2 baseline: only supports the `import std.io.println` form (dot-path with terminal name).
+- v0.2.x: adds the `from X import Y` form. The `import std.io.println` form will be maintained as "import whole sub-path with named tail," equivalent to `from std.io import println`.
+- v0.3: syntax is stabilized; no further changes.
 
 ## Implementation roadmap (v0.2.x)
 
-1. **Lexer:** đã có `module`, `public`, `import`, `crate`, `self`, `super` keywords (ADR-0005 commits). Cần thêm `from`, `as` keywords cho Python-style import.
+1. **Lexer:** `module`, `public`, `import`, `crate`, `self`, and `super` keywords already exist (ADR-0005 commits). Need to add `from` and `as` keywords for Python-style imports.
 2. **AST:**
    - `Item::Module { name, content: Either<Inline(Vec<Item>), External> }`.
    - `Item::Import { source: Path, names: Vec<(String, Option<String>)> }` — `from X import a, b as c`.
    - `Item::Import { whole: Path }` — `import X` (whole module).
-   - `Item::*` đã có field `visibility: Visibility { Public, PublicPackage, Private }` (commit `7cb63e7`).
-   - `Path` AST node phân biệt absolute (`crate.`), relative (`self.`/`super.`), reserved (`std.`/`sys.`/...).
-3. **Parser:** `parse_module`, `parse_import`, `parse_visibility` (đã có). Đã có recursive descent + Pratt — extend tự nhiên.
-4. **Module loader:** new pass trước typecheck. Build module tree từ root file. Resolve `module foo` → tìm file. Detect cycles.
-5. **Name resolver:** new pass trước typecheck. Resolve `from X import Y` paths to absolute. Validate visibility.
-6. **Typecheck:** chạy per-module với resolved names. Type definitions + functions cross-module qua name resolver.
-7. **Interpreter:** runtime đã có symbol table phẳng — extend thành module-aware (path-based lookup).
-8. **CLI:** `dao check` + `dao run` accept root file, tự load module tree.
-9. **Stdlib migration:** chuyển `std.io`, `std.text` thành proper module với `module` declarations.
-10. **Demo lớn:** viết 1 demo (~500 dòng) chia 5+ module để validate end-to-end.
+   - `Item::*` already has the `visibility: Visibility { Public, PublicPackage, Private }` field (commit `7cb63e7`).
+   - `Path` AST node distinguishes absolute (`crate.`), relative (`self.`/`super.`), and reserved (`std.`/`sys.`/...).
+3. **Parser:** `parse_module`, `parse_import`, and `parse_visibility` already exist. Uses recursive descent + Pratt — easy to extend.
+4. **Module loader:** A new pass before typechecking. Builds the module tree from the root file. Resolves `module foo` $\rightarrow$ finds file. Detects cycles.
+5. **Name resolver:** A new pass before typechecking. Resolves `from X import Y` paths to absolute paths. Validates visibility.
+6. **Typecheck:** Runs per-module with resolved names. Type definitions and functions are cross-module via the name resolver.
+7. **Interpreter:** The runtime currently has a flat symbol table — must be extended to be module-aware (path-based lookup).
+8. **CLI:** `dao check` + `dao run` must accept a root file and automatically load the module tree.
+9. **Stdlib migration:** Transition `std.io` and `std.text` into proper modules with `module` declarations.
+10. **Large-scale Demo:** Write a large demo (~500 lines) split across 5+ modules to validate end-to-end.
 
 **Test gate:**
-- Tất cả demo `.tri` cũ tiếp tục chạy.
-- Demo lớn module-split chạy đúng.
-- Snapshot tests cho diagnostics: cyclic import, visibility violation, unresolved path, reserved namespace abuse.
-- 50+ unit test mới cho module loader + name resolver.
+- All existing `.tri` demos must continue to run.
+- The large module-split demo must run correctly.
+- Snapshot tests for diagnostics: cyclic import, visibility violation, unresolved path, and reserved namespace abuse.
+- 50+ new unit tests for the module loader + name resolver.
 
-## Tham chiếu
+## References
 
-- [Java Project Jigsaw / JEP 261](https://openjdk.org/projects/jigsaw/) — JPMS module model, baseline cho `module` declaration.
+- [Java Project Jigsaw / JEP 261](https://openjdk.org/projects/jigsaw/) — JPMS module model, the baseline for `module` declaration.
 - [Python Language Reference — Imports](https://docs.python.org/3/reference/import.html) — `from X import Y` syntax.
-- [Rust Reference — Items: Modules](https://doc.rust-lang.org/reference/items/modules.html) — reference cho hierarchical module tree (visibility, no filesystem binding).
-- [OCaml Module System](https://v2.ocaml.org/manual/moduleexamples.html) — first-class modules (defer).
+- [Rust Reference — Items: Modules](https://doc.rust-lang.org/reference/items/modules.html) — reference for hierarchical module trees (visibility, no filesystem binding).
+- [OCaml Module System](https://v2.ocaml.org/manual/moduleexamples.html) — first-class modules (deferred).
 - [TypeScript Modules](https://www.typescriptlang.org/docs/handbook/modules.html) — ES modules (rejected pattern).
 - [Mojo Modules](https://docs.modular.com/mojo/manual/packages) — reference.
 
-## Liên quan
+## Related
 
-- [ADR-0007](0007-ir-design.md) (đã viết, v0.3): IR design — `AbsolutePath` từ module loader là input cho cross-module call ở IR.
-- ADR-0009 (sắp viết, v0.4): ABI metadata format — module visibility là input.
-- ADR-0012 (sắp viết, v0.5): Hash scheme — module structure ảnh hưởng `iface_hash`.
-- ADR-0014 (sắp viết, v0.6): Capability type system — top-level namespace là anchor.
+- [ADR-0007](0007-ir-design.md) (written, v0.3): IR design — `AbsolutePath` from the module loader is the input for cross-module calls in the IR.
+- ADR-0009 (upcoming, v0.4): ABI metadata format — module visibility is an input.
+- ADR-0012 (upcoming, v0.5): Hash scheme — module structure affects `iface_hash`.
+- ADR-0014 (upcoming, v0.6): Capability type system — top-level namespace is the anchor.
 
 ---
 
-*Quyết định này đóng băng module model cho v0.2.x. Breaking change từ phase này về sau cần ADR riêng.*
+*This decision freezes the module model for v0.2.x. Any breaking changes from this phase forward require a separate ADR.*

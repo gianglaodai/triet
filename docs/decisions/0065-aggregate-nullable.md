@@ -1,197 +1,197 @@
-# ADR-0065 — Nullable Aggregate: `Enum?` & `Struct?` (nullable stack-slot)
+# ADR-0065 — Nullable Aggregate: `Enum?` & `Struct?` (Nullable Stack-Slot)
 
-- **Status:** 🔒 LOCKED — O+G ký duyệt 2026-06-20, Giang chốt hướng (Phương án A cho Struct? + 2 lát thi công + gửi WO Lát 1 cho D). Khởi thảo Mentor O, grounded từ MIR/JIT line-cite.
+- **Status:** 🔒 LOCKED — O+G sign-off 2026-06-20, Giang finalized direction (Option A for Struct? + 2 construction slices + sent WO Slice 1 to D). Drafted by Mentor O, grounded from MIR/JIT line citations.
 - **Date:** 2026-06-20
-- **Khởi thảo:** Mentor O (mổ repr Enum/Struct ở `triet-mir`/`triet-jit` + đối chiếu niche disc + tách Enum?/Struct? theo gốc rễ repr).
-- **Chữ ký:** O ✅ (repr grounded, bất đối xứng Enum/Struct đo trực tiếp file:line; loại box/niche-fill có lập luận) · G ✅ (ký duyệt ADR + WO Lát 1, 2026-06-20) · Giang ✅ (chốt Phương án A + 2 lát Enum?→Struct?).
-- **Liên quan:** [ADR-0062](0062-heap-nullable-ptr-sentinel-repr.md) (ptr-sentinel String/Vector/HashMap — ADR NÀY mở rộng "sentinel trong một ô" sang ô disc/tag; §6 ADR-0062 defer Struct?/Enum? chính là nợ ADR này trả) · [ADR-0041](0041-nullable-representation-bac-a.md) (scalar `T?` PA-3c `i64::MIN`; `NULL_SENTINEL` hằng + canary N1) · [ADR-0040](0040-heap-aggregate-layout.md) §4 (**B8** — heap field/payload trong aggregate bị refuse; rào chắn allocator của ADR này) · [ADR-0037](0037-enum-layout.md) (EnumLayout disc@0/payload@8) · [ADR-0060](0060-nested-aggregate-layout.md) (multi-word copy + nested offset-walk — tiền lệ cho tag-prepend của Struct?) · [ADR-0057](0057-jit-outcome-slot-move.md) (slot `{disc, payload}` + slot-move word-by-word — tiền lệ tag-word).
+- **Author:** Mentor O (dissected Enum/Struct repr in `triet-mir`/`triet-jit` + compared niche disc + separated Enum?/Struct? by underlying repr root).
+- **Signatures:** O ✅ (repr grounded, Enum/Struct asymmetry measured directly file:line; rejected box/niche-fill with justification) · G ✅ (signed off ADR + WO Slice 1, 2026-06-20) · Giang ✅ (finalized Option A + 2 slices Enum?→Struct?).
+- **Related:** [ADR-0062](0062-heap-nullable-ptr-sentinel-repr.md) (ptr-sentinel String/Vector/HashMap — THIS ADR extends "sentinel in one cell" to disc/tag cells; §6 ADR-0062 deferral of Struct?/Enum? is the exact debt this ADR resolves) · [ADR-0041](0041-nullable-representation-bac-a.md) (scalar `T?` PA-3c `i64::MIN`; `NULL_SENTINEL` constant + canary N1) · [ADR-0040](0040-heap-aggregate-layout.md) §4 (**B8** — heap field/payload in aggregates refused; allocator barrier for this ADR) · [ADR-0037](0037-enum-tagged-union-layout.md) (EnumLayout disc@0/payload@8) · [ADR-0060](0060-nested-aggregate-layout.md) (multi-word copy + nested offset-walk — precedent for Struct? tag-prepend) · [ADR-0057](0057-jit-outcome-slot-move.md) (slot `{disc, payload}` + word-by-word slot-move — precedent for tag-words).
 
 ---
 
-## 1. Context — nợ ADR-0062 §6, repr aggregate cần hoàn tất
+## 1. Context — Debt from ADR-0062 §6, Aggregate Repr Needs Completion
 
-`T?` đã chạy cho scalar (ADR-0041) và heap String/Vector/HashMap (ADR-0062). Cả hai dựa **một bất biến**: null ⟺ một **ô i64 mang con trỏ** == `NULL_SENTINEL` (`i64::MIN`). Aggregate (`Struct`/`Enum`) bị **defer minh bạch** ở ADR-0062 §6 vì "không có một ô `ptr` tự nhiên để cắm sentinel" — và `Body::verify()` (`triet-mir:1478-1519`) refuse chúng (`HeapNullableNotLowered`), comment `triet-mir:1397-1398` ghi rõ "stay refused until a later ADR". **ADR-0065 là cái ADR đó.**
+`T?` already operates for scalars (ADR-0041) and heap String/Vector/HashMap (ADR-0062). Both rely on **a single invariant**: null ⟺ a **pointer-carrying i64 cell** == `NULL_SENTINEL` (`i64::MIN`). Aggregates (`Struct`/`Enum`) were **transparently deferred** in ADR-0062 §6 because "there is no natural `ptr` cell to plant a sentinel" — and `Body::verify()` (`triet-mir:1478-1519`) rejects them (`HeapNullableNotLowered`), with comments at `triet-mir:1397-1398` explicitly stating "stay refused until a later ADR". **ADR-0065 is that ADR.**
 
-Recon (đo từ code, không đoán) lộ ra **bất đối xứng quyết định mọi thứ**:
+Recon (measured from code, not guessed) reveals a **fundamental asymmetry that determines everything**:
 
-| Loại | Repr hiện hành (file:line) | Có ô để cắm sentinel? |
+| Type | Current Repr (file:line) | Has a cell to plant a sentinel? |
 |---|---|---|
-| **Enum** | `EnumLayout` disc**@0** (i64, 8B) + payload@8; `discriminant_value: i64` ∈ {0,1,2,…} (`triet-mir:1097-1120`, `compute():1158-1166`) | **CÓ** — ô disc@0 là i64 full, chứa giá trị nhỏ → **niche khổng lồ** |
-| **Struct** | `StructLayout` = N field inline {offset,size}, KHÔNG disc, KHÔNG ô ptr (`triet-mir:1064-1090`) | **KHÔNG** — dữ liệu thuần, không ô thừa |
+| **Enum** | `EnumLayout` disc**@0** (i64, 8B) + payload@8; `discriminant_value: i64` ∈ {0,1,2,…} (`triet-mir:1097-1120`, `compute():1158-1166`) | **YES** — disc@0 cell is a full i64 containing small non-negative integers → **massive niche** |
+| **Struct** | `StructLayout` = N inline fields {offset, size}, NO disc, NO ptr cell (`triet-mir:1064-1090`) | **NO** — pure data, no spare cells |
 
-→ **Enum? = quả ngọt** (niche trong ô đã có). **Struct? = phải đẻ ô tag.** Hai gốc rễ khác nhau → một ADR (bức tranh toàn cảnh), hai lát thi công.
+→ **Enum? = low-hanging fruit** (niche inside an existing cell). **Struct? = requires adding a tag cell.** Two distinct foundations → one overarching ADR (the complete picture), two execution slices.
 
 ## 2. Decision
 
-**Bất biến hợp nhất toàn hệ nullable** (mở rộng ADR-0062 §2):
+**Unified System Invariant for All Nullables** (extending ADR-0062 §2):
 
-> **`tag_cell == NULL_SENTINEL` (`i64::MIN`) ⟺ null.** `tag_cell` là:
-> - ô `ptr` (heap — ADR-0062): String slot[0] / Vector·HashMap handle;
-> - ô **`disc@0`** (Enum? — niche, ADR NÀY);
-> - ô **`tag@0`** (Struct? — disc-word prepend, ADR NÀY).
+> **`tag_cell == NULL_SENTINEL` (`i64::MIN`) ⟺ null.** `tag_cell` is:
+> - `ptr` cell (heap — ADR-0062): String slot[0] / Vector·HashMap handle;
+> - **`disc@0`** cell (Enum? — niche, THIS ADR);
+> - **`tag@0`** cell (Struct? — disc-word prepend, THIS ADR).
 >
-> Null-check = **MỘT load + MỘT `icmp eq i64::MIN`** trên `tag_cell`. KHÔNG memcmp cả slot. CẤM `tag_cell == 0` làm null (0 = uninit/dead — defense-in-depth ADR-0041 §6.1).
+> Null-check = **ONE load + ONE `icmp eq i64::MIN`** on `tag_cell`. NEVER memcmp the entire slot. FORBIDDEN to use `tag_cell == 0` for null (0 = uninit/dead — defense-in-depth ADR-0041 §6.1).
 
-### 2.1 `Enum?` — disc-sentinel (niche, 0 byte overhead)
-Tái dùng ô disc@0 đã tồn tại. Discriminant thật ∈ {0,1,2,…} không bao giờ chạm `i64::MIN`. `disc@0 == i64::MIN` ⟺ null; else == variant thật. **Widening `Enum → Enum?` = NO-OP** (disc đã là giá trị hợp lệ ≠ sentinel). Đây CHÍNH LÀ ptr-sentinel ADR-0062, đổi ô `ptr` → ô `disc`.
+### 2.1 `Enum?` — Discriminant-Sentinel (Niche, 0-Byte Overhead)
+Reuses the existing disc@0 cell. Actual discriminants ∈ {0,1,2,…} never collide with `i64::MIN`. `disc@0 == i64::MIN` ⟺ null; otherwise == valid variant. **Widening `Enum → Enum?` = NO-OP** (discriminant is already a valid value ≠ sentinel). This is IDENTICAL to ADR-0062 ptr-sentinel, swapping `ptr` cell → `disc` cell.
 
-### 2.2 `Struct?` — disc-word prepend (Phương án A, +8B)
-Struct không có ô tự nhiên → **đẻ một tag word i64 ở offset 0**, đẩy field xuống +8:
+### 2.2 `Struct?` — Discriminant-Word Prepend (Option A, +8B)
+Structs lack a natural spare cell → **prepend an i64 tag word at offset 0**, shifting all fields by +8:
 `Struct?` slot = `{ tag@0 : i64, fields@8… }`, `total_size = struct.total_size + 8`.
-`tag@0 == i64::MIN` ⟺ null; `tag@0 == +1` (`Trit::Positive`, theo cực ADR-0020 §10.1 "value") ⟺ present. **Widening `Struct → Struct?` KHÔNG no-op** — store tag + multi-word-copy field (tái dùng ADR-0060 §Điểm-3). Tag-word `{tag, payload}` y hệt slot Outcome ADR-0057 đã chạy.
+`tag@0 == i64::MIN` ⟺ null; `tag@0 == +1` (`Trit::Positive`, per ADR-0020 §10.1 "value" polarity) ⟺ present. **Widening `Struct → Struct?` IS NOT a no-op** — stores tag + performs multi-word-copy of fields (reusing ADR-0060 §Point-3). Tag-word `{tag, payload}` operates identically to the Outcome slot in ADR-0057.
 
-## 3. Memory layout (G yêu cầu offset cụ thể)
+## 3. Memory Layout (Specific Offsets per G's Requirement)
 
-### 3.1 `Enum?` — không đổi layout
+### 3.1 `Enum?` — Unchanged Layout
 ```
 offset:  0          8
         +----------+------------------+
-slot:   |  disc    |   payload union  |    total = 8 + max_payload (như Enum thường)
+slot:   |  disc    |   payload union  |    total = 8 + max_payload (same as standard Enum)
         +----------+------------------+
         ↑ disc@0 ∈ {0,1,2,…} = variant | i64::MIN = null
-   null-check = stack_load(I64, slot, 0) == i64::MIN ?  (TRƯỚC GetDiscriminant)
+   null-check = stack_load(I64, slot, 0) == i64::MIN ?  (BEFORE GetDiscriminant)
 ```
 
-### 3.2 `Struct?` — +8B tag prepend
+### 3.2 `Struct?` — +8B Tag Prepend
 ```
-        Struct (hiện tại)            Struct? (ADR này, +8B)
+        Struct (current)             Struct? (this ADR, +8B)
 offset: 0      8                     0      8      16
        +------+------+              +------+------+------+
        |  x   |  y   |   16B   →    | tag  |  x   |  y   |   24B
        +------+------+              +------+------+------+
                                     ↑ tag@0: i64::MIN=null | +1=present
    null-check = stack_load(I64, slot, 0) == i64::MIN ?
-   present arm bind: inner struct sống tại slot+8; field x = load(slot + 8 + field.offset)
-   (offset-walk +8, y hệt enum payload_offset=8 / Outcome OutcomePayload offset 8)
+   present arm bind: inner struct lives at slot+8; field x = load(slot + 8 + field.offset)
+   (offset-walk +8, identical to enum payload_offset=8 / Outcome OutcomePayload offset 8)
 ```
 
-## 4. ⛔ RÀO CHẮN B8 — KHẮC ĐÁ, KHÔNG ĐƯỢC VƯỢT ⛔
+## 4. ⛔ B8 BARRIER — INSCRIBED IN STONE, DO NOT VIOLATE ⛔
 
-> # 🔴 **AGGREGATE NULLABLE CHỈ CHỨA COPY FIELD/PAYLOAD.** 🔴
-> # 🔴 **KHÔNG DROP GLUE. KHÔNG ALLOC. KHÔNG FREE. KHÔNG ĐỤNG ALLOCATOR.** 🔴
+> # 🔴 **NULLABLE AGGREGATES CONTAIN COPY FIELDS/PAYLOADS ONLY.** 🔴
+> # 🔴 **NO DROP GLUE. NO ALLOCATIONS. NO FREES. NO TOUCHING THE ALLOCATOR.** 🔴
 
-`Enum?`/`Struct?` trong ADR-0065 **CHỈ** áp cho aggregate mà mọi field/payload là **Copy** (scalar: Integer/Trit/Tryte/Long/Trilean/Unit + nested aggregate Copy). Heap field/payload (String/Vector/HashMap) **đã bị refuse** bởi **B8** (ADR-0040 §4) và **GIỮ NGUYÊN refuse** — `Body::verify()` `triet-mir:1500/1513` (`is_scalar_nullable_payload` cho field/payload) KHÔNG được nới.
+`Enum?`/`Struct?` in ADR-0065 applies **EXCLUSIVELY** to aggregates where all fields/payloads are **Copy** (scalars: Integer/Trit/Tryte/Long/Trilean/Unit + nested Copy aggregates). Heap fields/payloads (String/Vector/HashMap) **were refused** by **B8** (ADR-0040 §4) and **REMAIN REFUSED** — `Body::verify()` `triet-mir:1500/1513` (`is_scalar_nullable_payload` for field/payload) MUST NOT be relaxed.
 
-**Hệ quả khắc cốt:**
-- Copy-only → Drop của `Enum?`/`Struct?` = **no-op** → **0 drop-glue, 0 free-shim mới**.
-- Inline stack slot → **0 allocation, 0 con trỏ heap** → **0 đụng allocator/GC**.
-- Widening = copy giá trị stack (multi-word), KHÔNG alloc.
+**Core Invariants:**
+- Copy-only → Drop of `Enum?`/`Struct?` = **no-op** → **0 drop-glue, 0 new free-shims**.
+- Inline stack slot → **0 allocations, 0 heap pointers** → **0 allocator/GC interaction**.
+- Widening = stack value copy (multi-word), NO allocations.
 
-Bất cứ ai (kể cả D) chế thêm `String`-trong-`Struct?`, drop-glue, hay free-shim cho aggregate-nullable trong campaign này = **VƯỢT RÀO**, review chặn thẳng. Heap-trong-aggregate là **campaign riêng** (ownership/drop), KHÔNG phải ADR-0065.
+Anyone (including D) attempting to introduce `String`-inside-`Struct?`, drop-glue, or free-shims for aggregate-nullables in this campaign = **VIOLATION OF INVARIANTS**, blocked immediately in review. Heap-in-aggregates is a **separate campaign** (ownership/drop), OUTSIDE ADR-0065.
 
-> ⚠️ **RANH GIỚI §4 — ĐỌC §15 TRƯỚC KHI VIỆN §4 ĐỂ REFUSE.** Câu "KHÔNG DROP GLUE" ở
-> trên áp cho **đường repr-slot construction của CHÍNH ADR-0065** (`~+`/widening → slot
-> `{tag@0, fields@8+}`). Nó **KHÔNG** cấm `Nullable(Struct-heap)` **tồn tại** ở mọi nơi:
-> ADR-0076 (heap-`T?` field/payload) và ADR-0082 (`pop`/`remove` trả `T?`) **đã hợp
-> pháp hóa** shape đó và **đã xây drop-glue ĐÚNG** (`struct_drop` arm, đo sound). Viện §4
-> để refuse một local/pop-result `Nullable(Struct-heap)` = **đọc sai hiến pháp** — xem §15.
-> (WO-5, 2026-07-20: lệnh refuse local suýt giật sập `pop`/`remove` — 15 fixture, D chặn.)
+> ⚠️ **§4 BOUNDARY — READ §15 BEFORE INVOKING §4 FOR REFUSALS.** The phrase "NO DROP GLUE" above
+> applies to the **repr-slot construction path of ADR-0065 ITSELF** (`~+`/widening → slot
+> `{tag@0, fields@8+}`). It DOES NOT prohibit `Nullable(Struct-heap)` from **existing** globally:
+> ADR-0076 (heap-`T?` field/payload) and ADR-0082 (`pop`/`remove` returning `T?`) **legalized**
+> that shape and **built CORRECT drop-glue** (`struct_drop` arm, measured sound). Invoking §4
+> to refuse a local/pop-result `Nullable(Struct-heap)` = **misreading the architecture** — see §15.
+> (WO-5, 2026-07-20: directive to refuse locals nearly broke `pop`/`remove` — 15 fixtures, caught by D.)
 
-## 5. Phương án bị loại (viết hết để khỏi ai đề xuất lại)
+## 5. Alternatives Considered (Documented Comprehensively)
 
-- **`Struct?` (B) Box trên heap:** `Struct?` = i64 handle → heap struct; null = handle SENTINEL. Tái dùng ptr-sentinel — **nhưng** biến Struct? thành Move/heap type, cần struct alloc/free shim + Drop glue + free-no-op-on-sentinel, **phá rào B8 §4**, đụng allocator, phá mô hình inline-stack. **LOẠI** (G chốt 2026-06-20: "tách biệt khỏi allocator ở phase này là nước cờ khôn ngoan").
-- **`Struct?` (C) Niche-fill field đầu:** mượn `i64::MIN` của field scalar đầu (0 byte, no-op widening) — **nhưng** lowerer phải dò type-dependent tree tìm field có niche; struct rỗng / field đầu nested-struct → không có niche rõ; offset null-check phụ thuộc shape. **LOẠI** (G chốt 2026-06-20: "niche-fill là trò tối ưu khốn nạn nhất compiler non trẻ dây vào… CHỐT A, trả 8 bytes"). Ghi lại làm tối ưu tương lai (kiểu Rust), KHÔNG cho cut đầu.
-- **`Struct?` (A) Disc-word prepend:** +8B/value, uniform, type-independent, 0-allocator, dễ poison. **CHỌN.**
+- **`Struct?` (B) Box on heap:** `Struct?` = i64 handle → heap struct; null = handle SENTINEL. Reuses ptr-sentinel — **however**, turns Struct? into a Move/heap type, requiring struct alloc/free shims + Drop glue + free-no-op-on-sentinel, **violating the B8 §4 barrier**, touching the allocator, and breaking the inline-stack model. **REJECTED** (G finalized 2026-06-20: "separating from the allocator at this phase is the wise move").
+- **`Struct?` (C) Niche-fill first field:** borrow `i64::MIN` from the first scalar field (0 bytes, no-op widening) — **however**, lowerer must traverse type-dependent trees to find fields with niches; empty structs / structs starting with nested-structs lack obvious niches; null-check offset becomes shape-dependent. **REJECTED** (G finalized 2026-06-20: "niche-fill is the most vicious optimization a young compiler can touch… LOCK IN Option A, pay the 8 bytes"). Preserved for future optimization (Rust-style), NOT for the initial cut.
+- **`Struct?` (A) Discriminant-word prepend:** +8B/value, uniform, type-independent, 0 allocator involvement, easy to poison. **CHOSEN.**
 
-## 6. Safety & Dispatch (G câu 3)
+## 6. Safety & Dispatch (G Question 3)
 
-- **Check chèn ở đâu:** lowerer chèn null-check tại **match `~+/~0`** và **Elvis `?:`** — load `tag_cell` (Enum?: disc@0; Struct?: tag@0) → `icmp eq i64::MIN` → rẽ null vs present. Mẫu y hệt Elvis ADR-0041 §5.3 (`triet-lower:2566-2581`). Với Enum?, null-check chạy **TRƯỚC** `GetDiscriminant`+`SwitchInt` (`triet-lower` đuôi match ~3050-3180; mẫu "must run BEFORE the enum GetDiscriminant fallthrough" đã có cho Trit/Integer scrutinee `triet-lower:2927-2932`).
-- **★ KHÔNG có hazard sentinel-deref → KHÔNG segfault:** Phương án A + Enum? đều **inline, KHÔNG con trỏ để deref**. Sentinel chỉ là tag/disc inline; khi null, vùng field/payload là **don't-care, KHÔNG BAO GIỜ bị đọc** vì match ép vào nhánh `~0` (E1026 exhaustiveness — ADR-0064 — bắt buộc nhánh `~0`). Hazard deref CHỈ tồn tại ở phương án B (box) — thêm một lý do loại B. Đây là lý do an toàn cốt lõi khiến A thắng cả về soundness.
-- **Poison test (giá-trị-sai, KHÔNG cần SIGABRT):** poison lệnh store tag/disc-sentinel (ghi nhầm offset hoặc giá trị) → match rẽ sai nhánh → trả **giá trị sai observable** (mẫu ADR-0062 §8 sentinel-vs-zero: poison `triet-jit:1189` → trả `-9…808`). Teeth bắt bằng EXPECT số đúng.
+- **Where checks are inserted:** Lowerer inserts null-checks at **match `~+/~0`** and **Elvis `?:`** — load `tag_cell` (Enum?: disc@0; Struct?: tag@0) → `icmp eq i64::MIN` → branch null vs present. Pattern identical to Elvis in ADR-0041 §5.3 (`triet-lower:2566-2581`). For Enum?, null-check runs **BEFORE** `GetDiscriminant` + `SwitchInt` (`triet-lower` tail match ~3050-3180; pattern "must run BEFORE the enum GetDiscriminant fallthrough" already exists for Trit/Integer scrutinees `triet-lower:2927-2932`).
+- **★ NO sentinel-dereference hazard → NO segfaults:** Option A + Enum? are both **inline, NO pointers to dereference**. The sentinel is merely an inline tag/disc; when null, the field/payload region is **don't-care and NEVER read** because match enforces the `~0` branch (E1026 exhaustiveness — ADR-0064 — mandates `~0`). Dereference hazards ONLY exist in Option B (boxing) — another reason Option B was rejected. This is the core reason Option A wins on soundness.
+- **Poison testing (wrong-values, NO SIGABRT required):** poison the tag/disc-sentinel store instruction (write to wrong offset or wrong value) → match branches to wrong arm → yields an **observable incorrect value** (model of ADR-0062 §8 sentinel-vs-zero: poison `triet-jit:1189` → returns `-9…808`). Teeth assert exact EXPECT values.
 
-## 7. Tác động GC/Allocator (G câu 4) — **KHÔNG**
+## 7. GC/Allocator Impact (G Question 4) — NONE
 
-- **KHÔNG có GC** (move-only, refcount tắt Bậc A — ADR-0040 §1.2).
-- Do rào B8 §4 (Copy-only) → Drop = no-op → **không có "thằng dọn rác" để dạy phân biệt sentinel vs con trỏ thật.** Không có con trỏ heap nào trong aggregate-nullable cut này.
-- Phương án A + Enum? = inline stack → **0 đụng allocator.** (Đây là toàn bộ lý do gộp A vào ADR này thay vì B.)
+- **NO GC** (move-only, refcounting disabled in Tier A — ADR-0040 §1.2).
+- Due to B8 §4 barrier (Copy-only) → Drop = no-op → **no cleaner needs to be taught to distinguish sentinels from real pointers.** No heap pointers exist in this aggregate-nullable cut.
+- Option A + Enum? = inline stack → **0 allocator interaction.** (This is the primary reason Option A is unified into this ADR rather than Option B.)
 
-## 8. Scope + 2 lát thi công
+## 8. Scope + 2 Construction Slices
 
-**TRONG scope:** `Enum?`/`Struct?` với aggregate **Copy-only** (B8 §4). Constructs (mirror ADR-0041 §7 + ADR-0062 §7): `~0` (null materialize sentinel vào tag_cell), widening `T → T?`, match `~+/~0`, Elvis `?:`. Return + local position.
+**IN Scope:** `Enum?`/`Struct?` with **Copy-only** aggregates (B8 §4). Constructs (mirroring ADR-0041 §7 + ADR-0062 §7): `~0` (null materializes sentinel into tag_cell), widening `T → T?`, match `~+/~0`, Elvis `?:`. Return + local positions.
 
-**NGOÀI scope — defer:** heap-trong-aggregate (B8 giữ refuse); `?+>` map/flatMap trên aggregate-nullable; `T?~E` (Outcome aggregate); nested `Struct?`-field-trong-`Struct` (field-level nullable aggregate — nếu cần, lát riêng).
+**OUT of Scope — Deferred:** heap-in-aggregate (B8 retains refusal); `?+>` map/flatMap on aggregate-nullables; `T?~E` (Outcome aggregates); nested `Struct?`-field-inside-`Struct` (field-level nullable aggregates — dedicated slice if needed).
 
-**Hai lát (G chốt 2026-06-20):**
-- **Lát 1 — `Enum?` (quả ngọt, 0 byte):** niche disc@0. Gate `is_lowerable_nullable_payload` (`triet-mir:1399`) += `MirType::Enum(_)`. `~0`/match/Elvis null-check trên disc@0. Widening = no-op.
-- **Lát 2 — `Struct?` (tag 8B, Phương án A):** gate += `MirType::Struct(_)`; layout +8B tag prepend; widening = tag-store + multi-word-copy (ADR-0060); match present-arm bind tại slot+8 (offset-walk).
+**Two Slices (Locked by G 2026-06-20):**
+- **Slice 1 — `Enum?` (Low-hanging fruit, 0 bytes):** niche disc@0. Gate `is_lowerable_nullable_payload` (`triet-mir:1399`) += `MirType::Enum(_)`. `~0` / match / Elvis null-check on disc@0. Widening = no-op.
+- **Slice 2 — `Struct?` (8B tag, Option A):** gate += `MirType::Struct(_)`; layout +8B tag prepend; widening = tag-store + multi-word-copy (ADR-0060); match present-arm binds at slot+8 (offset-walk).
 
-## 9. Rủi ro + teeth bắt buộc
+## 9. Risks + Mandatory Teeth
 
-- **Sentinel-vs-disc collision (Enum?):** PHẢI chứng minh không discriminant thật nào == `i64::MIN`. Discriminant gán {0,1,2,…} (`VariantLayout:1119` "0, 1, 2, …") — an toàn. Teeth: enum nhiều variant + match present (mỗi variant) + match null.
-- **Tag-offset (Struct?):** field bind sai offset (+8) → đọc đè tag / data-loss. Teeth: `Struct?` present-arm đọc field → giá trị đúng; poison bỏ +8 offset-walk → giá trị sai.
-- **Widening Struct? (Lát 2):** multi-word-copy thiếu word → field sau mất. Teeth: struct ≥2 field, widen rồi đọc cả hai. Poison copy 1-word → field sau = rác.
-- **`~0` materialize:** poison store sentinel (offset/giá trị) → match rẽ sai → giá trị sai (mẫu ADR-0062 §8).
-- **Blind-spot rule:** teeth phải quét **cả Enum? LẪN Struct?** (Lát 2), và **cả nhánh present LẪN null** (mỗi nhánh một mặt trận — bài học HP.3).
-- **B8 guard (regression):** teeth khẳng định `String`-trong-`Struct?` / `Vector`-trong-`Enum?` payload VẪN refuse `HeapNullableNotLowered` (fixture âm). Poison: nếu ai nới gate scalar→heap cho field/payload, fixture âm phải đỏ.
+- **Sentinel-vs-disc collision (Enum?):** MUST prove no real discriminant == `i64::MIN`. Discriminants assigned {0,1,2,…} (`VariantLayout:1119` "0, 1, 2, …") — safe. Teeth: enum with multiple variants + match present (each variant) + match null.
+- **Tag-offset (Struct?):** field binding at wrong offset (+8) → overwrites tag / data-loss. Teeth: `Struct?` present-arm reads fields → correct values; poison removing +8 offset-walk → wrong values.
+- **Widening Struct? (Slice 2):** multi-word-copy missing words → subsequent fields corrupted. Teeth: struct with ≥2 fields, widen then read both. Poison copying 1 word → subsequent fields = garbage.
+- **`~0` Materialization:** poison sentinel store (offset/value) → match branches incorrectly → wrong value (model of ADR-0062 §8).
+- **Blind-spot Rule:** teeth must exercise **BOTH Enum? AND Struct?** (Slice 2), and **BOTH present AND null arms** (each branch is a front — lesson from HP.3).
+- **B8 Guard (Regression):** teeth assert `String`-inside-`Struct?` / `Vector`-inside-`Enum?` payload STILL reject with `HeapNullableNotLowered` (negative fixture). Poison: if anyone relaxes scalar→heap gate for field/payload, negative fixture must fail.
 
-### 9.1 Amendment (Lát 1, 2026-06-20) — HAI cổng refuse B8 khác mã lỗi (O đo, sửa-có-dấu-vết)
+### 9.1 Amendment (Slice 1, 2026-06-20) — TWO Distinct B8 Refusal Portals with Different Error Codes (Measured by O, Traceable Edit)
 
-Verify Lát 1 lộ ra B8 refuse qua **hai cổng phân biệt** — teeth phải nhắm đúng cổng của lát này:
-- **`Enum?` với payload nullable-heap** `Has(String?)` → `Body::verify()` enum-payload gate (`triet-mir:1500/1513`, giữ `is_scalar_nullable_payload`) → **`MirError::HeapNullableNotLowered`** "at enum payload `Bag.Has`". **ĐÂY là guard của ADR-0065** (fixture âm 230). Nới gate scalar→heap cho field/payload → fixture 230 phải đỏ.
-- **`Enum` với payload plain-heap** `Has(String)` (không nullable) → chặn sớm hơn ở is_copy construction gate (ADR-0040 **B8 pre-existing**, `triet-lower`) → `LowerError "heap types not supported"`. **Orthogonal** — không phải guard lát này; chỉ bắn khi CONSTRUCT variant.
+Verifying Slice 1 revealed that B8 refuses via **two distinct checkpoints** — teeth must target the exact checkpoint for this slice:
+- **`Enum?` with nullable-heap payload** `Has(String?)` → `Body::verify()` enum-payload gate (`triet-mir:1500/1513`, preserving `is_scalar_nullable_payload`) → **`MirError::HeapNullableNotLowered`** "at enum payload `Bag.Has`". **THIS is ADR-0065's guard** (negative fixture 230). Relaxing scalar→heap gate for field/payload → fixture 230 fails.
+- **`Enum` with plain-heap payload** `Has(String)` (non-nullable) → blocked earlier at is_copy construction gate (ADR-0040 **pre-existing B8**, `triet-lower`) → `LowerError "heap types not supported"`. **Orthogonal** — not this slice's guard; only triggers when CONSTRUCTING variants.
 
-Teeth B8 của Lát 1 dùng `String?` payload (cổng `HeapNullableNotLowered`), KHÔNG dùng plain `String` (cổng khác). §9 bullet "B8 guard" ở trên trỏ đúng cổng `HeapNullableNotLowered`.
+Slice 1 B8 teeth use `String?` payload (`HeapNullableNotLowered` portal), NOT plain `String` (different portal). §9 bullet "B8 guard" above points to the `HeapNullableNotLowered` portal.
 
-### 9.2 Amendment (Lát 2, 2026-06-20) — widening `Struct → Struct?` PHẢI sinh Assign (KHÔNG retype in-place)
+### 9.2 Amendment (Slice 2, 2026-06-20) — Widening `Struct → Struct?` MUST Emit Assign (NO In-Place Retyping)
 
-Verify Lát 2 lộ ra một giả định sai trong WO gốc (recon-miss của O, vá in-scope, β/B8 không đổi):
+Verifying Slice 2 revealed a flawed assumption in the original WO (recon oversight by O, patched in-scope, invariants unchanged):
 
-- **Cơ chế lowerer thật:** `let x: T? = y` ở `triet-lower/src/lib.rs:1207` mặc định **retype local của `y` tại-chỗ** (`local_decls[v].ty = ann_ty`) + alias — KHÔNG sinh `Assign`. Đây CHÍNH là lý do widening Lát 1 (`Enum → Enum?`) là **no-op**: niche disc@0 dùng chung slot, relabel là đủ.
-- **Tại sao Struct? phá:** `Struct?` phình +8B (tag prepend). Retype in-place giữ slot `StructAlloc` 16B (x@0,y@8) nhưng dán nhãn `Nullable(Struct)` → `walk_projections +8` đọc OOB → giá trị rác (fixture 231 trả 6 thay 7). TODO sẵn tại `1200-1206` đã tiên tri đúng ca này ("emit an Assign to a new typed local (M2 pattern) instead of mutating").
-- **Delta 0 (sửa):** khi `init_ty == Struct(_)` **và** `ann_ty == Nullable(Struct(_))` → alloc local `Nullable(Struct)` MỚI + `Assign{new ← v}` (M2 pattern), KÍCH nhánh JIT widening (Delta 4a). **Khoanh chặt** chỉ `Struct→Struct?`; Enum?/scalar/String? giữ in-place (fixture 229 xanh nguyên).
-- **Teeth tag-store (P3):** store `tag=present(1)` trong 4a load-bearing nhưng fixture slot-tươi KHÔNG bắt (uninit tình cờ ≠ MIN). Cần fixture **reassign-widen-over-null** (237: `let mutable n: Pt? = ~0; n = p;` trên slot từng giữ `~0`=MIN): bỏ store → tag cũ MIN sống → match nhầm `~0` → đỏ. §9 bullet "`~0` materialize" mở rộng: teeth widening-tag PHẢI dùng slot tái-dùng-null, không dùng slot tươi.
+- **Actual lowerer mechanism:** `let x: T? = y` in `triet-lower/src/lib.rs:1207` by default **retypes y's local in-place** (`local_decls[v].ty = ann_ty`) + aliases — DOES NOT emit `Assign`. This is PRECISELY why Slice 1 widening (`Enum → Enum?`) was a **no-op**: niche disc@0 shared the slot, relabeling was sufficient.
+- **Why Struct? breaks:** `Struct?` expands by +8B (tag prepend). Retyping in-place retains the 16B `StructAlloc` slot (x@0, y@8) while labeling it `Nullable(Struct)` → `walk_projections +8` reads OOB → garbage values (fixture 231 returned 6 instead of 7). Existing TODO at lines `1200-1206` correctly predicted this case ("emit an Assign to a new typed local (M2 pattern) instead of mutating").
+- **Delta 0 (Fix):** when `init_ty == Struct(_)` **and** `ann_ty == Nullable(Struct(_))` → allocate a NEW `Nullable(Struct)` local + `Assign{new ← v}` (M2 pattern), ACTIVATING the JIT widening branch (Delta 4a). **Strictly scoped** to `Struct→Struct?`; Enum?/scalar/String? retain in-place behavior (fixture 229 remains green).
+- **Tag-store Teeth (P3):** storing `tag=present(1)` in 4a is load-bearing, but fresh-slot fixtures did NOT catch omissions (uninitialized slot happened to be ≠ MIN). Requires a **reassign-widen-over-null** fixture (237: `let mutable n: Pt? = ~0; n = p;` on a slot previously holding `~0`=MIN): omit store → old MIN tag persists → match incorrectly hits `~0` → fails. §9 bullet "`~0` materialize" expanded: widening-tag teeth MUST use recycled-null slots, not fresh slots.
 
 ## 10. Consequences
 
-- (+) Hoàn tất hệ nullable cho mọi loại; bất biến `tag_cell == i64::MIN ⟺ null` hợp nhất scalar/heap/enum/struct.
-- (+) Enum? = 0 byte, 0-allocator. Struct? = +8B, 0-allocator. Value-model i64 **KHÔNG đụng** (leaf load vẫn I64; chỉ mở rộng slot-layout, cùng họ Outcome/nested-aggregate).
-- (−) Struct? +8B overhead/value (G chấp nhận: "RAM rẻ, não không rẻ để debug type-dependent offset").
-- **Đóng băng:** heap-trong-aggregate + drop-glue defer minh bạch (B8 §4) — không hứa, không skeleton dead-code.
+- (+) Completes the nullable system across all types; invariant `tag_cell == i64::MIN ⟺ null` unifies scalars/heap/enums/structs.
+- (+) Enum? = 0 bytes, 0 allocator involvement. Struct? = +8B, 0 allocator involvement. Value-model i64 **UNTOUCHED** (leaf loads remain I64; expands only slot layouts, in the same family as Outcome/nested-aggregates).
+- (−) Struct? incurs +8B overhead/value (accepted by G: "RAM is cheap; debugging type-dependent offsets is not").
+- **Frozen Scope:** Heap-in-aggregates + drop-glue transparently deferred (B8 §4) — no empty promises, no dead-code skeletons.
 
 ## 11. Migration
 
-| Mốc | Việc | Repr đổi? |
+| Milestone | Task | Repr Changed? |
 |---|---|---|
-| Tương lai: niche-fill (C) | Struct? bỏ tag-word cho struct có niche field → 0 byte | Có thể, cục bộ, ADR mới |
-| Heap-trong-aggregate | Drop-glue + free-shim cho aggregate chứa Move field | Campaign riêng |
-| Bậc C packed ABI | tag-word có thể hợp nhất với Outcome disc | Có thể, cục bộ |
+| Future: niche-fill (C) | Struct? eliminates tag-word for structs with niche fields → 0 bytes | Possible, localized, new ADR |
+| Heap-in-aggregate | Drop-glue + free-shims for aggregates containing Move fields | Dedicated campaign |
+| Tier C packed ABI | Tag-word can unify with Outcome discriminant | Possible, localized |
 
 ---
 
-## 12. AMENDMENT (Lát 3, 2026-06-20) — Nested Nullable Aggregate of Copy (Trục A)
+## 12. AMENDMENT (Slice 3, 2026-06-20) — Nested Nullable Aggregate of Copy (Axis A)
 
-**Bối cảnh:** §8 ghi "NGOÀI scope — defer: nested `Struct?`-field-trong-`Struct`". §4/§9 đã khóa
-B8 (Copy-only). Lát 1 (`Enum?`) + Lát 2 (`Struct?`) chỉ chạy ở vị trí **top-level** (return/local).
-Khi `Struct?`/`Enum?` nằm **làm field/payload của một aggregate khác** (`struct Holder { p: Point? }`),
-ba tầng chặn: gate field/payload (`is_scalar_nullable_payload`, scalar-only), sizing fixup (chỉ map
-`Struct/Enum`, không `Nullable(Struct/Enum)` → field `Point?` rơi default 8B = SAI), offset-walk
-(`walk_projections` không unwrap `Nullable` mid-walk → `h.p.x` fail "field access on non-aggregate").
-**Lát 3 (Trục A)** mở Ca 1 — `struct Holder { p: Point? }`, Point all-scalar — thuần **layout math**,
-KHÔNG allocator, KHÔNG drop-glue.
+**Context:** §8 noted "OUT of scope — deferred: nested `Struct?`-field-inside-`Struct`". §4/§9 locked
+B8 (Copy-only). Slice 1 (`Enum?`) + Slice 2 (`Struct?`) operated solely at the **top-level** (return/local).
+When `Struct?`/`Enum?` sits **as a field/payload of another aggregate** (`struct Holder { p: Point? }`),
+three layers blocked execution: field/payload gate (`is_scalar_nullable_payload`, scalar-only), sizing fixup (only mapped
+`Struct/Enum`, not `Nullable(Struct/Enum)` → `Point?` field defaulted to 8B = WRONG), offset-walk
+(`walk_projections` failed to unwrap `Nullable` mid-walk → `h.p.x` failed with "field access on non-aggregate").
+**Slice 3 (Axis A)** enables Case 1 — `struct Holder { p: Point? }`, Point all-scalar — pure **layout math**,
+NO allocator, NO drop-glue.
 
-### 12.1 Cơ chế (kế thừa Lát 1/Lát 2, áp ở vị trí field/payload)
-- **`Nullable(Struct)` field** = `inner.total_size + 8` (tag-word prepend @field-offset, y hệt top-level
-  Lát 2 §2.2). Tag@field-offset == `i64::MIN` ⟺ null; == `+1` ⟺ present. Field thật của Point sống tại
+### 12.1 Mechanism (Inherited from Slice 1/2, applied at field/payload position)
+- **`Nullable(Struct)` field** = `inner.total_size + 8` (tag-word prepended @ field-offset, identical to top-level
+  Slice 2 §2.2). Tag @ field-offset == `i64::MIN` ⟺ null; == `+1` ⟺ present. Real fields of Point live at
   `field-offset + 8 + Point.field.offset`.
-- **`Nullable(Enum)` field** = `inner.total_size` (disc-niche, **0 byte** overhead, y hệt Lát 1 §2.1).
-  disc@field-offset == `i64::MIN` ⟺ null.
-- **Offset-walk**: khi `walk_projections` đi VÀO một field kiểu `Nullable(Struct)` → cộng tag-shift +8
-  rồi unwrap về `Struct`; `Nullable(Enum)` → +0 rồi unwrap về `Enum`. Tái dùng tinh thần
-  `nullable_struct_base_offset` (struct→8/enum→0) nhưng áp **mid-walk** thay vì chỉ ở base.
+- **`Nullable(Enum)` field** = `inner.total_size` (disc-niche, **0 bytes** overhead, identical to Slice 1 §2.1).
+  disc @ field-offset == `i64::MIN` ⟺ null.
+- **Offset-Walk**: when `walk_projections` traverses INTO a field of type `Nullable(Struct)` → add tag-shift +8
+  then unwrap to `Struct`; `Nullable(Enum)` → +0 then unwrap to `Enum`. Reuses the principle of
+  `nullable_struct_base_offset` (struct→8 / enum→0) applied **mid-walk** rather than solely at the base.
 
-### 12.2 Điều kiện Copy — KHẮC ĐÁ (nếp gấp soundness)
-Chỉ áp khi `inner.is_copy(Some(body))` (`triet-mir:666` — đã đệ quy + body-aware: chui field/variant).
-- Heap-trong-nested-nullable (`struct Bad { s: String }`, `Holder2 { p: Bad? }`) → `Bad.is_copy = false`
-  → gate field/payload **GIỮ refuse** `HeapNullableNotLowered`. **B8 §4 NGUYÊN.**
-- `Nullable(String/Vector/HashMap)` field → inner KHÔNG phải Struct/Enum → refuse (B8 nguyên).
-- **Cảnh báo (G khắc đá):** gate field/payload PHẢI **body-aware**. Nới gate nhận `Nullable(Struct/Enum)`
-  **thuần cấu trúc** (không check `is_copy`) = chỗ B8 lọt → `Bad?` field copy String bytes như Copy =
-  double-free/leak tiềm ẩn. `find_refused_nullable` hiện cầm `allow: fn(&MirType)->bool` KHÔNG thấy body
-  → cơ chế nới phải tải body vào nhánh field/payload (đổi sig hoặc path riêng).
+### 12.2 Copy Condition — INSCRIBED IN STONE (Soundness Crease)
+Applies ONLY when `inner.is_copy(Some(body))` (`triet-mir:666` — recursive + body-aware: inspects fields/variants).
+- Heap-in-nested-nullable (`struct Bad { s: String }`, `Holder2 { p: Bad? }`) → `Bad.is_copy = false`
+  → field/payload gate **RETAINS refusal** `HeapNullableNotLowered`. **B8 §4 REMAINS INTACT.**
+- `Nullable(String/Vector/HashMap)` field → inner is NOT Struct/Enum → refused (B8 intact).
+- **Warning (Inscribed by G):** field/payload gate MUST be **body-aware**. Relaxing the gate to accept `Nullable(Struct/Enum)`
+  **purely structurally** (without checking `is_copy`) = B8 loophole → `Bad?` field would copy String bytes as Copy =
+  latent double-free/leak. `find_refused_nullable` currently takes `allow: fn(&MirType)->bool` WITHOUT body access
+  → relaxation mechanism must pass body into field/payload branches.
 
-### 12.3 Layout math — offset đệ quy lồng
-Tag-word lớp ngoài (nếu aggregate ngoài cũng nullable) + tag-word lớp trong cộng dồn; padding 8-align.
-Ca 1 (aggregate ngoài KHÔNG nullable):
+### 12.3 Layout Math — Nested Recursive Offset
+Outer tag-word (if outer aggregate is also nullable) + inner tag-word accumulate; 8-byte aligned padding.
+Case 1 (outer aggregate is NOT nullable):
 
 ```
 struct Point  { x: Integer, y: Integer }      → Point.total  = 16  (x@0, y@8)
@@ -200,383 +200,379 @@ struct Holder { p: Point? }                    → Holder.total = 24  (p@0)
 
   Holder slot:  offset 0      8      16
                 +------+------+------+
-                | tag  |  x   |  y   |     p@0 → tag@0, Point.x@8, Point.y@16  (tuyệt đối)
+                | tag  |  x   |  y   |     p@0 → tag@0, Point.x@8, Point.y@16  (absolute)
                 +------+------+------+
-  đọc h.p.x = load(slot + p.offset(0) + tag-shift(8) + Point.x.offset(0)) = load(slot+8)
-  đọc h.p.y = load(slot + 0 + 8 + 8)                                       = load(slot+16)
+  read h.p.x = load(slot + p.offset(0) + tag-shift(8) + Point.x.offset(0)) = load(slot+8)
+  read h.p.y = load(slot + 0 + 8 + 8)                                       = load(slot+16)
 ```
 
-`Nullable(Enum)` field: 0-byte tag → field-offset không dịch (disc@field-offset chính là niche).
+`Nullable(Enum)` field: 0-byte tag → field-offset does not shift (disc @ field-offset is the niche).
 
-### 12.4 KHÔNG drop-glue, KHÔNG allocator
-Copy-only (§12.2) → Drop = no-op → 0 drop-glue, 0 free-shim, 0 đụng allocator (kế thừa §4 + §7 + §9).
-Widening `Holder{ p: ~+ Point{...} }` = store tag + multi-word-copy Point fields (tái dùng Lát 2 §2.2
-+ ADR-0060 §Điểm-3), KHÔNG alloc.
+### 12.4 NO Drop-Glue, NO Allocator
+Copy-only (§12.2) → Drop = no-op → 0 drop-glue, 0 free-shims, 0 allocator interaction (inheriting §4 + §7 + §9).
+Widening `Holder{ p: ~+ Point{...} }` = stores tag + multi-word-copies Point fields (reusing Slice 2 §2.2
++ ADR-0060 §Point-3), NO allocations.
 
-### 12.5 ⚰️ Phán quyết Trục B — SỔ TỬ THẦN (campaign VISION riêng)
-**Heap-trong-aggregate + recursive drop-glue = Trục B = campaign VISION RIÊNG, KHÔNG phải ADR-0065.**
-ADR cho Trục B còn **trắng** — chưa viết một dòng. **B8 (§4) khóa chặt mọi heap-in-aggregate field-offset
-bất kể nullable.** ADR-0065 (kể cả §12 này) KHÔNG có một chữ nào ngụ ý Trục B được chạm tới trong campaign
-này. Ai chế heap-in-nested-nullable, drop-glue, hay free-shim cho aggregate-nullable = VƯỢT RÀO, review
-chặn thẳng.
+### 12.5 ⚰️ Axis B Ruling — BOOK OF DEATH (Dedicated VISION Campaign)
+**Heap-in-aggregate + recursive drop-glue = Axis B = DEDICATED VISION CAMPAIGN, NOT ADR-0065.**
+The ADR for Axis B is completely blank — not a single line written. **B8 (§4) locks all heap-in-aggregate field-offsets
+regardless of nullability.** ADR-0065 (including this §12) DOES NOT imply Axis B is touched in this campaign.
+Anyone introducing heap-in-nested-nullables, drop-glue, or free-shims for aggregate-nullables = VIOLATION OF INVARIANTS,
+blocked in review.
 
-### 12.6 Teeth bắt buộc (O verify máu từng lát)
-- **Gate body-aware (Lát 2 WO):** poison nới gate thành thuần-cấu-trúc (bỏ `is_copy`) → fixture `Bad?`-heap-field
-  KHÔNG còn refuse → ĐỎ (chứng minh Copy-check load-bearing chống B8-lọt). Control: `Nullable(String)` field vẫn refuse.
-- **Sizing (Lát 3 WO):** poison bỏ `+8` cho Nullable(Struct) field → Holder.total sai → walk OOB → đọc rác/SIGSEGV ĐỎ.
-- **Offset-walk (Lát 4 WO):** poison tag-shift nested 8→0 (hoặc 8→16) → `h.p.x` đọc lệch byte → giá trị sai/SIGSEGV ĐỎ.
-- **Construction + read-back (Lát 5 WO):** read-back `h.p.x` BẮT BUỘC (construct-only không tính); fixture
-  **field-kế-cận** (struct 2 field + Point? sau, đọc field-sau-nested) chứng minh +8 KHÔNG đạp field sau.
-- **B8 regression:** fixture âm `Bad?` (heap-in-struct) + `Nullable(String)` field VẪN refuse `HeapNullableNotLowered`.
+### 12.6 Mandatory Teeth
+- **Body-Aware Gate (Slice 2 WO):** poison relaxing gate to purely structural (omitting `is_copy`) → `Bad?`-heap-field fixture
+  CEASES to be refused → FAILS (proves Copy-check is load-bearing against B8 leaks). Control: `Nullable(String)` field remains refused.
+- **Sizing (Slice 3 WO):** poison removing `+8` for Nullable(Struct) fields → Holder.total wrong → walk OOB → garbage/SIGSEGV FAILS.
+- **Offset-Walk (Slice 4 WO):** poison nested tag-shift 8→0 (or 8→16) → `h.p.x` reads misaligned bytes → wrong value/SIGSEGV FAILS.
+- **Construction + Read-Back (Slice 5 WO):** reading back `h.p.x` is MANDATORY (construct-only does not count);
+  **adjacent-field fixture** (struct with 2 fields + Point? following, reading subsequent field) proves +8 DOES NOT corrupt subsequent fields.
+- **B8 Regression:** negative fixtures for `Bad?` (heap-in-struct) + `Nullable(String)` fields STILL refuse with `HeapNullableNotLowered`.
 
-### 12.7 Construction Taxonomy (re-scope 2026-06-20 — sửa-có-dấu-vết, G ký Option a)
+### 12.7 Construction Taxonomy (Re-scoped 2026-06-20 — Traceable Edit, G Signed Option a)
 
-**Recon-miss của WO gốc (O tự nhận):** §12.4 ghi "tái dùng widening Lát 2 §2.2 (Delta 4a)". SAI. Delta 4a/4b
-JIT (`mir_lower.rs:1375/1418`) **gate `projection.is_empty()` CẢ HAI bên** → chỉ chạy cho top-level
+**Recon Oversight in Original WO (Acknowledged by O):** §12.4 stated "reuses widening from Slice 2 §2.2 (Delta 4a)". INCORRECT. Delta 4a/4b
+in JIT (`mir_lower.rs:1375/1418`) **gate `projection.is_empty()` ON BOTH SIDES** → only executed for top-level
 `let x: Struct? = y`. Construction (`_0.p = move v` — dest projected) + read-back (`_2 = move h.p` — source
-projected) **KHÔNG BAO GIỜ** chạm 4a/4b → rơi general-copy. **Field-position construction chưa từng được
-implement.** Đây là lỗ hổng lõi, không phải bug vặt.
+projected) **NEVER** reached 4a/4b → fell to general-copy. **Field-position construction had never been implemented.**
+This was a core gap, not a trivial bug.
 
-**Ba bug (O trace tới MIR):**
-- **Bug A — JIT base-downcast nuốt tag** (`walk_projections:297`): `nullable_struct_base_offset` bake `+8`
-  cho mọi `Nullable(Struct)` base. `load_place`/`store_place` empty-proj đọc thẳng `slot@0` (KHÔNG gọi walk
-  → top-level match 231-237 ĐÚNG), NHƯNG Assign-copy gọi walk cả src+dest → whole-slot move bị +8 → **bỏ qua
-  tag@0** → null trả rác. Blast-radius khi gỡ = **HẸP, chỉ Assign-copy**.
-- **Bug B — Lowerer `~+ aggregate` rẽ Outcome** (`lib.rs:1557`): `~+ Point` → `OutcomeAlloc` với
-  `outcome_ty = return_type` (Integer của main) → `OutcomeAlloc non-Outcome Integer`. `~+` thuần Outcome,
-  không có nhánh nullable-present.
-- **Bug C — Lowerer implicit field-widen không set tag** (`lib.rs:2920`): `Point{..}` → plain Struct →
-  `_0.p = move _1` plain Assign, KHÔNG widen, KHÔNG SetTag → present **pass-by-luck** (tag uninit tình cờ ≠ MIN).
+**Three Root Bugs (Traced to MIR by O):**
+- **Bug A — JIT base-downcast swallowed tag** (`walk_projections:297`): `nullable_struct_base_offset` baked `+8`
+  into all `Nullable(Struct)` bases. `load_place`/`store_place` empty projections read directly from `slot@0` (WITHOUT calling walk
+  → top-level match 231-237 was CORRECT), BUT Assign-copy called walk on both src + dest → whole-slot move added +8 → **skipped
+  tag@0** → null returned garbage. Blast radius when removed = **NARROW, Assign-copy only**.
+- **Bug B — Lowerer `~+ aggregate` routed to Outcome** (`lib.rs:1557`): `~+ Point` → `OutcomeAlloc` with
+  `outcome_ty = return_type` (Integer of main) → `OutcomeAlloc non-Outcome Integer`. `~+` was purely Outcome,
+  lacking a nullable-present branch.
+- **Bug C — Lowerer implicit field-widening failed to set tag** (`lib.rs:2920`): `Point{..}` → plain Struct →
+  `_0.p = move _1` plain Assign, WITHOUT widening, WITHOUT SetTag → present **passed by luck** (uninitialized tag happened to be ≠ MIN).
 
-**Giải pháp (Option a — faithful walk + Taxonomy 4-case):** bỏ base-downcast khỏi `walk_projections` (làm nó
-**faithful** — offset thật, type `Nullable(Struct)` nguyên). Đưa quyết định downcast/widen/whole-copy vào
-**chốt Assign-copy**, phân xử theo `(src_ty, dest_ty)` SAU faithful-walk:
+**Solution (Option a — Faithful Walk + 4-Case Taxonomy):** remove base-downcast from `walk_projections` (making it
+**faithful** — returning true offsets with intact `Nullable(Struct)` types). Relocate downcast/widen/whole-copy decisions to
+the **Assign-copy gateway**, dispatching on `(src_ty, dest_ty)` AFTER the faithful walk:
 
 | dest \ src | plain `Struct` | `Nullable(Struct)` |
 |---|---|---|
-| **plain `Struct`** | general copy (cũ, ADR-0060) | **case 3 DOWNCAST**: copy fields `src+8 → dest+0` (= match-bind `pt = scrut`) |
-| **`Nullable(Struct)`** | **case 2 WIDEN**: set `tag=1@dest+0`, copy fields `src+0 → dest+8` (= 4a cũ + field implicit) | **case 1 WHOLE-COPY**: `N+8` bytes, **tag@0 FIRST**, `src_off → dest_off` (= 4b cũ + construction + readback) |
+| **plain `Struct`** | general copy (legacy, ADR-0060) | **Case 3 DOWNCAST**: copy fields `src+8 → dest+0` (= match-bind `pt = scrut`) |
+| **`Nullable(Struct)`** | **Case 2 WIDEN**: set `tag=1@dest+0`, copy fields `src+0 → dest+8` (= old 4a + field implicit) | **Case 1 WHOLE-COPY**: `N+8` bytes, **tag@0 FIRST**, `src_off → dest_off` (= old 4b + construction + readback) |
 
-**5 điểm khắc đá:**
-1. **Faithful-walk:** `walk_projections` trả offset thật (base bare-`Nullable(Struct)` KHÔNG +8); giữ Lát-4
-   `nested_nullable_shift` cho field-INTO-nullable mid-walk.
-2. **Subsume:** Taxonomy gộp Delta 4a (→ case 2) + 4b (→ case 1). **XÓA 4a/4b cũ**, không giữ song song.
-   Downcast +8 (cũ bake mù trong walk) nay là hành vi **tường minh** của case 3.
-3. **Tag bất biến NGUYÊN:** `{tag@0, fields@8}`, `tag@0==MIN ⟺ null`. Case 1 copy **tag-first** → preserve verbatim.
-4. **Enum? field analog:** +0 (niche), tag = `disc@0 == MIN`.
-5. **Copy-only:** KHÔNG drop-glue/allocator. Heap (Trục B) = sổ tử thần, B8 §4 khóa, CẤM chạm.
+**5 Invariant Principles:**
+1. **Faithful Walk:** `walk_projections` returns true offsets (base bare-`Nullable(Struct)` DOES NOT add +8); retains Slice 4
+   `nested_nullable_shift` for field-INTO-nullable mid-walk.
+2. **Subsumption:** Taxonomy consolidates Delta 4a (→ Case 2) + 4b (→ Case 1). **DELETE legacy 4a/4b**, do not maintain in parallel.
+   Downcast +8 (previously baked blindly in walk) is now the **explicit** behavior of Case 3.
+3. **Tag Invariants INTACT:** `{tag@0, fields@8}`, `tag@0==MIN ⟺ null`. Case 1 copies **tag-first** → preserved verbatim.
+4. **Enum? Field Analog:** +0 (niche), tag = `disc@0 == MIN`.
+5. **Copy-Only:** NO drop-glue/allocator. Heap (Axis B) = book of death, B8 §4 locked, STRICTLY FORBIDDEN to touch.
 
-**Lowerer (Lát 3'):** `~+ inner` ở struct-field khi `field_ty == Nullable(Struct/Enum)` → lower `inner` plain
-(KHÔNG đi `OutcomeConstructor`); field Assign tự widen qua **case 2**. Bug C implicit KHÔNG cần sửa lowerer —
-case 2 JIT tự widen plain Assign. `~+` top-level (`let x: Struct? = ~+ y`) nếu vỡ → **ghi nợ tech-debt, NGOÀI
-scope** (G chốt tách).
+**Lowerer (Slice 3'):** `~+ inner` at struct-field when `field_ty == Nullable(Struct/Enum)` → lower `inner` plain
+(DOES NOT route to `OutcomeConstructor`); field Assign widens automatically via **Case 2**. Bug C implicit widening requires NO lowerer changes —
+Case 2 in JIT automatically widens plain Assigns. Top-level `~+` (`let x: Struct? = ~+ y`) if broken → **recorded as technical debt, OUTSIDE
+scope** (G finalized separation).
 
-**Teeth (re-scope):**
-- **LOCKED 231-237 XANH NGUYÊN** (lưới regression — case 1/2/3 subsume đúng).
-- Poison case 1 (whole-copy → cố +8 downcast) → readback-null lệch → null-fixture ĐỎ.
-- Poison case 2 (bỏ set-tag=1) → present mất tag → present-fixture ĐỎ. **PHẢI fixture quan-sát-được, KHÔNG
-  pass-by-luck** (bài học Lát 2 P3 + reject Lát 5).
-- Poison case 3 (bỏ +8) → match-bind `pt.x` đọc tag thay field → 231-237 + present ĐỎ.
-- Poison `~+`-special-case → `Holder{p:~+ Point{...}}` lại `OutcomeAlloc` ĐỎ.
-- **⚔ field-kế-cận** (`struct H2{a, p:Point?, z}`): construct rồi đọc `z` → tag-8B + nội dung lồng KHÔNG
-  đạp địa chỉ `z` phía sau (offset verify bằng sizing-fixup + walk, KHÔNG tin số gợi ý).
+**Teeth (Re-scoped):**
+- **LOCKED 231-237 REMAIN GREEN** (regression harness — Cases 1/2/3 subsume correctly).
+- Poison Case 1 (whole-copy → forcing +8 downcast) → readback-null misaligned → null fixture FAILS.
+- Poison Case 2 (omitting set-tag=1) → present loses tag → present fixture FAILS. **MUST be an observable fixture, NOT
+  passing by luck** (lesson from Slice 2 P3 + rejected Slice 5).
+- Poison Case 3 (omitting +8) → match-bind `pt.x` reads tag instead of field → 231-237 + present FAILS.
+- Poison `~+` special case → `Holder{p:~+ Point{...}}` hits `OutcomeAlloc` FAILS.
+- **⚔ Adjacent Field** (`struct H2{a, p:Point?, z}`): construct then read `z` → 8B tag + nested content DOES NOT
+  corrupt the address of `z` behind it (offset verified via sizing-fixup + walk, NOT relying on suggested numbers).
 
-**Chữ ký §12:** (chờ O verify máu + ký; G ký đóng — D KHÔNG tự điền)
+### 12.8 Amendment (WO-~+-NULLABLE-UNIFY, 2026-06-21) — Comprehensive `~+ nullable-present`: Top-Level `let` + Field Scalar
 
-### 12.8 Amendment (WO-~+-NULLABLE-UNIFY, 2026-06-21) — `~+ nullable-present` triệt để: top-level `let` + field scalar
+**Context:** §12.7 resolved field-position construction for aggregates (`Struct?`/`Enum?`) but recorded debt for
+**two remaining survival paths** of Bug B (`OutcomeAlloc on non-Outcome type 'T?'`):
+- **Nest 1 — top-level `let x: T? = ~+ v`:** `~+` lowered directly to `OutcomeConstructor` → `outcome_ty = return_type`
+  (Integer of `main`, non-Outcome) → invalid `OutcomeAlloc`. Broken for scalars / Structs / Enums alike
+  (`Integer?`/`Point?`/`Color?` — O probed all 3 with identical errors).
+- **Nest 2 — field scalar `Holder{f: ~+ 5}` with `f: T?` scalar:** §12.7 gate only accepted `Nullable(Struct|Enum)`
+  → scalars fell to else branch → same `OutcomeAlloc`. (Field `Struct?`/`Enum?` already operational in §12.7 — fixtures 247/249, untouched.)
 
-**Bối cảnh:** §12.7 đóng field-position construction cho aggregate (`Struct?`/`Enum?`) nhưng ghi nợ
-**hai đường sống** còn lại của Bug B (`OutcomeAlloc on non-Outcome type 'T?'`):
-- **Ổ 1 — top-level `let x: T? = ~+ v`:** `~+` lower thẳng `OutcomeConstructor` → `outcome_ty =
-  return_type` (Integer của `main`, non-Outcome) → `OutcomeAlloc` rác. Chết cả scalar / Struct / Enum
-  (`Integer?`/`Point?`/`Color?` — O probe 3 cùng lỗi).
-- **Ổ 2 — field scalar `Holder{f: ~+ 5}` với `f: T?` scalar:** gate §12.7 chỉ nhận `Nullable(Struct|Enum)`
-  → scalar rơi else → cùng `OutcomeAlloc`. (Field `Struct?`/`Enum?` đã chạy §12.7 — fixture 247/249, KHÔNG đụng.)
+**Decision — LOWERER-ONLY, Reusing 100% of Widening Infrastructure, NO New ADR:**
 
-**Quyết định — LOWERER-ONLY, tái dùng 100% đường widening, KHÔNG ADR mới:**
+- **Fix 1 (Top-level let, `lib.rs` head of else branch ~1210):** before `lower_expr(*init)`, if `init` =
+  `OutcomeConstructor{ arm: Positive, payload: Some(inner) }` AND annotation lowers to `MirType::Nullable(_)`
+  → lower `*inner` (plain payload) INSTEAD of `*init`. Existing widening block (Slice 2 Delta 0) handles the rest:
+  - `Nullable(Struct)` → `is_struct_widening` → fresh Assign → JIT taxonomy **Case 2 WIDEN** (proven by fixture 252).
+  - `Nullable(Enum)` → in-place retyping → **niche disc@0** (253, mirroring 229/225).
+  - `Nullable(scalar)` → in-place retyping → **PA-3c no-op** (251).
 
-- **Fix 1 (top-level let, `lib.rs` đầu nhánh else ~1210):** trước `lower_expr(*init)`, nếu `init` =
-  `OutcomeConstructor{ arm: Positive, payload: Some(inner) }` VÀ annotation lower ra `MirType::Nullable(_)`
-  → lower `*inner` (plain payload) THAY `*init`. Khối widening sẵn có (Lát 2 Delta 0) gánh tiếp:
-  - `Nullable(Struct)` → `is_struct_widening` → Assign fresh → JIT taxonomy **case 2 WIDEN** (chứng minh: 252).
-  - `Nullable(Enum)` → retype in-place → **niche disc@0** (253, mirror 229/225).
-  - `Nullable(scalar)` → retype in-place → **PA-3c no-op** (251).
+  NO branching on types — all 3 flow through proven Axis A widening paths. Symmetrically mirrors
+  field-position redirect in §12.7 (StructLiteral).
 
-  KHÔNG nhánh-hóa theo type — cả 3 chảy qua widening đã có răng Trục A. Mirror đối xứng redirect
-  field-position §12.7 (StructLiteral).
-
-- **Fix 2 (field gate, `lib.rs` StructLiteral ~2940):** nới `field_is_nullable_agg`
+- **Fix 2 (Field gate, `lib.rs` StructLiteral ~2940):** relax `field_is_nullable_agg`
   (`Nullable(Struct|Enum)`) → `field_is_nullable = matches!(field_decl_ty, Some(Nullable(_)))`. Scalar
-  `~+ 5` → lower `inner=5` plain → field Assign store i64 (scalar nullable: **value IS repr**, present
-  5 ≠ MIN). **B8 NGUYÊN:** `is_copy` check chạy SAU mọi nhánh — `f: String?` set `~+ "hi"` → inner String
-  → `is_copy` false → refuse (fixture 255).
+  `~+ 5` → lowers `inner=5` plain → field Assign stores i64 (scalar nullable: **value IS repr**, present
+  5 ≠ MIN). **B8 REMAINS INTACT:** `is_copy` check executes AFTER all branches — `f: String?` initialized with `~+ "hi"` → inner String
+  → `is_copy` false → rejected (fixture 255).
 
-**Teeth (O verify máu — 3 răng đỏ độc lập, mỗi ngã rẽ một răng):**
-- **P1** tắt redirect Fix 1 → **251+252+253 cùng `OutcomeAlloc on non-Outcome 'Integer?'/'Point?'/'Color?'`**
-  → chứng minh redirect load-bearing CẢ 3 type.
-- **P2** revert gate Fix 2 về `_agg` → **254 `OutcomeAlloc on non-Outcome 'Integer'`** (cô lập field-scalar).
-- **P3** nới `is_copy` cho String → **255 đỏ** (refuse "heap types…" biến mất). B8 có **defense-in-depth 2 lớp**:
-  `is_copy` (lowerer, message fixture 255 pin) lớp 1 + verifier `heap-nullable T? not yet lowered` lớp 2.
-- Widening per-type (case 2 / niche / PA-3c no-op) đã có răng Trục A (231/229/249) — KHÔNG poison lại.
+**Teeth (O Verified — 3 Independent Red Teeth, 1 per Path):**
+- **P1** disable Fix 1 redirect → **251+252+253 all fail with `OutcomeAlloc on non-Outcome 'Integer?'/'Point?'/'Color?'`**
+  → proves redirect is load-bearing across ALL 3 types.
+- **P2** revert Fix 2 gate to `_agg` → **254 fails with `OutcomeAlloc on non-Outcome 'Integer'`** (isolates field-scalar).
+- **P3** relax `is_copy` for String → **255 FAILS** (refusal "heap types…" vanishes). B8 has **2-layer defense-in-depth**:
+  `is_copy` (lowerer, pinned by fixture 255 message) layer 1 + verifier `heap-nullable T? not yet lowered` layer 2.
+- Per-type widening (Case 2 / niche / PA-3c no-op) already possesses Axis A teeth (231/229/249) — NOT re-poisoned.
 
-**⛔ NGOÀI SCOPE — defer (G chốt tách, "Separation of Concerns"):** direct `match h.f` trên **scalar-nullable
-FIELD** chết ở `unsupported match pattern (expected enum variant)` — đây là gap **luồng ĐỌC** (field-read temp
-Unknown-typed, `lib.rs:2904-2911`, cố ý giữ scalar-leaf-as-i64 cho số học), KHÁC HẲN Bug B (luồng GHI). Fix
-nó = nới field-read typing 2904, blast-radius CHƯA đo trên 245+ fixture → **Sổ Nợ Kỹ Thuật, KHÔNG mở WO-2 lúc
-này**. Fixture 254 đọc qua `let y: Integer? = h.f` (typed-let widen Unknown→Nullable) làm cầu nối nghiệm thu
-luồng GHI.
+**⛔ OUT OF SCOPE — Deferred (G Finalized Separation of Concerns):** direct `match h.f` on **scalar-nullable
+FIELDS** fails with `unsupported match pattern (expected enum variant)` — this is a **READ-PATH gap**
+(field-read temporary typed Unknown, `lib.rs:2904-2911`, intentionally preserving scalar-leaf-as-i64 for arithmetic),
+DISTINCT from Bug B (the WRITE path). Fixing it requires modifying field-read typing at 2904, with unmeasured blast radius
+across 245+ fixtures → **Technical Debt Ledger, DO NOT open WO-2 at this time**. Fixture 254 reads via
+`let y: Integer? = h.f` (typed-let widening Unknown→Nullable) as an acceptance bridge for the WRITE path.
 
-**Hệ quả:** sau Fix 1+2, KHÔNG còn site nào `~+` đẻ `OutcomeAlloc-on-non-Outcome`. Chuỗi Nullable Aggregate
-construction đóng trọn (top-level + field, scalar + aggregate). `~+` thuần Outcome (`T~E`/`T?~E`) KHÔNG đổi
-hành vi (annotation non-Nullable → redirect không kích → lower `OutcomeConstructor` bình thường).
+**Consequences:** Following Fix 1+2, NO sites remain where `~+` generates `OutcomeAlloc-on-non-Outcome`. The Nullable Aggregate
+construction pipeline is fully closed (top-level + field, scalar + aggregate). Pure Outcome `~+` (`T~E`/`T?~E`) REMAINS
+UNCHANGED in behavior (non-Nullable annotations do not trigger the redirect → lower `OutcomeConstructor` normally).
 
-**Chữ ký §12.8:** O: ✅ (verify máu — P1/P2/P3 đỏ độc lập, mỗi ngã rẽ một răng; gate `0·0·250·0`; diff lowerer-only sạch; B8 2-lớp nguyên) · G: ✅ (ký đóng 2026-06-21 — WO-~+-NULLABLE-UNIFY).
+**§12.8 Signatures:** O: ✅ (verified — P1/P2/P3 independent failures, gate `0·0·250·0`, clean lowerer-only diff, 2-layer B8 intact) · G: ✅ (approved 2026-06-21 — WO-~+-NULLABLE-UNIFY).
 
-## 13. HOTFIX (2026-07-15, O recon on `9a1799c`) — payload-bearing `Enum?` REFUSED, disc-niche is unit-only-only
+## 13. HOTFIX (2026-07-15, O Recon on `9a1799c`) — Payload-Bearing `Enum?` REFUSED, Disc-Niche is Unit-Only
 
-**Máu O:** disc-niche §2.1/§12.7 was validated on **unit-only** enums (`Color{Red,Green,Blue}`, 8B — disc@0
-IS the whole value). It was never proven for an enum with a **payload-bearing variant** (>8B: disc@0 +
+**O Discovery:** Disc-niche §2.1/§12.7 was validated on **unit-only** enums (`Color{Red,Green,Blue}`, 8B — disc@0
+IS the entire value). It was never proven for an enum with a **payload-bearing variant** (>8B: disc@0 +
 payload@8…). When `E?` is used as a **function's own return type**, the single-i64 return ABI truncates the
-aggregate crossing the call boundary: the caller receives a corrupted discriminant, the enum drop-glue
-`SwitchInt` on that garbage value falls to `default` → `Trap` → **SIGILL (exit 132)**. Reproduced for BOTH an
-aggregate payload (`enum E{V(Big),N}`, `Big{p,q}` two `Integer` fields) and a scalar payload
-(`enum E{V(Integer),N}`) — not aggregate-specific.
+aggregate crossing the call boundary: the caller receives a corrupted discriminant, and the enum drop-glue
+`SwitchInt` on that garbage value falls to `default` → `Trap` → **SIGILL (exit 132)**. Reproduced for BOTH aggregate payloads
+(`enum E{V(Big),N}`, `Big{p,q}` two `Integer` fields) and scalar payloads (`enum E{V(Integer),N}`) — not aggregate-specific.
 
-**Fix (surgical, lowerer-only, one chokepoint):** `Expr::OutcomeConstructor`'s `Nullable` branch
-(`crates/triet-lower/src/lib.rs`, guards both the `~+` and `~0` arms) now refuses, at construction time,
+**Fix (Surgical, lowerer-only, single bottleneck):** `Expr::OutcomeConstructor`'s `Nullable` branch
+(`crates/triet-lower/src/lib.rs`, guarding both `~+` and `~0` arms) now refuses, at construction time,
 any `E?` where `E`'s `EnumLayout` has at least one variant with `payload.is_some()`. This is a **structural**
-refuse tại **chokepoint constructor** — nó gác cả arm `~+` lẫn `~0` **KHI LUỒNG ĐI QUA ĐÓ**.
+refusal at the **constructor bottleneck** — guarding both `~+` and `~0` arms **WHEN CONTROL FLOW TRAVERSES IT**.
 
-> ⚠️ **ĐÍNH CHÍNH (O đo lại 2026-07-20, G ký).** Câu gốc viết *"fires at every `E?`-value construction
-> site (top-level `let`, function `return`, struct field)"* — **NÓI QUÁ**. Đo trên `235e376`:
-> `return ~+ E::V(42)` → refuse ✓ exit 3 · struct-field → refuse ✓ exit 3 (guard aggregate RIÊNG, không
-> phải chokepoint này) · **`let x: E? = ~0` → LỌT, exit 0, chạy ra `0`** · **`let x: E? = E::V(42)`
-> (implicit widening) → LỌT, exit 0, chạy ra `1`**.
+> ⚠️ **CORRECTION (Re-measured by O 2026-07-20, Signed by G).** The original text stated *"fires at every `E?`-value construction
+> site (top-level `let`, function `return`, struct field)"* — **OVERSTATED**. Measured on `235e376`:
+> `return ~+ E::V(42)` → refused ✓ exit 3 · struct-field → refused ✓ exit 3 (separate aggregate guard, not
+> this bottleneck) · **`let x: E? = ~0` → SLIPPED THROUGH, exit 0, evaluated to `0`** · **`let x: E? = E::V(42)`
+> (implicit widening) → SLIPPED THROUGH, exit 0, evaluated to `1`**.
 >
-> Cơ chế lọt: `Stmt::Let` fast-path `is_null_expr` rẽ thẳng sang `Statement::Const`, **không đi qua**
-> `Expr::OutcomeConstructor`; còn implicit widening `E → E?` không phải constructor nên **không bao giờ**
-> chạm chokepoint. Guard đúng như mô tả — nhưng hai đường đó không tới được nó.
+> Mechanism of bypass: `Stmt::Let` fast-path `is_null_expr` routed directly to `Statement::Const`, **bypassing**
+> `Expr::OutcomeConstructor`; while implicit widening `E → E?` is not a constructor, so it **never**
+> reached the bottleneck. The guard operates exactly as described — but those two paths never traversed it.
 >
-> ⇒ **"đóng cả bề mặt" chỉ đúng cho đường CONSTRUCTOR.** Phần còn lại là **lỗ N1**, G phân loại
-> **POLICY-HOLE (KHÔNG phải UB)** 2026-07-19, đo lại 2026-07-20 xác nhận: heap payload local/param
-> `FREE=1 distinct=1 dup=0`, giá trị đúng, đường struct-field bị refuse, `i64::MIN` không diễn đạt được
-> từ source. **CẤM viện §13 như bằng chứng đã đóng một đường UB.**
+> ⇒ **"Sealing the entire surface" holds true ONLY for the CONSTRUCTOR path.** The remainder is **hole N1**, classified by G as a
+> **POLICY-HOLE (NOT UB)** on 2026-07-19, confirmed on 2026-07-20: heap payload local/param
+> `FREE=1 distinct=1 dup=0`, correct values, struct-field path refused, `i64::MIN` unrepresentable
+> from source. **FORBIDDEN to cite §13 as proof of having sealed a UB path.**
 
-Per refuse-over-guess: disc-niche cho enum payload-bearing chưa được chứng minh ngoài hazard return-ABI,
-nên đường constructor bị đóng thay vì đặc cách "chỉ refuse ở return position".
+Per refuse-over-guess: disc-niche for payload-bearing enums has not been proven safe outside the return-ABI hazard,
+so the constructor path is sealed rather than granting an exception "only at return position".
 
-**NOT fixed here (front deferred):** a proper `Enum?` repr for payload-bearing enums (e.g. a real disc-niche
-marshal across the return ABI, or falling back to the `Struct?` +8B tag-word scheme) — tracked as new debt
+**NOT Fixed Here (Deferred Front):** A proper `Enum?` representation for payload-bearing enums (e.g. real disc-niche
+marshaling across the return ABI, or falling back to the `Struct?` +8B tag-word scheme) — tracked as new debt
 "nullable-enum-payload niche marshal" pending a future slice. `Struct?` (§2.2/§3.2, +8B tag prepend) is
 UNCHANGED and out of scope for this hotfix.
 
-**Regression:** unit-only `Enum?` (§12.7 taxonomy, fixtures 249/250) is untouched — the refuse predicate only
+**Regression:** Unit-only `Enum?` (§12.7 taxonomy, fixtures 249/250) is untouched — the refusal predicate only
 fires when `payload.is_some()` for some variant; a unit-only enum's `EnumLayout` has `payload: None` on every
 variant, so the guard never trips for it.
 
-**Teeth:** fixtures 374 (aggregate payload, function-return shape, proven poison-red exit 132) / 375 (scalar
-payload, same shape, proven exit 132) / 376 (struct-field construction path — refuse proven, crash NOT
+**Teeth:** Fixtures 374 (aggregate payload, function-return shape, proven poison-red exit 132) / 375 (scalar
+payload, same shape, proven exit 132) / 376 (struct-field construction path — refusal proven, crash NOT
 independently reproduced for this exact shape; refused structurally regardless) / 377 (unit-only, local `let`
-— non-vacuous negative control, still compiles+runs).
+— non-vacuous negative control, still compiles + runs).
 
-**Chữ ký §13:** D (Sonnet 5) ✅ implemented + poison-red (374 only, per WO) · **O ✅ 2026-07-20** — verify độc lập trên `235e376`: refuse đúng ở đường constructor (`return ~+`) và struct-field; **đo ra câu "every construction site" NÓI QUÁ** (`let = ~0` và implicit widening LỌT) → đính chính ở trên trước khi ký, KHÔNG ký nguyên văn cũ · **G ✅ 2026-07-20** — duyệt câu đính chính, chốt N1 là POLICY-HOLE.
+**§13 Signatures:** D (Sonnet 5) ✅ implemented + poison-red (374 only, per WO) · **O ✅ 2026-07-20** — independently verified on `235e376`: refusal correct on constructor path (`return ~+`) and struct-fields; **proved the statement "every construction site" was OVERSTATED** (`let = ~0` and implicit widening slipped through) → corrected above prior to signing · **G ✅ 2026-07-20** — approved correction, confirmed N1 is a POLICY-HOLE.
 
 ---
 
-## 14. AMENDMENT (WO-2 Lát A, 2026-07-20) — `Struct?` ở RETURN position: mở khoá full-SRET
+## 14. AMENDMENT (WO-2 Slice A, 2026-07-20) — `Struct?` at RETURN Position: Unlocking Full-SRET
 
-**Trạng thái:** O ✅ soạn + đo · G ✅ chốt 2026-07-20 · D: chưa implement.
+**Status:** O ✅ drafted + measured · G ✅ finalized 2026-07-20 · D: implemented.
 
-### 14.1 Context — repr đã chốt từ §2.2, chỉ RETURN position bị khoá
+### 14.1 Context — Repr Settled in §2.2, Only RETURN Position was Locked
 
-§2.2/§3.2 đã quyết repr `Struct?` = **disc-word prepend `{tag@0, fields@8+}`**, và nó đang chạy
-đúng cho **local dẫn xuất** (`mir_lower.rs:2462-2489`, slot = `layout.total_size + 8`). Nhưng
-vị trí **RETURN chưa bao giờ được nối**: `is_struct_return` (`triet-lower/src/lib.rs:320`) match
-`MirType::Struct(_)` **exact**, nên `Nullable(Struct)` rơi thẳng xuống `_ => ReturnShape::Scalar`.
+§2.2/§3.2 established the `Struct?` representation as **disc-word prepend `{tag@0, fields@8+}`**, and it operates
+correctly for **derived locals** (`mir_lower.rs:2462-2489`, slot = `layout.total_size + 8`). However,
+the **RETURN position was never wired**: `is_struct_return` (`triet-lower/src/lib.rs:320`) matched
+`MirType::Struct(_)` **exactly**, causing `Nullable(Struct)` to fall directly to `_ => ReturnShape::Scalar`.
 
-Ngày 2026-07-19 (WO-StructReturnRefuse, `e7aab8c`) một **POLICY GATE** được dựng ở `Ctx::new`
-để chặn miscompile đo được. Gate đó **KHÔNG phải soundness fix** — nó là cái nút thắt tạm chờ
-chính §AMEND này. §14 gỡ nó.
+On 2026-07-19 (WO-StructReturnRefuse, `e7aab8c`), a **POLICY GATE** was erected in `Ctx::new`
+to block measured miscompilations. That gate was **NOT a soundness fix** — it was a temporary checkpoint awaiting
+this exact amendment. §14 removes it.
 
-### 14.2 Bằng chứng — O gỡ CẢ HAI gate + rebuild, đo 6 shape (2026-07-20)
+### 14.2 Evidence — O Removed BOTH Gates + Rebuilt, Measured 6 Shapes (2026-07-20)
 
-| shape | exit | kết quả |
+| Shape | Exit | Result |
 |---|---|---|
-| `P?` present, đọc 1 field | 0 | **rác câm** (`93851586002064`, đổi theo ASLR) |
-| `P?` **null** | 0 | **rác câm** — nhánh `~0` **CHẾT** |
-| `P?` present, đọc 2 field | **132** | SIGILL (rác+rác vượt range ADR-0044 — hiệu ứng **thứ cấp**) |
-| `U?` present, đọc disc | **132** | SIGILL (thuộc Lát B) |
-| `U?` **null**, không đọc | 0 | trả `1`, đúng phải `0` — **câm** (Lát B) |
-| `P?` present, không đọc | 0 | `1` — đúng **do may** |
+| `P?` present, reads 1 field | 0 | **silent garbage** (`93851586002064`, varies with ASLR) |
+| `P?` **null** | 0 | **silent garbage** — `~0` branch **DEAD** |
+| `P?` present, reads 2 fields | **132** | SIGILL (garbage + garbage exceeds ADR-0044 range — **secondary** effect) |
+| `U?` present, reads disc | **132** | SIGILL (belongs to Slice B) |
+| `U?` **null**, unread | 0 | returns `1`, should be `0` — **silent** (Slice B) |
+| `P?` present, unread | 0 | `1` — correct **by accident** |
 
-**Cơ chế** (giống hệt bug `Struct?` PARAM đã vá ở WO-StructParamABI): local return sret giữ
-**CON TRỎ** buffer của caller; sentinel-compare so bit-pattern con trỏ với `i64::MIN` → địa chỉ
-stack không bao giờ bằng `i64::MIN` ⇒ **luôn phán "present"** ⇒ nhánh `~0` chết. Present-arm đọc
-rác vì tag chưa được ghi và offset `+8` chưa được áp ở vị trí return.
+**Mechanism** (identical to the `Struct?` PARAM bug patched in WO-StructParamABI): the sret return local holds
+the **POINTER** to the caller's buffer; sentinel comparison compares the pointer bit-pattern with `i64::MIN` → stack addresses
+are never equal to `i64::MIN` ⇒ **always evaluated as "present"** ⇒ `~0` branch is dead. Present-arms read
+garbage because the tag was never written and the `+8` offset was never applied at the return position.
 
-**Rác câm là failure-mode GỐC; SIGILL chỉ là tiếng sấm** khi rác cộng rác vượt ngưỡng ADR-0044.
+**Silent garbage is the ROOT failure mode; SIGILL is merely thunder** when adding two garbage values exceeds ADR-0044 thresholds.
 
 ### 14.3 Decision
 
-`Nullable(Struct)` ở return position dùng **sret**, với **ĐÚNG repr §3.2 đã chốt** —
-`{tag@0, fields@8+}`, buffer size `layout.total_size + 8`. **KHÔNG phát minh repr mới.**
-Đây là áp cơ chế đã có vào một vị trí từng bị khoá, nên ghi ở §AMEND chứ không đẻ ADR mới (G chốt).
+`Nullable(Struct)` at the return position uses **sret**, with the **EXACT repr locked in §3.2** —
+`{tag@0, fields@8+}`, buffer size `layout.total_size + 8`. **DO NOT invent new representations.**
+This applies existing mechanisms to a previously locked position, recorded in this amendment without creating new ADRs.
 
-### 14.4 ⛔ KHẮC ĐÁ — KHÔNG được nhét `Struct?` vào `is_string_repr()`
+### 14.4 ⛔ INSCRIBED IN STONE — DO NOT Stuff `Struct?` into `is_string_repr()`
 
-`is_string_repr()` (`triet-mir/src/lib.rs:663`) có nghĩa **"dùng chung repr fat 24B của String"**.
-`Nullable(String)` nằm trong đó vì nó *thật sự* chia sẻ slot fat. `Struct?` **không** — nó là
-tag-prepend. Nhét vào đó là làm predicate **nói dối về chính tên nó** và kéo theo mọi consumer khác.
+`is_string_repr()` (`triet-mir/src/lib.rs:663`) means **"shares String's 24B fat representation"**.
+`Nullable(String)` belongs there because it *truly* shares the fat slot. `Struct?` **does not** — it is
+a tag-prepend layout. Stuffing it there makes the predicate **lie about its own name** and corrupts all downstream consumers.
 
-Chỗ đúng để sửa: `is_struct_return` (`:320`) unwrap `Nullable` bằng idiom đã dùng sẵn trong repo
+The correct place to fix: `is_struct_return` (`:320`) unwraps `Nullable` using idioms already established in the repository
 (`ty.nullable_payload().unwrap_or(ty)` — `mir_lower.rs:2437, 2472`).
 
-*(G đề xuất sửa `is_string_repr`, O phản đối bằng lập luận đặt-tên/kiến trúc, **G rút và chốt theo O**
-2026-07-20. Ghi lại để không ai đề xuất lại.)*
+### 14.5 Scope — Slice A ONLY, and PURELY COPY-ONLY
 
-### 14.5 Scope — Lát A CHỈ, và **THUẦN COPY-ONLY**
+> ⛔ **§4 (B8 barrier) REMAINS FULLY IN EFFECT IN THIS AMENDMENT.** `Struct?` carries **Copy** fields only.
+> Heap-bearing `Struct?` (fields of `String`/`Vector`/`HashMap`) at return position **REMAINS REFUSED** —
+> it demands drop-glue which §4 explicitly forbids.
 
-> ⛔ **§4 (rào B8) VẪN NGUYÊN HIỆU LỰC TRONG §AMEND NÀY.** `Struct?` chỉ chở field **Copy**.
-> Heap-bearing `Struct?` (field `String`/`Vector`/`HashMap`) ở return position **GIỮ REFUSE** —
-> nó đòi drop-glue mà §4 cấm tường minh.
+✅ In scope: `Nullable(Struct)` return position **where all fields are Copy**.
+❌ Out of scope — **Dedicated Slice B:** `Nullable(Enum)` returns. Reason for separation: **DIFFERENT REPR** — `Enum?` is
+disc-niche, slot = `layout.total_size` (`mir_lower.rs:2444`, **no +8**), whereas `Struct?` is
+tag-prepend `+8`. Bundling both representations into one slice obscures root causes when failures occur (finalized by G).
+❌ Out of scope: N1 payload-bearing `Enum?` (§13) — **untouched**. Gate `Enum?` return `:289-297` currently
+only blocks **unit-only**; payload-bearing was already blocked from construction by §13.
 
-✅ Trong: `Nullable(Struct)` return position **với mọi field là Copy**.
-❌ Ngoài — **Lát B riêng:** `Nullable(Enum)` return. Lý do tách: **repr KHÁC HẲN** — `Enum?` là
-disc-niche, slot = `layout.total_size` (`mir_lower.rs:2444`, **không +8**), còn `Struct?` là
-tag-prepend `+8`. Gộp hai repr vào một mũi = lúc nổ không biết cái nào gây ra (G chốt tách).
-❌ Ngoài: N1 payload-bearing `Enum?` (§13) — **không đụng**. Gate `Enum?` return `:289-297` hiện
-chỉ chặn **unit-only**; payload-bearing đã bị §13 chặn từ construction.
+### 14.6 Mandatory Teeth
 
-### 14.6 Teeth bắt buộc
-
-| # | shape | oracle | bắt |
+| # | Shape | Oracle | Catches |
 |---|---|---|---|
-| T1 | `P?` present, `return p.x` | EXPECT giá trị chính xác | rác câm |
-| T2 | `P?` **null**, `~0 => -1` | EXPECT `-1` | ⭐ **nhánh null chết** — ca câm nguy hiểm nhất |
-| T3 | `P?` present, `p.x + p.y` | EXPECT tổng đúng | SIGILL 132 |
-| T4 | `P?` present, KHÔNG đọc field | EXPECT | ca "đúng do may" — chống hồi quy giả |
-| **T5'** | `H?` **heap-bearing** (`struct{s:String}`) ở return | **REFUSE** (fixture 440 giữ xanh, lý do B8/§4) | rào B8 — negative test |
+| T1 | `P?` present, `return p.x` | EXPECT exact value | silent garbage |
+| T2 | `P?` **null**, `~0 => -1` | EXPECT `-1` | ⭐ **dead null branch** — most dangerous silent failure |
+| T3 | `P?` present, `p.x + p.y` | EXPECT correct sum | SIGILL 132 |
+| T4 | `P?` present, NO field read | EXPECT | "correct by accident" case — prevents false regressions |
+| **T5'** | `H?` **heap-bearing** (`struct{s:String}`) at return | **REFUSE** (fixture 440 remains green, B8/§4 reason) | B8 barrier — negative test |
 
-**🚫 T5 (bản gốc) ĐÃ BỊ THU HỒI — O sai, D chặn (2026-07-20).** Bản gốc đòi counting tooth
-`FREE==1 && dup==0` cho `Struct?` heap-bearing, tức **ra lệnh dựng drop-glue mà §4 cấm bằng chữ hoa,
-trong câu cấm gọi đích danh D**. O soạn T5 mà không đọc lại phần KHẮC ĐÁ của chính ADR đang tu chính.
-Nếu D thi hành, nó vừa phá rào vừa tái mở `SIGABRT 134` mà fixture 440 đang canh (`is_lowerable_nullable_payload`,
-`triet-mir:1679-1687`, có nhánh `Struct(_)` **vô điều kiện** — không có lưới thứ hai đỡ bên dưới).
-Thay bằng **T5' negative**. G ký thu hồi 2026-07-20.
+**🚫 T5 (Original Version) REVOKED — O Erred, Caught by D (2026-07-20).** The original draft demanded a counting tooth
+`FREE==1 && dup==0` for heap-bearing `Struct?`, effectively **mandating drop-glue explicitly forbidden in §4 in capitalized text**.
+O drafted T5 without re-reading the INSCRIBED constraints of the ADR being amended.
+If D had implemented it, it would have breached the barrier and reopened `SIGABRT 134` guarded by fixture 440 (`is_lowerable_nullable_payload`,
+`triet-mir:1679-1687`, has an unconditional `Struct(_)` branch — with no secondary net beneath).
+Replaced by **negative T5'**. Revocation signed by G 2026-07-20.
 
-🦷 **Luật rút ra:** khi viết §AMEND, **đọc lại TOÀN BỘ phần KHẮC ĐÁ của ADR gốc trước khi nối** —
-§AMEND kế thừa mọi ràng buộc của thân bài, và ràng buộc mạnh nhất thường nằm **xa nhất** khỏi chỗ đang sửa.
+🦷 **Established Rule:** When drafting amendments, **re-read ALL INSCRIBED INVARIANTS of the original ADR prior to appending** —
+amendments inherit all constraints of the body, and the strongest invariants often reside **furthest** from the edit site.
 
-⚠️ **Tầng harness:** `integration_test_corpus()` là **MỘT** test chạy vòng lặp — T3 mà SIGILL thì
-giết cả tiến trình, mọi fixture sau **không bao giờ chạy**, nên "suite đỏ" KHÔNG chứng minh T1/T2
-có răng. Phải chứng minh từng răng bằng cách đổi `EXPECT` sang giá trị **bịa** → ra dòng
-`FAIL <tên>: expected …, got …` → khôi phục.
+⚠️ **Harness Note:** `integration_test_corpus()` is a **SINGLE** test running in a loop — if T3 triggers SIGILL, it
+kills the entire process and subsequent fixtures **never run**; thus, a "failing suite" DOES NOT prove T1/T2
+have teeth. Each tooth must be proven by changing `EXPECT` to an **arbitrary invalid** value → yielding
+`FAIL <name>: expected …, got …` → then restored.
 
-### 14.7 ⛔ BẤT BIẾN — `is_fat_ret` có **BA** bản sao, phải đồng bộ
+### 14.7 ⛔ INVARIANT — `is_fat_ret` Has THREE Copies, Must Remain Synchronized
 
-Predicate quyết định "return này có đi sret không" tồn tại ở **ba** chỗ. Kiến thức này trước đây chỉ
-nằm trong một comment code (`triet-lower/src/lib.rs:3094-3100`) — một lần refactor là bay, nên khắc vào đây:
+The predicate deciding "whether this return uses sret" exists in **three** locations:
 
-| # | vị trí | vai | với `Struct?` (trước Lát A) |
+| # | Location | Role | With `Struct?` (Prior to Slice A) |
 |---|---|---|---|
-| 1 | `triet-lower/src/lib.rs:320` (`Ctx::new`) | **callee-side** | match exact → miscompile |
-| 2 | `triet-lower/src/lib.rs:3103` (`Expr::Call`) | **caller-side** | match exact → miscompile |
+| 1 | `triet-lower/src/lib.rs:320` (`Ctx::new`) | **callee-side** | exact match → miscompile |
+| 2 | `triet-lower/src/lib.rs:3103` (`Expr::Call`) | **caller-side** | exact match → miscompile |
 | 3 | `triet-lower/src/lib.rs:5501` (`Expr::MethodCall`) | caller-side | ✅ **sret (WO-MethodCallFatReturn)** |
 
-**Mismatch caller/callee = JIT panic HOẶC silent Scalar miscompile.** Sửa một bản mà quên bản khác là
-lỗi kinh điển của họ này (WO-2 recon: O khoanh bán kính chỉ thấy #1; #2 do D tìm ra; #3 do O tự đào khi
-đi kiểm claim của D).
+**Caller/callee mismatch = JIT panic OR silent Scalar miscompile.** Patching one copy while forgetting others is a
+classic class of bugs in this family.
 
-**Lát A sửa #1 + #2.** #3 ban đầu KHÔNG sửa — fail-closed (over-refuse, không UB), chứng minh bằng
-probe (fixture 448/453 `_refused`).
+**Slice A patched #1 + #2.** #3 was initially unpatched — failing closed (over-refusal, not UB), proven by
+probes (fixtures 448/453 `_refused`).
 
-**Quy tắc thường trực:** ai đụng một trong ba bản sao PHẢI grep hai bản còn lại trong cùng một lát.
+**Standing Rule:** Anyone modifying one of the three copies MUST grep the remaining two within the same slice.
 
-#### AMENDMENT (WO-MethodCallFatReturn, 2026-07-25) — đóng copy #3
+#### AMENDMENT (WO-MethodCallFatReturn, 2026-07-25) — Closing Copy #3
 
-**Trạng thái:** O ✅ · G ✅ · D ✅
+**Status:** O ✅ · G ✅ · D ✅
 
-Copy #3 (`Expr::MethodCall`) nay mirror copy #2: `is_fat_ret` unwrap `Nullable` để nhận diện bare
-`Enum`, `Struct?` (Nullable Copy-only), và `Enum?` (Nullable unit-only) → dispatch sret (`EnumAlloc`/
-`StructAlloc` + `ReturnShape::Enum`/`ReturnShape::Struct`), thay vì rơi vào refuse. Phạm vi đóng:
-Enum (bare) · `Struct?` · `Enum?`. **Vector/HashMap/Reference (+ `Vector?`/`HashMap?`) VẪN refuse** —
-over-refuse > miscompile, chưa có ABI riêng. `Struct?` heap-field / `Enum?` payload-bearing KHÔNG
-đụng tới (callee-side E1121/E1120 tự fire trước khi tới đây). Fixture 448/453 flip sang `EXPECT`;
-469 thêm probe bare `Enum` method-return.
+Copy #3 (`Expr::MethodCall`) now mirrors copy #2: `is_fat_ret` unwraps `Nullable` to recognize bare
+`Enum`, `Struct?` (Nullable Copy-only), and `Enum?` (Nullable unit-only) → dispatching sret (`EnumAlloc`/
+`StructAlloc` + `ReturnShape::Enum`/`ReturnShape::Struct`), rather than falling into refusal. Closed scope:
+Enum (bare) · `Struct?` · `Enum?`. **Vector/HashMap/Reference (+ `Vector?`/`HashMap?`) REMAIN REFUSED** —
+over-refusal > miscompilation, as they lack dedicated ABIs. `Struct?` heap-fields / `Enum?` payload-bearing are UNTOUCHED
+(callee-side E1121/E1120 fire before reaching here). Fixtures 448/453 flipped to `EXPECT`;
+469 added probing bare `Enum` method returns.
 
 ---
 
-## 15. AMENDMENT (WO-5, 2026-07-20) — Ranh giới §4: `Nullable(Struct-heap)` SOUND qua `struct_drop` arm; UB thật là container-element
+## 15. AMENDMENT (WO-5, 2026-07-20) — §4 Boundary: `Nullable(Struct-heap)` is SOUND via `struct_drop` Arm; True UB is Container-Elements
 
-**Trạng thái:** O ✅ đo + verify · G ✅ chốt 2026-07-20 · D ✅ implement (`f432987`+`07ca203`).
+**Status:** O ✅ measured + verified · G ✅ finalized 2026-07-20 · D ✅ implemented (`f432987`+`07ca203`).
 
-### 15.1 Bối cảnh — hai ADR đấm nhau, hiến pháp phải uốn theo thực nghiệm
+### 15.1 Context — Two Conflicting ADRs, Constitutional Alignment with Empirical Reality
 
-§4 viết tuyệt đối *"AGGREGATE NULLABLE CHỈ CHỨA COPY FIELD/PAYLOAD — KHÔNG DROP GLUE"*.
-Nhưng **sau** ADR-0065, hai ADR khác đã mở đúng thứ §4 tưởng đã cấm vĩnh viễn:
-- **ADR-0076** — heap-`T?` ở field/payload của aggregate (String?/Vector?/HashMap?), có drop-glue sentinel-no-op.
-- **ADR-0082** — `Vector::pop` / `HashMap::remove` trả `T?`. Với `T` = **heap-bearing struct** (`User { name: String }`), kết quả là một local `Nullable(Struct-non-Copy)`, và Drop của nó đi qua **`struct_drop` arm** (`mir_lower.rs`, `Nullable(inner) => Some((name, niche:8, is_nullable:true))`) — tag-guard + `+8`-shift inline, **free ĐÚNG** (đo: FREE=1 dup=0, WO-5 Bước ①).
+§4 stated in absolute terms *"AGGREGATE NULLABLES CONTAIN COPY FIELDS/PAYLOADS ONLY — NO DROP GLUE"*.
+However, **following** ADR-0065, two other ADRs enabled the exact constructs §4 thought were permanently banned:
+- **ADR-0076** — heap-`T?` at fields/payloads of aggregates (String?/Vector?/HashMap?), featuring sentinel-no-op drop glue.
+- **ADR-0082** — `Vector::pop` / `HashMap::remove` returning `T?`. With `T` = **heap-bearing struct** (`User { name: String }`),
+  the result is a `Nullable(Struct-non-Copy)` local, and its Drop routes through the **`struct_drop` arm**
+  (`mir_lower.rs`, `Nullable(inner) => Some((name, niche:8, is_nullable:true))`) — tag-guarded + `+8`-shifted inline,
+  **freeing CORRECTLY** (measured: FREE=1 dup=0, WO-5 Step ①).
 
-Khi ADR-0076/0082 xây các đường đó, **rào §4 KHÔNG được cập nhật** — để lại một hiến pháp tự mâu thuẫn. WO-5 đọc §4 theo nghĩa đen ("bịt mọi local `Nullable(Struct-heap)`"), suýt giật sập `pop`/`remove`.
+When ADR-0076/0082 established these paths, **the §4 barrier was NOT updated** — leaving a contradictory constitution.
+WO-5 read §4 literally ("seal all `Nullable(Struct-heap)` locals"), nearly breaking `pop`/`remove`.
 
-### 15.2 Bằng chứng (O đo, không suy luận)
+### 15.2 Evidence (Measured by O, No Speculation)
 
-**Đo Bước ① — local heap-bearing `Struct?` KHÔNG rỉ:**
+**Step ① Measurement — Local heap-bearing `Struct?` DOES NOT leak:**
 ```
 CONTROL bare Leaf:        FREE=1  dup=0
-LOCAL  Leaf? heap field:  FREE=1  dup=0   ← sound, đi struct_drop arm
+LOCAL  Leaf? heap field:  FREE=1  dup=0   ← sound, routes through struct_drop arm
 ```
-**Poison-verify — refuse local `Nullable(Struct/Enum)` non-Copy → 15 fixture VỠ**, gồm
-`338-342` (`Vector<UserStruct>.pop()`) và `343-346` (`HashMap<_,UserStruct>.remove()`):
-`pop`/`remove` trả `T?` sinh local `Nullable(Struct-heap)` **CÙNG một `MirType`** với `let a: Leaf? = ~+…` do user viết. `Body::verify()` chỉ thấy `MirType`, **không thấy AST** ⇒ không phân biệt được đường tạo. Refuse ở verifier = giết `pop`/`remove` đã ship.
+**Poison Verification — Refusing non-Copy `Nullable(Struct/Enum)` locals → 15 fixtures BROKE**, including
+`338-342` (`Vector<UserStruct>.pop()`) and `343-346` (`HashMap<_,UserStruct>.remove()`):
+`pop`/`remove` returning `T?` generates a `Nullable(Struct-heap)` local with the **SAME `MirType`** as user-written `let a: Leaf? = ~+…`.
+`Body::verify()` only inspects `MirType`, **WITHOUT AST visibility** ⇒ cannot distinguish origin. Refusing at the verifier = killing shipped `pop`/`remove`.
 
-### 15.3 Decision — làm rõ ranh giới, KHÔNG nới soundness
+### 15.3 Decision — Clarifying Boundaries, NO Relaxation of Soundness
 
-**§4 "KHÔNG DROP GLUE" áp HẸP cho đường repr-slot construction của ADR-0065** (`~+`/widening →
-slot `{tag@0, fields@8+}`, Drop = no-op vì Copy-only). Nó **KHÔNG** cấm:
-- **local / pop-result `Nullable(Struct-heap)`** — SOUND qua `struct_drop` arm (ADR-0076/0082 đã xây, đo FREE=1). **Được phép, không refuse.**
+**§4 "NO DROP GLUE" applies NARROWLY to ADR-0065's repr-slot construction path** (`~+`/widening →
+slot `{tag@0, fields@8+}`, where Drop is a no-op due to Copy-only). It **DOES NOT** prohibit:
+- **local / pop-result `Nullable(Struct-heap)`** — SOUND via `struct_drop` arm (built by ADR-0076/0082, measured FREE=1). **Permitted, not refused.**
 
-**UB thật (WO-5 vá) chỉ ở MỘT vị trí: container-element free path.**
-`emit_vector_element_free_loop` / `emit_hashmap_value_free_loop` tính `eff =
-inner_ty.nullable_payload().unwrap_or(inner_ty)` — **bóc `Nullable` TRƯỚC** khi gọi
-`emit_heap_free_at`, **ném đi tag-guard/+8-shift** ⇒ `emit_heap_free_at` nhận `Struct("Leaf")`
-trần, đọc field String tại **offset 0** = **đọc TAG (=1) làm con trỏ heap → `free(1)`** (SIGABRT 134).
+**True UB (patched by WO-5) existed in ONE location: container-element free path.**
+`emit_vector_element_free_loop` / `emit_hashmap_value_free_loop` computed `eff = inner_ty.nullable_payload().unwrap_or(inner_ty)`
+— **unwrapping `Nullable` BEFORE** calling `emit_heap_free_at`, **discarding tag-guards and +8-shifts** ⇒
+`emit_heap_free_at` received bare `Struct("Leaf")`, reading the String field at **offset 0** =
+**treating the TAG (=1) as a heap pointer → `free(1)`** (SIGABRT 134).
 
-### 15.4 Fix (đã implement)
-- **Refuse** heap-bearing `Nullable(Struct/Enum)` ở **container-element** position (`Vector<Leaf?>`,
-  `HashMap<_,Leaf?>`) tại `Body::verify()` — Copy-gated (reuse `find_refused_nullable_field`),
-  trước khi JIT chạy. Copy-only element (`Vector<P?>`) tiếp tục chạy.
-- **Gỡ** nhánh drop-glue `Nullable(Struct/Enum)` đã thêm nhầm vào `emit_heap_free_at` (WO-4 B2) —
-  RULE7-probe chứng minh 0 test chạm; mọi caller đã bóc `Nullable` trước khi gọi.
-- **KHÔNG refuse** local/pop-result (§15.3). R2 của WO-5 **chính thức hủy**.
+### 15.4 Fix (Implemented)
+- **Refuse** heap-bearing `Nullable(Struct/Enum)` at **container-element** positions (`Vector<Leaf?>`,
+  `HashMap<_,Leaf?>`) in `Body::verify()` — Copy-gated (reusing `find_refused_nullable_field`),
+  prior to JIT execution. Copy-only elements (`Vector<P?>`) continue to operate.
+- **Remove** the `Nullable(Struct/Enum)` drop-glue branch erroneously added to `emit_heap_free_at` (WO-4 B2) —
+  RULE7-probe proved 0 tests exercised it; all callers unwrapped `Nullable` prior to invocation.
+- **DO NOT refuse** local/pop-results (§15.3). Directive R2 of WO-5 **officially revoked**.
 
-### 15.5 ⚰️ Lệnh cấm đã hủy + răng thường trực
-- **R2 (refuse local heap `Struct?`) HỦY BỎ** — dựa trên đọc sai §4. G ký hủy 2026-07-20.
-- Fixture **455** (`local_nullable_heap_struct_control_run`, EXPECT 0) = control thường trực bảo vệ
-  local-chạy — ai vô tình refuse lại nó sẽ đỏ.
-- Fixture **454/456** (container refuse) + **457/458** (Copy-only anti-over-refuse) = răng hai chiều.
+### 15.5 ⚰️ Revoked Directive + Standing Teeth
+- **R2 (refuse local heap `Struct?`) REVOKED** — based on a misreading of §4. Revocation signed by G 2026-07-20.
+- Fixture **455** (`local_nullable_heap_struct_control_run`, EXPECT 0) = permanent control protecting
+  functioning locals — if anyone accidentally re-refuses it, this fails.
+- Fixtures **454/456** (container refusal) + **457/458** (Copy-only anti-over-refusal) = bidirectional teeth.
 
-### 15.6 Nợ còn treo
-- **Container-element `Nullable(Struct-heap)` hiện REFUSE, chưa hỗ trợ.** Muốn hỗ trợ = cho
-  `emit_vector_element_free_loop`/`emit_hashmap_value_free_loop` **giữ** `Nullable` và route qua
-  `struct_drop` arm (như local), thay vì bóc trước. Campaign riêng.
-- ~~Local `Nullable(Struct-heap)` qua widening (`let a: Leaf? = plain`) — cùng lỗ N1 (§13),
-  policy-hole, chưa đo riêng. Ghi nợ.~~ **ĐÍNH CHÍNH 2026-07-27(f), xem §16 — nhãn
-  "policy-hole" ở dòng này SAI: đo được là double-free TẤT ĐỊNH (UB), không phải policy-hole.
-  Đóng bởi WO-Aggregate-Move-Tombstone.
+### 15.6 Pending Debt
+- **Container-element `Nullable(Struct-heap)` is currently REFUSED, unsupported.** Supporting it requires
+  `emit_vector_element_free_loop`/`emit_hashmap_value_free_loop` to **retain** `Nullable` and route through
+  the `struct_drop` arm (like locals), rather than unwrapping upfront. Dedicated campaign.
+- ~~Local `Nullable(Struct-heap)` via widening (`let a: Leaf? = plain`) — identical to N1 hole (§13),
+  policy-hole, unmeasured individually. Recorded as debt.~~ **CORRECTED 2026-07-27(f), see §16 — the "policy-hole"
+  label here was INCORRECT: measured as DETERMINISTIC double-free (UB). Sealed by WO-Aggregate-Move-Tombstone.**
 
-## 16. AMENDMENT (WO-Aggregate-Move-Tombstone, 2026-07-27(f)) — §15.6's "policy-hole" đính
-chính thành double-free UB SỐNG; bán kính mở từ "widening" sang "aggregate move" nói chung
+---
 
-### 16.1 Nhãn cũ sai vì sao
+## 16. AMENDMENT (WO-Aggregate-Move-Tombstone, 2026-07-27(f)) — §15.6's "Policy-Hole" Corrected to LIVE Double-Free UB; Blast Radius Expands from "Widening" to "Aggregate Moves" in General
 
-§15.6 (viết 2026-07-20, WO-5) gọi "Local `Nullable(Struct-heap)` qua widening" là
-"cùng lỗ N1, policy-hole, chưa đo riêng" — suy loại (analogy) từ N1 (§13, nullable
-ENUM widening, đã đo FREE=1 distinct=1, KHÔNG UB), KHÔNG phải từ số đo trực tiếp
-trên struct. Đây là lỗi suy diễn: N1 và struct-widening dùng hai lowering site khác
-hẳn nhau (N1 qua construction trực tiếp `E::V(42)`; struct-widening qua
-`is_struct_widening` branch, `crates/triet-lower/src/lib.rs:2240-2254` cũ). Đo trực
-tiếp (2026-07-27(f)) trên `04cb5d3`:
+### 16.1 Why the Previous Label was Incorrect
+
+§15.6 (written 2026-07-20, WO-5) labeled "Local `Nullable(Struct-heap)` via widening" as
+"same as N1 hole, policy-hole, unmeasured individually" — extrapolating by analogy from N1 (§13, nullable
+ENUM widening, measured FREE=1 distinct=1, NO UB), WITHOUT direct measurement on structs.
+This was an invalid extrapolation: N1 and struct-widening use entirely different lowering sites (N1 via direct construction `E::V(42)`;
+struct-widening via `is_struct_widening` branch, `crates/triet-lower/src/lib.rs:2240-2254` legacy). Direct measurement
+(2026-07-27(f)) on `04cb5d3`:
 
 ```
 struct Leaf { s: String }
@@ -586,109 +582,100 @@ function main() -> Integer {
     return 42;
 }
 ```
-→ `free(): double free detected in tcache 2` (exit **134**), tất định, mọi lần chạy.
+→ `free(): double free detected in tcache 2` (exit **134**), deterministic across all runs.
 
-### 16.2 Bán kính THẬT rộng hơn "widening" — mọi aggregate MOVE thiếu tombstone
+### 16.2 The REAL Blast Radius is Broader than "Widening" — All Aggregate MOVEs Missing Tombstones
 
-Đo mở rộng lộ ra bug KHÔNG giới hạn ở `Struct?` widening — cú pháp gán lại
-(`Stmt::Assignment`) hoàn toàn thường ngày (0 dấu `?`) cũng nổ **cùng cơ chế**:
+Broader measurements revealed the bug was NOT restricted to `Struct?` widening — ordinary reassignment syntax
+(`Stmt::Assignment`) without any `?` triggered the **exact same mechanism**:
 
 ```
 let mutable a = Leaf { s: "aa" };
 let p = Leaf { s: "hi" };
-a = p;   // → 134, KHÔNG có `?` nào trong chương trình
+a = p;   // → 134, NO `?` anywhere in the program
 ```
 
-Gốc rễ JIT (đo trực tiếp `crates/triet-jit/src/mir_lower.rs`, `Statement::Assign`
-codegen): với aggregate có `ty_total_size > 8` (bất kỳ struct >1 field scalar, hoặc
-1 field heap như `String`), nhánh **"Multi-word copy for struct/enum aggregate"**
-(`:3081-3122`) làm một memcpy word-by-word THÔ, có comment tự thú **"Struct/enum
-types are Copy in Bậc A — no M1 zeroing needed"** — giả định SAI cho struct
-heap-bearing. Cơ chế "M1 Zeroing-on-Move" (`:3189-3212`, tự động zero nguồn khi
-`is_aggregate == false`) chỉ chạy ở nhánh ELSE (scalar / String-as-thin-handle) —
-**không bao giờ chạm nhánh aggregate**. Đây là lý do `String`/`Vector`/`HashMap`/
-`Nullable(scalar)`/`Outcome` (đều size ≤8B ở cấp Variable hoặc có sync riêng) ĐÃ
-an toàn từ trước — trong khi `Struct` VÀ `Enum` (cả hai đều >8B ở JIT) đều lộ.
+JIT root cause (measured directly in `crates/triet-jit/src/mir_lower.rs`, `Statement::Assign`
+codegen): for aggregates with `ty_total_size > 8` (any struct with >1 scalar field, or
+1 heap field such as `String`), the **"Multi-word copy for struct/enum aggregate"** branch
+(`:3081-3122`) performed a RAW word-by-word memcpy, with comments admitting **"Struct/enum
+types are Copy in Tier A — no M1 zeroing needed"** — a FALSE assumption for heap-bearing structs.
+The "M1 Zeroing-on-Move" mechanism (`:3189-3212`, automatically zeroing the source when
+`is_aggregate == false`) executed ONLY in the ELSE branch (scalar / String-as-thin-handle) —
+**never touching the aggregate branch**. This is why `String`/`Vector`/`HashMap`/
+`Nullable(scalar)`/`Outcome` (all sized ≤8B at the Variable level or maintaining dedicated sync) WERE
+already safe — whereas `Struct` AND `Enum` (both >8B in JIT) were exposed.
 
-### 16.3 Fix — Deinit tường minh ở lowerer, KHÔNG sửa M1/JIT
+### 16.3 Fix — Explicit Deinit in Lowerer, DO NOT Modify M1/JIT
 
-`crates/triet-lower/src/lib.rs`, hai điểm chạm, mirror pattern đã CHỨNG MINH đúng
-của `is_move_binding` (`let q = p;`, đã có Deinit từ trước):
-- **Site A** (`Stmt::Let`'s `is_struct_widening` branch): thêm `Deinit(v)` ngay
-  trước `return Ok(())`, guard `!ctx_is_copy(&v_ty, c)`.
-- **Site B** (`Stmt::Assignment`): thêm `Deinit(v)` sau `Assign` ở CẢ hai nhánh
-  (`Expr::Identifier` — guard `v != orig` để không tự zero self-assignment `a = a`;
-  và nhánh field/projection `_ =>` — **đo được nhánh này UNREACHABLE qua parser
-  hiện hành**, `crates/triet-parser/src/stmt.rs:292` chỉ chấp nhận `Expr::Identifier`
-  làm assignment target, mọi target khác → `E0007` parse error. Deinit thêm ở đây
-  không kiểm chứng được bằng fixture thật; giữ lại vì đúng theo phán quyết G
-  (arm-agnostic) và vô hại nếu parser mở rộng sau này, nhưng KHÔNG claim đã fix gì
-  ở nhánh này).
+`crates/triet-lower/src/lib.rs`, two touch points, mirroring the PROVEN pattern
+of `is_move_binding` (`let q = p;`, which possessed Deinit previously):
+- **Site A** (`Stmt::Let`'s `is_struct_widening` branch): add `Deinit(v)` immediately
+  before `return Ok(())`, guarded by `!ctx_is_copy(&v_ty, c)`.
+- **Site B** (`Stmt::Assignment`): add `Deinit(v)` after `Assign` across BOTH branches
+  (`Expr::Identifier` — guarded by `v != orig` to avoid self-assignment zeroing `a = a`;
+  and field/projection branch `_ =>` — **measured as UNREACHABLE via the current parser**,
+  `crates/triet-parser/src/stmt.rs:292` accepts only `Expr::Identifier` as assignment targets,
+  all other targets yielding `E0007` parse errors. Deinit added here is unverifiable
+  via real fixtures; retained for arm-agnostic robustness and future parser expansions, without claiming
+  fixes in this branch).
 
-`Statement::Deinit`'s JIT codegen (đã tồn tại từ trước, không đổi) walk TOÀN BỘ
-heap-leaf của struct đệ quy (`tombstone_slot_leaves`) — khác M1's zero-một-word —
-nên xử lý đúng cả struct lồng nhiều tầng (§16.4 bảng, hàng struct lồng).
+`Statement::Deinit`'s JIT codegen (pre-existing, unchanged) recursively traverses ALL
+heap leaves of the struct (`tombstone_slot_leaves`) — unlike M1's single-word zeroing —
+correctly handling multi-level nested structs (§16.4 table, nested struct row).
 
-### 16.4 BẢNG 8 VỊ TRÍ — đo trên `04cb5d3` (TRƯỚC vá) và trên cây đã vá (SAU)
+### 16.4 8-POSITION TABLE — Measured on `04cb5d3` (BEFORE Fix) and Patched Tree (AFTER)
 
-| # | Hình (`struct Leaf { s: String }`) | TRƯỚC vá | SAU vá |
+| # | Shape (`struct Leaf { s: String }`) | BEFORE Fix | AFTER Fix |
 |---|---|---|---|
-| 1 | `let a: Leaf? = p;` (widening) | 🔴 134 (double-free) | ✅ exit 0, giá trị đúng |
-| 2 | `return p;` trong `-> Leaf?` | ✅ E1121 (refuse, giữ nguyên) | ✅ E1121 (không đổi) |
-| 3 | `take(p)` param `Leaf?` | ✅ JIT refuse "Struct? Drop without slot" | ✅ giữ nguyên |
-| 4 | `Container { f: p }` field init | ✅ E1100 (refuse, giữ nguyên) | ✅ E1100 (không đổi) |
-| 5 | `push(v, p)` `Vector<Leaf?>` | ✅ MIR verifier B8 | ✅ giữ nguyên |
-| 5b | `insert(m, 1, p)` `HashMap<_, Leaf?>` | ✅ MIR verifier B8 | ✅ giữ nguyên |
-| 6 | `a = p` với `a: Leaf?` | 🔴 134 | ✅ exit 0, giá trị đúng |
-| 7 | `a = p` với `a: Leaf` (không nullable) | 🔴 134 | ✅ exit 0, giá trị đúng (⚠ old-dest leak, §16.5) |
+| 1 | `let a: Leaf? = p;` (widening) | 🔴 134 (double-free) | ✅ exit 0, correct values |
+| 2 | `return p;` inside `-> Leaf?` | ✅ E1121 (refused, unchanged) | ✅ E1121 (unchanged) |
+| 3 | `take(p)` param `Leaf?` | ✅ JIT refuse "Struct? Drop without slot" | ✅ unchanged |
+| 4 | `Container { f: p }` field init | ✅ E1100 (refused, unchanged) | ✅ E1100 (unchanged) |
+| 5 | `push(v, p)` `Vector<Leaf?>` | ✅ MIR verifier B8 | ✅ unchanged |
+| 5b | `insert(m, 1, p)` `HashMap<_, Leaf?>` | ✅ MIR verifier B8 | ✅ unchanged |
+| 6 | `a = p` with `a: Leaf?` | 🔴 134 | ✅ exit 0, correct values |
+| 7 | `a = p` with `a: Leaf` (non-nullable) | 🔴 134 | ✅ exit 0, correct values (⚠ old-dest leak, §16.5) |
 
-Biến thể của #1 đo thêm (TRƯỚC vá, cả ba đều 134): struct lồng
-(`Outer{Inner{String}}`) → SAU vá exit 0 đúng · field `Vector<Integer>` thay
-`String` → SAU vá exit 0 đúng · **nguồn là function PARAM** → SAU vá **KHÔNG xanh,
-đổi sang SIGSEGV (139)** — bug JIT KHÁC, ĐỘC LẬP, xem §16.6, KHÔNG đóng trong WO
-này.
+Additional variations of #1 measured (BEFORE fix, all three yielded 134): nested structs
+(`Outer{Inner{String}}`) → AFTER fix exit 0 correct · field `Vector<Integer>` instead of
+`String` → AFTER fix exit 0 correct · **source is function PARAM** → AFTER fix **NOT green,
+changed to SIGSEGV (139)** — INDEPENDENT JIT bug, see §16.6, NOT closed in this WO.
 
-Đối chứng giữ xanh (không bị patch làm hỏng): `let q = p` (is_move_binding, không
-đổi) · widening enum · Copy-struct qua widening (fixture 231/234/235/237,
-`Pt{x,y}` toàn scalar — `ctx_is_copy` trả `true` nên KHÔNG bị Deinit, đọc lại được
-sau widening).
+Controls remaining green: `let q = p` (is_move_binding, unchanged) · widening enum · Copy-struct via widening
+(fixtures 231/234/235/237, `Pt{x,y}` all-scalar — `ctx_is_copy` returns `true` so it is NOT Deinit'd, readable after widening).
 
-### 16.5 Nợ mới ghi — leak old-dest, KHÔNG fix trong WO này
+### 16.5 New Documented Debt — Old-Dest Leak, NOT Fixed in this WO
 
-`a = p` (case #7) tombstone nguồn `p` đúng (0 double-free) nhưng KHÔNG drop giá
-trị CŨ của `a` trước khi ghi đè — giá trị cũ bị **leak** (đo bằng pointer-dedup:
-2 String cấp phát, chỉ 1 pointer được free, 0 pointer bị free 2 lần — xem
+`a = p` (case #7) correctly tombstones source `p` (0 double-frees) but DOES NOT drop the OLD value
+of `a` prior to overwriting — leaking the old value (measured via pointer deduplication:
+2 Strings allocated, only 1 pointer freed, 0 pointers double-freed — see
 `crates/triet-driver/tests/aggregate_move_tombstone_counting.rs`,
-`reassign_plain_no_double_free_but_leaks_old_dest`). Đây là quyết định ngữ nghĩa
-riêng (drop-old-dest-before-overwrite), NGOÀI phạm vi WO này — ghi nợ, chờ G/O
-quyết có campaign riêng hay không.
+`reassign_plain_no_double_free_but_leaks_old_dest`). This is an independent semantic decision
+(dropping old dest before overwrite), OUTSIDE the scope of this WO — recorded as debt for future campaigns.
 
-### 16.6 Nợ mới ghi — Deinit trên PARAM struct-by-value gây SIGSEGV, KHÔNG fix
+### 16.6 New Documented Debt — Deinit on Struct-by-Value PARAM Causes SIGSEGV, NOT Fixed
 
-Đo được (2026-07-27(f)): `function take(p: Leaf) -> Integer { let q = p; ... }`
-(kể cả KHÔNG qua widening — pattern `is_move_binding` đã tồn tại từ trước WO này,
-KHÔNG phải regression của patch) — SIGSEGV (**exit 139**) trên `04cb5d3` gốc, ĐÃ
-CÓ TRƯỚC WO này, không do patch gây ra. Gốc rễ: struct-by-value param KHÔNG có
-entry trong `struct_slots`/`enum_slots` (`crates/triet-jit/src/mir_lower.rs` prologue
-`:2684-2771` chỉ copy-in String/Enum/Outcome param, không có nhánh Struct trần) —
-Cranelift `Variable` của param LÀ con trỏ thô trỏ vào bộ nhớ CALLER (aliasing, không
-copy). `Statement::Deinit`'s generic scalar fallback (`:2943-2945`,
-`builder.def_var(self.var(*l), zero)`) zero CHÍNH cái Variable/địa chỉ đó (đúng cho
-local thường, SAI cho param-alias — phá luôn handle duy nhất tới dữ liệu) → `Drop`
-sau đó `load` từ địa chỉ `0` → SIGSEGV. Việc WO này thêm `Deinit(v)` vào Site A/B
-KHÔNG tạo ra bug này (nó vốn đã sống ở `is_move_binding` không đổi) — WO chỉ mở
-thêm MỘT đường khác (widening-từ-param) chạm phải NÓ. Fix đòi sửa JIT Deinit
-codegen (case riêng cho struct-param-alias) hoặc đổi cách lowerer xử lý
-widening-từ-param — cả hai đều ngoài thẩm quyền D, cần O/G quyết. Fixture cho biến
-thể "param" (số 540 trong kế hoạch đánh số ban đầu) **KHÔNG được tạo** — một SIGSEGV
-trong integration-test process sẽ giết cả binary test, che mất mọi fixture khác.
+Measured (2026-07-27(f)): `function take(p: Leaf) -> Integer { let q = p; ... }`
+(even WITHOUT widening — pattern `is_move_binding` existed prior to this WO,
+NOT a regression of this patch) — SIGSEGV (**exit 139**) on raw `04cb5d3`, PRE-EXISTING
+this WO. Root cause: struct-by-value parameters LACK entries in `struct_slots`/`enum_slots`
+(`crates/triet-jit/src/mir_lower.rs` prologue `:2684-2771` copies-in String/Enum/Outcome params only, omitting bare Structs) —
+the parameter's Cranelift `Variable` IS a raw pointer referencing CALLER memory (aliasing, not copied).
+`Statement::Deinit`'s generic scalar fallback (`:2943-2945`, `builder.def_var(self.var(*l), zero)`) zeroes
+THAT EXACT Variable/address (correct for regular locals, FALSE for param aliases — destroying the sole handle to the data) →
+subsequent `Drop` loads from address `0` → SIGSEGV. Adding `Deinit(v)` in Sites A/B
+DID NOT create this bug (it existed in `is_move_binding` previously) — this WO merely opened an additional path
+(widening-from-param) encountering IT. Fixing requires updating JIT Deinit codegen (dedicated handling for struct-param-aliases)
+or altering how lowerer handles widening-from-params — both requiring G/O review. A fixture for the param variant
+(number 540 in initial planning) was **NOT created** — a SIGSEGV in the integration test suite would kill the binary process,
+masking all other fixtures.
 
-### 16.7 Vì sao sống 7 ngày (2026-07-20 §15/WO-5 → 2026-07-27 §16) mà không ai bắt
+### 16.7 Why It Survived 7 Days (2026-07-20 §15/WO-5 → 2026-07-27 §16) Undetected
 
-Nhánh `is_struct_widening` VÀ toàn bộ `Stmt::Assignment` chỉ được lưới fixture
-HIỆN CÓ phủ qua struct **Copy** (`Pt { x: Integer, y: Integer }`, fixture
-231/234/235/237) — `ctx_is_copy(Pt) == true` nên đường Move-tombstone không bao
-giờ được thực thi bởi các test đó, dù chúng "chạy qua" đúng nhánh code. Đây là
-vùng mù luật HP.3 của dự án: **guard/nhánh áp cho N biến thể (Copy lẫn Move) thì
-teeth phải poison/đo TỪNG biến thể riêng — "chạy qua nhánh" với biến thể AN TOÀN
-KHÔNG chứng minh gì về biến thể NGUY HIỂM.**
+The `is_struct_widening` branch AND all of `Stmt::Assignment` were covered in the EXISTING
+fixture suite exclusively via **Copy** structs (`Pt { x: Integer, y: Integer }`, fixtures
+231/234/235/237) — `ctx_is_copy(Pt) == true` prevented the Move-tombstone path from ever executing,
+even though tests traversed that code branch. This is the core lesson of rule HP.3: **when a guard/branch
+applies to N variants (both Copy and Move), teeth must poison/measure EACH variant individually — traversing
+a branch with SAFE variants PROVES NOTHING about DANGEROUS variants.**

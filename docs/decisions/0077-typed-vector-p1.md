@@ -1,195 +1,155 @@
-# ADR 0077 — Typed Vector P1 (element-type qua type-erasure, built-in element only)
+# ADR 0077 — Typed Vector P1 (element-type via type-erasure, built-in element only)
 
-> # 🩸 NGUYÊN LÝ CỐT LÕI (G khắc đá 2026-06-30)
-> # Một ngôn ngữ KHÔNG cho bỏ một `String` vào một `Vector` là ngôn ngữ **vứt đi**.
-> # Ownership đã khép; mũi giáo kế đâm thủng phòng tuyến **Type-Erasure** của
-> # collection. Element-SIZE của MỌI built-in là HẰNG SỐ compile-time → KHÔNG cần
-> # native-layout. UserStruct/Enum element bị KHÓA MÕM (E-code) ở biên P1 — đó là
-> # cây cầu sang native-layout phase sau, KHÔNG dây dưa vào đây.
+> # 🩸 CORE PRINCIPLE (G khagda 2026-06-30)
+> # A language that DOES NOT allow pushing a `String` into a `Vector` is a **useless** language.
+> # Ownership is closed; the next spear pierces the **Type-Erasure** defenses of
+> # collections. The Element-SIZE of ALL built-ins is a compile-time CONSTANT → NO
+> # native-layout required. UserStruct/Enum elements are SILENCED (E-code) at the P1 boundary — this is
+> # the bridge to the later native-layout phase, NO entanglement here.
 
-**Trạng thái:** 📝 **DRAFT — chờ implement + O verify máu + G sign-off.** Áp dụng Bậc C+.
-Mở `Vector<T>` với T = built-in (scalar / String / Vector / HashMap / Nullable tương ứng);
-**REFUSE `Vector<UserStruct>` / `Vector<Enum>`** by-value (→ P2, đòi native-layout ADR sau).
-Continuation hữu cơ của heap-aggregate (ADR-0066/0067/0076) — tái dùng cỗ máy tombstone/free.
+**Status:** 📝 **DRAFT — awaiting implementation + O verification (blood) + G sign-off.** Applied at Level C+.
+Open `Vector<T>` where T = built-in (corresponding scalar / String / Vector / HashMap / Nullable);
+**REFUSE `Vector<UserStruct>` / `Vector<Enum>`** by-value (→ P2, requires a later native-layout ADR).
+An organic continuation of heap-aggregates (ADR-0066/0067/0076) — reusing the tombstone/free machinery.
 
-**Sibling/kế thừa:** ADR-0066/0067 (No-Box heap-in-aggregate, `collect_heap_leaves`/drop-glue),
-ADR-0076 (heap-`T?` field — sentinel-no-op free, R4), ADR-0060 (P1/P2 tách-tầng pattern).
-**KHÔNG đụng:** ADR-0068 (Box/recursive — CẤM CỬA), native multi-field layout (Option D — defer).
-HashMap<K,V> = **campaign RIÊNG sau** (2 element-type K+V, slot 24B, chưa có dedicated
-`Type::HashMap(K,V)` typecheck) — G chốt cắt khỏi đợt này.
+**Siblings/Inheritance:** ADR-0066/0067 (No-Box heap-in-aggregate, `collect_heap_leaves`/drop-glue),
+ADR-0076 (heap-`T?` field — sentinel-no-op free, R4), ADR-0060 (P1/P2 separation pattern).
+**DO NOT touch:** ADR-0068 (Box/recursive — FORBIDDEN), native multi-field layout (Option D — defer).
+HashMap<K,V> = **a SEPARATE campaign later** (2 element-types K+V, 24B slot, no dedicated
+`Type::HashMap(K,V)` typecheck yet) — G has decided to decouple this from the current phase.
 
 ---
 
 ## Issue
 
-`Vector` ở backend là **bare / Integer-only**. Typecheck CÓ `Type::Vector(Box<Self>)`
-(`types.rs:40`) nhưng lower **erase** element-type về `MirType::Vector` bare
-(`lib.rs:975/1018/1082/1119` — `"Vector"`/`starts_with("Vector<")` → bare). Hệ quả:
-`push(vector_new(), "hi")` → typecheck REFUSE (`expected Integer, found String`). Ngôn ngữ
-không có collection chứa String/heap. Ba điểm coupling khóa cứng ở Integer (đo file:line):
+At the backend, `Vector` is **bare / Integer-only**. Typecheck HAS `Type::Vector(Box<Self>)`
+(`types.rs:40`) but the lowerer **erases** the element-type to a bare `MirType::Vector`
+(`lib.rs:975/1018/1082/1119` — `"Vector"`/`starts_with("Vector<")` → bare). Consequently:
+`push(vector_new(), "hi")` → typecheck REFUSES (`expected Integer, found String`). The language
+lacks collections capable of holding Strings/heap data. Three coupling points are hardcoded to Integer (measured by file:line):
 
-1. **STRIDE hardcode 8:** `vector_layout` `HEADER+8+8+cap*8` (`mir_lower.rs:3259`); push
-   `old_len*8` + `(new_data as *mut i64).add(old_len)` (`3375/3377`); get `(data as
+1. **STRIDE hardcoded to 8:** `vector_layout` is `HEADER+8+8+cap*8` (`mir_lower.rs:3259`); push
+   is `old_len*8` + `(new_data as *mut i64).add(old_len)` (`3375/3377`); get is `(data as
    *const i64).add(idx)` (`3416`).
-2. **DROP-GLUE element-blind:** `__triet_vector_free` (`3305`) chỉ `dealloc(block)` —
-   KHÔNG loop free element. Vector<String> = **máy bơm leak** (mỗi element String rò).
-3. **ELEMENT-ABI 1 i64:** `push(vec, elem: i64)` (`3347`), `get → i64` (`3401`). String fat
-   24B không lọt 1 register.
+2. **DROP-GLUE is element-blind:** `__triet_vector_free` (`3305`) only performs `dealloc(block)` —
+   NO loop to free elements. `Vector<String>` = a **leak pump** (every String element leaks).
+3. **ELEMENT-ABI is 1 i64:** `push(vec, elem: i64)` (`3347`), `get → i64` (`3401`). A 24B fat String
+   cannot fit in a single register.
 
 ---
 
-## Quyết định
+## Decision
 
-Mở **Typed Vector P1** = `Vector<T>` cho T **built-in known-size**, qua 4 mũi liên động.
+Open **Typed Vector P1** = `Vector<T>` for T with **known built-in size**, via 4 interconnected thrusts.
 
-### Ranh giới P1/P2 (crux — cắt sạch khỏi native-layout)
-- **P1 (built-in, element-size HẰNG):** T ∈ {Integer, Trit, Tryte, Long, Trilean, String,
-  Vector\<_\>, HashMap\<_\>, Nullable\<những cái đó\>}. **`Vector<Vector<String>>` nested
-  CŨNG P1** — element = handle 8B, inner-size vô can.
-- **P2 (đòi native-layout):** `Vector<UserStruct>` / `Vector<Enum>` by-value (element-size =
-  struct layout tùy ý). **REFUSE bằng E-code mới ở P1** — không silent, không panic. Đây là
-  biên chặn dây dưa sang Option D.
+### P1/P2 Boundary (the crux — clean separation from native-layout)
+- **P1 (built-in, CONSTANT element-size):** T ∈ {Integer, Trit, Tryte, Long, Trilean, String,
+  Vector\<_\>, HashMap\<_\>, Nullable\<those above\>\}. **Nested `Vector<Vector<String>>` IS ALSO P1** —
+  element = 8B handle, inner-size is irrelevant.
+- **P2 (requires native-layout):** `Vector<UserStruct>` / `Vector<Enum>` by-value (element-size =
+  arbitrary struct layout). **REFUSE via a new E-code in P1** — no silent failure, no panic. This is
+  the boundary preventing entanglement with Option D.
 
-Tách-tầng đứng vững vì P1 chỉ cần element-size cho **built-in (hằng 8/24)** + memcpy size-biết
-+ free-shim per-kind. KHÔNG walk struct field, KHÔNG pack register. **Vector P1 ⊥ native-layout.**
+The separation holds because P1 only requires element-size for **built-ins (constant 8/24)** + memcpy size-known
++ free-shim per-kind. NO walking struct fields, NO packing registers. **Vector P1 ⊥ native-layout.**
 
-### Mũi 1 — Element-type vào MIR: `MirType::Vector` → `Vector(Box<MirType>)`
-Mirror typecheck `Type::Vector(Box<Self>)`. **Blast ~25 site** match bare (mir/lib.rs 14 ·
-lower/lib.rs 10 · jit/mir_lower.rs 1 · borrowck 0) — bounded, mechanical (như `Nullable(inner)`
-ADR-0062). Erasure point sửa ở lower (`975/1018/1082/1119`): `Vector<E>` → `Vector(Box::new(
-lower(E)))`; bare `"Vector"` (no arg) → giữ tương thích = `Vector(Box::new(Integer))` (Bậc A
-default) HOẶC E-code thiếu-annotation (implementer-choice D, ghi lý do).
+### Thrust 1 — Element-type into MIR: `MirType::Vector` → `Vector(Box<MirType>)`
+Mirror the typecheck `Type::Vector(Box<Self>)`. **Blast ~25 sites** to match the bare version (mir/lib.rs 14 ·
+lower/lib.rs 10 · jit/mir_lower.rs 1 · borrowck 0) — bounded, mechanical (similar to `Nullable(inner)`
+ADR-0062). The erasure point is fixed in the lowerer (`975/1018/1082/1119`): `Vector<E>` → `Vector(Box::new(
+lower(E)))`; bare `"Vector"` (no arg) → maintain compatibility = `Vector(Box::new(Integer))` (Default Level A)
+OR E-code for missing annotation (implementer-choice D, with justification).
 
-### Mũi 2 — `elem_size(MirType) -> usize` (hằng compile-time)
+### Thrust 2 — `elem_size(MirType) -> usize` (compile-time constant)
 scalar/handle/Nullable(scalar) = 8 · String/Nullable(String) = 24 · Vector/HashMap handle = 8 ·
-**Struct/Enum → REFUSE (E-code P1, không trả size).** ⚠️ KHÔNG tái dùng `ty_total_size`
-(jit:483) — nó trả 8 cho String (sai cho stride 24). Helper RIÊNG.
-Shim đổi `*8` → `*stride`, `.add(idx)` → byte-offset `idx*stride` trên `*mut u8`.
+**Struct/Enum → REFUSE (P1 E-code, do not return size).** ⚠️ DO NOT reuse `ty_total_size`
+(jit:483) — it returns 8 for String (incorrect for a 24B stride). Use a SEPARATE helper.
+The shim changes `*8` → `*stride`, and `.add(idx)` → byte-offset `idx*stride` on `*mut u8`.
 
-### Mũi 3 — Typed drop-glue: `__triet_vector_free_typed(ptr, elem_kind, stride)`
-Loop `len` element @stride; mỗi element heap → gọi free-shim theo `elem_kind`
-(0=scalar/no-drop · 1=String · 2=Vector · 3=HashMap; Nullable(heap) cùng kind, sentinel-no-op).
-**Tái dùng NGUYÊN free-shim + sentinel-no-op (R4 ADR-0076)** — ptr element ∈ {ptr→free,
-0/NULL_SENTINEL→no-op}. Drop-glue site JIT (`mir_lower.rs` Drop arm cho Vector) đổi
-`__triet_vector_free` → typed variant + truyền elem_kind/stride từ `Vector(inner)`.
+### Thrust 3 — Typed drop-glue: `__triet_vector_free_typed(ptr, elem_kind, stride)`
+Loop through `len` elements @stride; for each heap element → call the free-shim according to `elem_kind`
+(0=scalar/no-drop · 1=String · 2=Vector · 3=HashMap; Nullable(heap) shares the same kind, sentinel-no-op).
+**Reuse the ORIGINAL free-shim + sentinel-no-op (R4 ADR-0076)** — element ptr ∈ {ptr→free, 0/NULL_SENTINEL→no-op}.
+The JIT Drop-glue site (`mir_lower.rs` Drop arm for Vector) changes
+`__triet_vector_free` → typed variant + passing `elem_kind`/`stride` from `Vector(inner)`.
 
-### Mũi 4 — By-pointer ABI cho fat element
-`push`/`get` với element fat (String 24B): pass **by-pointer** (push nhận `*const elem`,
-memcpy `stride` byte; get trả qua sret/out-ptr). Scalar/handle (8B) giữ by-value i64 (fast
-path, backward-compat Vector<Integer>). By-pointer ⊥ native-layout (size là const biết trước).
+### Thrust 4 — By-pointer ABI for fat elements
+`push`/`get` with fat elements (e.g., 24B String): pass **by-pointer** (push receives `*const elem`,
+memcpy `stride` bytes; get returns via sret/out-ptr). Scalars/handles (8B) retain by-value i64 (fast
+path, backward-compatible with `Vector<Integer>`). By-pointer ⊥ native-layout (size is a known constant).
 
 ---
 
-## Các phương án đã cân nhắc
+## Alternatives Considered
 
-| # | Phương án | Ưu | Nhược | Kết luận |
+| # | Alternative | Pros | Cons | Conclusion |
 |---|-----------|---|-------|----------|
-| 1 | **Inline element by stride** (chọn) | 1 alloc/vector, cache-local, đối xứng struct-field | shim cần stride-param + by-ptr ABI cho fat | **CHỌN** — element-size built-in là hằng → tách native-layout |
-| 2 | Box mọi element (uniform 8B ptr) | stride luôn 8, ABI luôn i64 | +1 alloc/element, +1 indirection, drop = free box rồi free inner | Bác — phí allocation, nghịch value-semantics |
-| 3 | Gộp HashMap cùng ADR | 1 lần xong | K+V 2 type, slot 24B, chưa có typecheck variant | Bác (G chốt) — campaign riêng sau |
-| 4 | Mở luôn Vector<UserStruct> | tổng quát | = native-layout (Option D đại phẫu) | Bác — REFUSE ở biên P1, cầu sang P2 |
-| 5 | `Vector` bare giữ, side-map element-type | 0 đụng MIR variant | side-channel = mầm ung thư (bài học ADR-0072) | Bác — element-type vào MIR tường minh |
+| 1 | **Inline element by stride** (Selected) | 1 alloc/vector, cache-local, symmetric to struct-field | shim requires stride-param + by-ptr ABI for fat elements | **SELECTED** — built-in element-size is constant → decouples native-layout |
+| 2 | Box every element (uniform 8B ptr) | stride is always 8, ABI is always i64 | +1 alloc/element, +1 indirection, drop = free box then free inner | Rejected — excessive allocation overhead, violates value-semantics |
+| 3 | Bundle HashMap into this ADR | One-shot implementation | K+V involves 2 types, 24B slot, no typecheck variant yet | Rejected (G's decision) — separate campaign later |
+| 4 | Open `Vector<UserStruct>` immediately | General purpose | Equivalent to native-layout (Option D major surgery) | Rejected — REFUSE at the P1 boundary, bridge to P2 |
+| 5 | Keep bare `Vector`, side-map element-type | 0 impact on MIR variant | side-channel = architectural rot (lesson from ADR-0072) | Rejected — explicit element-type in MIR |
 
 ---
 
-## Hậu quả
+## Consequences
 
-### Tích cực
-- Collection chứa String/heap/nested → data-structure thật, thủng Type-Erasure.
-- Element-type tường minh trong MIR (không side-channel) — nền cho HashMap<K,V> + iteration sau.
-- Tái dùng tombstone/free machinery (continuation, 0 cỗ máy mới ở drop).
-- ⊥ native-layout — không mở Option D.
+### Positive
+- Collections can contain String/heap/nested data → true data structures, piercing Type-Erasure.
+- Explicit element-type in MIR (no side-channels) — foundation for HashMap<K,V> + iteration later.
+- Reuse of tombstone/free machinery (continuation, 0 new machines in drop).
+- ⊥ native-layout — does not open Option D.
 
-### Tiêu cực
-- `MirType::Vector(Box)` chạm ~25 site (mechanical).
-- By-ptr ABI cho fat element thêm path (bounded — scalar giữ fast i64).
+### Negative
+- `MirType::Vector(Box)` touches ~25 sites (mechanical).
+- By-ptr ABI for fat elements adds a new path (bounded — scalars retain fast i64 path).
 
-### Rủi ro cần mitigate
-- **Drop-glue element-blind P1** → leak khổng lồ nếu free không loop. Teeth bắt buộc (Vector<String> drop → FREE==n).
-- **Stride sai** → đọc/ghi lệch element → SIGSEGV / corruption. Teeth: push nhiều String, get đọc lại đúng.
-- **REFUSE UserStruct lọt** → element-size struct tùy ý → dây sang native-layout. Negative tooth khóa E-code.
-- **moved-out element / sentinel** → double-free. Teeth pop-then-drop FREE đúng số.
+### Risks to Mitigate
+- **Element-blind Drop-glue P1** → massive leak if free does not loop. Mandatory "Teeth": (`Vector<String>` drop → FREE==N).
+- **Incorrect Stride** → misaligned element read/write → SIGSEGV / corruption. Teeth: push multiple Strings, get reads back correctly.
+- **`UserStruct` leakage** → arbitrary struct element-size → entanglement with native-layout. Negative tooth: E-code lock.
+- **moved-out element / sentinel** → double-free. Teeth: pop-then-drop FREE must be correct.
 
 ---
 
-## Teeth (O verify máu độc lập — poison phải đỏ, restore cp KHÔNG git checkout)
+## Teeth (O independent blood verification — poison must be RED, restore cp MUST NOT git checkout)
 
 | # | Tooth | Scenario | Poison → RED |
 |---|---|---|---|
-| 1 💀 leak | Vector<String> push 3 → drop cả mảng | gỡ typed-free loop → FREE==0 (leak), không phải 3 |
-| 2 💀 double-free | push String, **pop**, drop mảng (G mandate) | tombstone pop sai → FREE==2 / SIGABRT 134 |
-| 3 stride | push 3 String, get[0/1/2] đọc lại đúng nội dung | stride giữ 8 → đọc lệch → sai/SIGSEGV |
-| 4 negative | `Vector<MyStruct>` (UserStruct element) | bỏ E-code → element-size struct → lọt P2/native-layout |
-| 5 backward-compat | Vector<Integer> cũ (72 fixture corpus) | regression nếu fast-path i64 vỡ |
-| 6 nested P1 | `Vector<Vector<String>>` (element handle 8B) | inner-drop sai → leak inner String |
+| 1 💀 leak | `Vector<String>` push 3 → drop entire array | remove typed-free loop → FREE==0 (leak), instead of 3 |
+| 2 💀 double-free | push String, **pop**, drop array (G mandate) | tombstone pop error → FREE==2 / SIGABTR 134 |
+| 3 stride | push 3 Strings, get[0/1/2] reads back correct content | stride remains 8 → misaligned read → error/SIGSEGV |
+| 4 negative | `Vector<MyStruct>` (UserStruct element) | remove E-code → arbitrary struct element-size → leaks into P2/native-layout |
+| 5 backward-compat | legacy `Vector<Integer>` (72 fixture corpus) | regression if fast-path i64 breaks |
+| 6 nested P1 | `Vector<Vector<String>>` (element handle 8B) | inner-drop error → leak inner String |
 
-Mỗi tooth quét biến thể element (String/Vector?/Nullable(String)) — bài học HP.3.
-G mandate teeth #2: **mảng String → pop → drop, vỡ bộ nhớ = vặn cổ.**
+Each tooth must scan element variants (String/Vector?/Nullable(String)) — lesson from HP.3.
+G mandate for tooth #2: **array of Strings → pop → drop, memory corruption = neck-wringing.**
 
-## Quan hệ ADR
-Kế thừa: ADR-0060 (P1/P2 tách-tầng), 0066/0067 (heap-in-aggregate drop-glue), 0076 (sentinel-no-op
-free R4). KHÔNG đụng: 0068 (Box CẤM), native-layout (defer). Mở đường: HashMap<K,V> typed
-(campaign sau), collection iteration / Index-move (Collection-Semantics).
+## ADR Relationships
+Inherits: ADR-0060 (P1/P2 separation), 0066/0067 (heap-in-aggregate drop-glue), 0076 (sentinel-no-op free R4). DOES NOT touch: 0068 (Box FORBIDDEN), native-layout (defer). Paves way for: typed HashMap<K,V> (later campaign), collection iteration / Index-move (Collection-Semantics).
 
-## Ngày hiệu lực
-Bậc C+ — element-type-MIR + elem_size + typed-free + by-ptr-ABI khi landed (O verify máu, G ký).
-Không hồi tố Vector<Integer> (fast-path i64 bảo tồn byte-compat).
+## Effective Date
+Level C+ — element-type-MIR + elem_size + typed-free + by-ptr-ABI when landed (O blood verification, G sign-off).
+No retroactivity for `Vector<Integer>` (fast-path i64 preserves byte-compatibility).
 
 ---
 
-## ✚ AMEND — Re-scope 2-slice + 💀 lỗi under-scope của O (D bắt, G chốt 2026-06-30)
+## ✚ AMEND — Re-scope 2-slice + 💀 O's under-scoping error (D enforces, G finalized 2026-06-30)
 
-### 💀 Lỗi under-scope O nhận (D chặn đúng LUẬT 4 sau MŨI 1)
-Bản draft trên chẩn gốc chặn là **lower erase** — SAI/THIẾU. Gốc chặn THẬT là **typecheck
-đơn hình**: `vector_new()`/`push`/`get` declare cứng `Vector<Integer>`, `type_parameters` RỖNG
-(`env.rs:252/262/291`). `push(vector_new(), "hi")` → **E1003** (expected Integer, found String).
-**`Vector<String>` BẤT KHẢ construct ở source** — MŨI 1-4 backend chỉ là **máy ngủ đông** nếu
-không mở typecheck. WO 4-mũi backend là CẦN nhưng KHÔNG ĐỦ → **thiếu MŨI 5 (typecheck-open)**.
-Bài học (lặp WO-0073): *verify-don't-trust cắt cả WO của chính O — recon phải quét TỪ phễu
-typecheck xuống JIT, không chỉ cắm mặt backend.* D bắt mìn, dừng, báo (LUẬT 4) — không ngủ đông.
+### 💀 Under-scoping error admitted by O (D correctly blocked via RULE 4 after THRUST 1)
+The above draft claimed the block was at **lower erasure** — WRONG/INCOMPLETE. The actual block is at **monomorphic typecheck**: `vector_new()`/`push`/`get` are hardcoded to declare `Vector<Integer>`, with `type_parameters` EMPTY (`env.rs:252/262/291`). `push(vector_new(), "hi")` → **E1003** (expected Integer, found String).
+**`Vector<String>` is UNCONSTRUCTIBLE at the source** — Thrusts 1-4 in the backend are merely **hibernating** if typecheck is not opened. Without the 4 backend thrusts, it is NECESSARY but NOT SUFFICIENT → **missing THRUST 5 (typecheck-open)**.
+Lesson (repeating WO-0073): *Verify-don't-trust cuts even O's own WO — recon must scan FROM the typecheck funnel down to JIT, not just focus on the backend.* D detected the mine, stopped, and reported (RULE 4) — no hibernation.
 
-### Quyết định G — campaign = 2 SLICE
+### G's Decision — campaign = 2 SLICES
 
-**Slice A — Backend & Storage** (cỗ máy ownership-trong-vector, verify route-lower hand-built MIR):
-- MŨI 1 ✓ `Vector(Box<MirType>)` (committed WIP `d0d39d1`).
-- MŨI 2 **stride-in-HEADER** (LUẬT 5 D đề, G DUYỆT): ghi `stride`+`elem_kind` vào header lúc
-  `alloc` — KHÔNG truyền param. Né ca empty-default-buffer lửng lơ (vector_new default Integer-8
-  rồi push String-24: free đọc stride từ header → dealloc đúng). Tiền lệ: free đã đọc cap@header.
-- MŨI 3 typed-free: **JIT-EMITTED element-free loop** (KHÔNG shim `_typed` — D bắt vacuity, O
-  duyệt 2026-06-30). Lý do: shim-internal free = Rust→Rust direct call (như `push`@3380), bỏ qua
-  JIT registry → counting harness (swap symbol) KHÔNG thấy → **teeth #1 VACUOUS** (FREE đã =0
-  trước poison). JIT-emitted call đi qua `declare_func_in_func`→registry→stub đếm được → poison
-  loop → FREE 3→0 ĐỎ. **Bonus kiến trúc: tái dùng `emit_heap_free_at` (jit:944) = SINGLE
-  drop-glue source** (đang dùng Outcome/struct/enum) thay vì nhân bản free-by-kind trong Rust shim.
-  Tại Vector Drop site (`mir_lower.rs:2163`): `Vector(inner)` với `inner.is_any_heap()` → emit
-  Cranelift loop (len từ header, i induction, `elem_addr = data + i*stride`,
-  `emit_heap_free_at(elem_addr, inner)` per element — sentinel-no-op R4), sau loop
-  `__triet_vector_free(block)` (existing, dealloc buffer). `inner` Copy → skip loop (byte-compat).
-  Nested `Vector<Vector<String>>`: element handle 8B → `emit_heap_free_at(elem, Vector(String))`
-  đệ quy chính loop này.
-- MŨI 4 (rename) **shim `pop()`** = move-out đuôi mảng (len-1), trả owned element, ownership
-  CẮT ĐỨT sạch (KHÔNG clone, KHÔNG thủng giữa mảng). Đây là op heap-element-out DUY NHẤT ở P1.
+**Slice A — Backend & Storage** (ownership-in-vector machinery, verifying route-lower hand-built MIR):
+- THRUST 1 ✓ `Vector(Box<MirType>)` (committed WIP `d0t39d1`).
+- THRUST 2 **stride-in-HEADER** (D proposed via RULE 5, G APPROVED): write `stride`+`elem_kind` into the header during `alloc` — NO parameter passing. Avoids the "empty-default-buffer" edge case (vector_new defaults to Integer-8, then push String-24: free reads stride from header → deallocs correctly). Precedent: free already reads cap@header.
+- THRUST 3 typed-free: **JIT-EMITTED element-free loop** (NO `_typed` shim — D identified vacuity, O approved 2026-06-30). Reason: shim-internal free = Rust→Rust direct call (like `push`@3380), bypassing the JIT registry → counting harness (symbol swap) cannot see it → **tooth #1 becomes VACUOUS** (FREE is already=0 before poison). A JIT-emitted call goes through `declare_func_in_func`→registry→stub and is countable → poison loop → FREE 3→0 RED. **Architectural Bonus: reuse `emit_heap_free_at` (jit:944) = SINGLE drop-glue source** (currently used for Outcome/struct/enum) instead of duplicating free-by-kind in the Rust shim. At the Vector Drop site (`mir_lower.rs:2163`): `Vector(inner)` where `inner.is_any_heap()` → emit Cranelift loop (len from header, `i` induction, `elem_addr = data + i*stride`, `emit_heap_free_at(elem_addr, inner)` per element — sentinel-no-op R4), followed by the loop, `__triet_vector_free(block)` (existing, deallocs buffer). `inner` is Copy → skip loop (byte-compat). Nested `Vector<Vector<String>>`: element handle 8B → `emit_heap_free_at(elem, Vector(String))` recursively triggers this same loop.
+- THRUST 4 (renamed) **shim `pop()`** = move-out from the end of the array (len-1), returns owned element, ownership is COMPLETELY SEVERED (NO clone, NO hole in the middle of the array). This is the ONLY heap-element-out operation in P1.
 - Test: hand-built MIR route-lower + counting (push N → drop → FREE==N; push→pop→drop ownership).
 
-**Slice B — Typecheck-open** (đâm xuyên source→JIT, structural + expected-type, **NÉ generics**):
-- **PA1 chốt (G): structural element-check + expected-type (ADR-0072), KHÔNG HM-unify, KHÔNG
-  type-variable.** `let v: Vector<String> = vector_new()` → annotation cấp element=String qua
-  expected-type propagation xuống `vector_new()`; `push(v, e)` check `e` structural khớp
-  element-type của `v` (đã biết từ v); return `Vector<String>`.
-- **get() phán quyết G: DEFER cho heap type.** `get()` chỉ cho **Copy element** (Integer…) trả
-  `T?` owned-copy (như cũ). **Heap element (String/Vector/HashMap/Nullable-heap) → REFUSE get()
-  bằng E-code mới** (borrow-no-reference / clone-no-shim / move-out-thủng-mảng đều chí mạng).
-  Lấy heap element ra = dùng **`pop()`** (move-out, ownership sạch).
-- Test: end-to-end **source** `.tri` poison — `let v: Vector<String>=vector_new(); push;…; pop; drop`.
-
-### Teeth cập nhật (thay teeth #2 cũ)
-G mandate #2 dùng **pop**: source `Vector<String>` push N → **pop** vài cái → drop mảng → memory
-sound (FREE đúng số, KHÔNG double-free/leak). **Vỡ bộ nhớ = vặn cổ.** + negative: `get()` trên
-Vector<String> → E-code REFUSE (không silent); `Vector<UserStruct>` → E-code REFUSE (biên P1/P2).
-
-### Biên get/pop chốt
-| op | Copy element | Heap element |
-|---|---|---|
-| `get(v,i)` | ✅ `T?` owned-copy | ❌ **REFUSE E-code** (defer) |
-| `pop(v)` | ✅ move-out đuôi | ✅ move-out đuôi (ownership sạch) |
-| `push(v,e)` | ✅ by-value i64 | ✅ by-ptr (fat) |
+**Slice B — Typecheck-open** (piercing source→JIT, structural + expected-type, **AVOIDING generics**):
+- **PA1 finalized (G): structural element-check + expected-type (ADR-0072), NO HM-unification

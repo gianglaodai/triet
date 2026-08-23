@@ -1,34 +1,34 @@
-# ADR 0001 — Memory layout của `T?`
+# ADR 0001 — Memory layout of `T?`
 
-**Trạng thái:** Quyết định, ràng buộc spec ngôn ngữ. Áp dụng từ v0.1; revisit ở v0.3 nếu packing thực sự bottleneck.
+**Status:** Decided, language spec constraint. Applicable from v0.1; revisit in v0.3 if packing becomes a true bottleneck.
 
-**Issue:** SPEC §13 #1 — `T?` lưu thế nào trong bộ nhớ: discriminator riêng (1 trit/byte cho biết null hay không) hay sentinel value (chiếm một biểu diễn "không dùng" của `T`)?
+**Issue:** SPEC §13 #1 — How is `T?` stored in memory: a separate discriminator (1 trit/byte indicating nullability) or a sentinel value (occupying an "unused" representation of `T`)?
 
-## Quyết định
+## Decision
 
-**Discriminator** (1 trit phụ) cho mọi `T?`. Layout chuẩn:
+**Discriminator** (1 auxiliary trit) for all `T?`. Standard layout:
 
 ```
 T?  ::=  is_null: 1 trit  +  payload: T
-         (-1 = null, +1 = present, 0 reserved cho v0.2 "uninitialized")
+         (-1 = null, +1 = present, 0 reserved for v0.2 "uninitialized")
 ```
 
-## Lý do
+## Rationale
 
-- **Đối xứng tam phân.** Triết là balanced-ternary first — mọi biểu diễn n-trit của một type đều có ngữ nghĩa. `Trilean` dùng cả 3 giá trị, `Tryte`/`Integer`/`Long` dùng đối xứng quanh 0. Không có "sentinel slot" thừa để tận dụng → sentinel approach buộc phải cắt bớt phạm vi của `T`, vi phạm guarantee §3.2 ("phạm vi đối xứng").
-- **AI-first / regular > exception.** Discriminator thống nhất cho mọi `T`. LLM hoặc dev không phải nhớ bảng "type X có sentinel ở đâu". Layout cố định = generation đúng ngay lần đầu.
-- **Overhead thực sự nhỏ.** 1 trit ≈ 1.585 bit. Với packing 5-trit/byte (§3.4), `T?` thường tốn thêm 1 byte (round up) nhưng có thể nhồi với discriminator của các `T?` khác kế bên ở backend tối ưu (v0.3+).
-- **`?T` 3-state mở rộng tự nhiên.** Discriminator đã dùng 3 giá trị balanced ternary → `is_null` có thể mở thêm trạng thái thứ ba ("uninitialized" / "moved-from") cho v0.2 borrow checker mà không phá layout.
+- **Ternary symmetry.** The philosophy is balanced-ternary first — every n-trit representation of a type carries semantic meaning. `Trilean` uses all three values; `Tryte`/`Integer`/`Long` use symmetry around 0. There are no spare "sentinel slots" to exploit → the sentinel approach would force a reduction in the range of `T`, violating the §3.2 guarantee ("symmetric range").
+- **AI-first / regular > exception.** A unified discriminator for all `T`. LLMs or developers do not need to memorize a lookup table for "where type X's sentinel resides." Fixed layout = correct generation on the first attempt.
+- **Minimal overhead.** 1 trit ≈ 1.585 bits. With 5-trit/byte packing (§3.4), `T?` typically incurs an additional 1 byte (due to rounding up), but this can be packed alongside discriminators of adjacent `T?` types in optimized backends (v0.3+).
+- **`?T` 3-state expands naturally.** The discriminator already utilizes three balanced ternary values → `is_null` can be extended with a third state ("uninitialized" / "moved-from") for the v0.2 borrow checker without breaking the layout.
 
-## Hậu quả
+## Consequences
 
-- Mỗi field `T?` trong struct (v0.2) phải dự trữ thêm 1 trit. Compiler có thể gộp nhiều discriminator vào ít byte hơn (như Rust niche optimization) khi `T` đã có "natural sentinel" — nhưng đó là optimization v0.3+, **không thay đổi semantic**.
-- Backend hardware tam phân giả định (v2.0+) hưởng lợi: discriminator là một trit thật, không phải hack qua bit-packing nhị phân.
-- Nullable composition (`T??`) **không** flatten — `T??` là `(is_null₂, (is_null₁, T))`, hai tầng phân biệt được. SPEC §2.5 đã ngầm cấm composition này (ưu tiên `Option<Option<T>>` v0.2 nếu thực sự cần) nên không phát sinh thêm.
+- Each `T?` field in a struct (v0.2) must reserve an additional 1 trit. The compiler may pack multiple discriminators into fewer bytes (similar to Rust's niche optimization) when `T` possesses a "natural sentinel" — however, that is a v0.3+ optimization and **does not change the semantics**.
+- Assumed ternary hardware backends (v2.0+) benefit: the discriminator is a true trit, rather than a hack via binary bit-packing.
+- Nullable composition (`T??`) does **not** flatten — `T??` is `(is_null₂, (is_null₁, T))`, with two distinguishable layers. SPEC §2.5 implicitly prohibits this composition (preferring `Option<Option<T>>` in v0.2 if necessary), so no additional complexity arises.
 
 ## Implementation v0.1
 
-Interpreter dùng `Value::Null` enum variant của Rust — tương đương semantically với discriminator (Rust enum tag = discriminator). Layout vật lý sẽ được commit ở v0.3 khi bytecode VM đến.
+The interpreter uses Rust's `Value::Null` enum variant — semantically equivalent to the discriminator (Rust enum tag = discriminator). The physical layout will be committed in v0.3 upon the arrival of the bytecode VM.
 
 ---
 
@@ -97,13 +97,13 @@ The encoding in the original body (`-1 = null, +1 = present`) is **superseded**.
 
 ### 2. `T??` non-flatten
 
-The original "Hậu quả" section states: "Nullable composition (`T??`) **không**
-flatten — `T??` là `(is_null₂, (is_null₁, T))`, hai tầng phân biệt được."
+The original "Consequences" section states: "Nullable composition (`T??`) **does not**
+flatten — `T??` is `(is_null₂, (is_null₁, T))`, with two distinguishable layers."
 
-[ADR-0039](0039-nullable-operator-family.md) (2026-06-05, LOCKED) overrides
+[ADR-0039](003<0xA0>9-nullable-operator-family.md) (2026-06-05, LOCKED) overrides
 this: **`T??` does not exist — auto-flatten.** Applying `?` to an already-nullable
 type is a no-op at the type level; the typechecker folds `T??` → `T?`.
 
 **Correction:** `T??` auto-flattens to `T?`. The two-layer discriminator model
 in the original body is **superseded** — no backend ever implemented it, and
-the rewrite (Track B) enforces C6 of ADR-0041: `T??` không tồn tại.
+the rewrite (Track B) enforces C6 of ADR-0041: `T??` does not exist.

@@ -1,45 +1,45 @@
 # ADR 0026 — Concurrency Primitives & Send Rules (Bring Your Own Scheduler)
 
-**Trạng thái:** **Locked v2** (promoted via v0.8.x.review 2026-05-28; supersedes 2026-05-26 v1 "Actor Boundary & Send Rules" per BYOS pivot). Sibling của [ADR-0022](0022-trit-balanced-ownership.md) + [ADR-0025](0025-borrow-checker-rules.md). v0.8 đã ship Send derivation algorithm cho 13 type categories (`triet-typecheck::types::Type::is_send()`) + E2500 fires + capability schema mở rộng. Locks language-level concurrency primitives + compile-time Send rules. **Refuses** baking scheduler/runtime vào core language — kernel writers bring their own. Diagnostic format follow [ADR-0027](0027-diagnostic-format-standard.md).
+**Status:** **Locked v2** (promoted via v0.8.x.review 2026-05-28; supersedes 2026-05-26 v1 "Actor Boundary & Send Rules" per BYOS pivot). Sibling to [ADR-0022](0022-trit-balanced-ownership.md) + [ADR-0025](0025-borrow-checker-rules.md). v0.8 has shipped the Send derivation algorithm for 13 type categories (`triet-typecheck::types::Type::is_send()`) + E2500 fires + expanded capability schema. Locks language-level concurrency primitives + compile-time Send rules. **Refuses** baking the scheduler/runtime into the core language — kernel writers bring their own. Diagnostic format follows [ADR-0027](0027-diagnostic-format-standard.md).
 
-> **2026-05-29 Addendum (v0.9.0.1):** §4 placeholder design refined by [ADR-0028](0028-atomic-primitive.md). The `&+ mutable Atomic<T>` signature in §4.3 store/swap/compare_exchange is **superseded** by `&+ Atomic<T>` per [ADR-0028 §5](0028-atomic-primitive.md#5--reference-form-for-atomic-operations-resolves-adr-0026-v2-43-contradiction) — atomicity = interior mutability via raw hardware atomic instructions, mirroring Rust `&AtomicU64` pattern. Cross-thread atomic share REQUIRES frozen ref (per §2.1 row 7 Send rule); ADR-0026 v2 §4.3's `&+ mutable` form was an internal contradiction not exercised by v0.8 placeholder ship. ADR-0026 v2 body NOT edited per project ADR immutability rule; ADR-0028 §5 is source-of-truth for atomic operation signatures.
+> **2026-05-29 Addendum (v0.9.0.1):** §4 placeholder design refined by [ADR-0028](0028-atomic-primitive.md). The `&+ mutable Atomic<T>` signature in §4.3 store/swap/compare_exchange is **superspend** by `&+ Atomic<T>` per [ADR-0028 §5](0028-atomic-primitive.md#5--reference-form-for-atomic-operations-resolves-adr-0026-v2-43-contradiction) — atomicity = interior mutability via raw hardware atomic instructions, mirroring the Rust `&AtomicU64` pattern. Cross-thread atomic sharing REQUIRES a frozen reference (per §2.1 row 7 Send rule); ADR-0026 v2 §4.3's `&+ mutable` form was an internal contradiction not exercised by the v0.8 placeholder ship. ADR-0026 v2 body NOT edited per project ADR immutability rule; ADR-0028 §5 is the source-of-truth for atomic operation signatures.
 
-**Issue:** v1 (2026-05-26) đã propose `actor`/`receive`/`send`/`spawn` keywords + mailbox runtime. Author 2026-05-26 (cùng ngày, sau khi reviewing) chỉ ra contradiction cốt lõi: **Triết mục tiêu viết kernel** (per VISION §3.5), nhưng v1 bake green-thread/actor runtime vào core language — kernel không có user-space runtime để host scheduler. Linux Rust modules phải dùng C scheduler (kthread, workqueue). Rust async không có trong kernel. Triết v1 lặp lại sai lầm này.
+**Issue:** v1 (2026-05-26) proposed `actor`/`receive`/`send`/`spawn` keywords + a mailbox runtime. The author on 2026-05-26 (on the same day, after reviewing) identified a core contradiction: **Triet's objective is kernel development** (per VISION §3.5), but v1 baked a green-thread/actor runtime into the core language — kernels do not have a user-space runtime to host a scheduler. Linux Rust modules must use the C scheduler (kthread, workqueue). Rust async is unavailable in the kernel. v1 repeated this mistake.
 
-Insight cốt lõi:
+Core Insight:
 
-> **"Chúng ta cần giả định là giải pháp đa luồng của chúng ta không tốt, sẽ luôn có lập trình viên làm tốt hơn. Phần đa luồng này có thể coi như tiện ích, chúng ta phải cung cấp khả năng để 1 lập trình viên khác triển khai được hệ thống quản lý luồng và bản thân người sử dụng Triết sau này sẽ dùng hệ thống quản lý luồng đó."**
+> **"We must assume that our concurrency solution is not the best; there will always be developers who can do better. This concurrency component can be treated as a utility; we must provide the capability for another developer to implement a thread management system, and future Triet users will utilize that thread management system."**
 
-v2 reframe hoàn toàn: **Bring Your Own Scheduler (BYOS)**. Core language chỉ provide universal primitives + compile-time safety rules. Scheduler/runtime là stdlib (cho usr:: app) hoặc external (cho kernel/embedded). Mọi `actor`/`spawn`/`async`/`await`/`parallel` keyword bị refuse khỏi core.
+v2 completely reframes this: **Bring Your Own Scheduler (BYKS)**. The core language only provides universal primitives + compile-time safety rules. The scheduler/runtime is part of the stdlib (for `usr::` apps) or external (for kernel/embedded). All `actor`/`spawn`/`async`/`await`/`parallel` keywords are refused from the core.
 
 ---
 
-## §1 — Goals & non-goals
+## §1 — Goals & Non-goals
 
 ### 1.1 — Goals
 
-1. **Universal Send rules** — compile-time derivation cho mọi scheduler.
-2. **Linear ownership across thread boundary** — không có shared mutable cross-thread (compile-time enforced từ ADR-0022 D1).
-3. **Atomic primitives** — language-level types cho lock-free programming.
-4. **Capability gates** — `sys::raw_thread`, `sys::atomic`, `dev::ffi` cho thread primitives.
-5. **No-mandate-scheduler** — kernel writers tự build scheduler, share lại cho cộng đồng.
-6. **Compile-time race-freedom** — bất kể scheduler nào, data race là impossible.
+1. **Universal Send rules** — compile-time derivation for any scheduler.
+2. **Linear ownership across thread boundaries** — no shared mutable cross-thread state (compile-time enforced via ADR-0022 D1).
+3. **Atomic primitives** — language-level types for lock-free programming.
+4. **Capability gates** — `sys::raw_thread`, `sys::atomic`, `dev::ffi` for thread primitives.
+5. **No-mandate-scheduler** — kernel writers build their own schedulers and share them with the community.
+6. **Compile-time race-freedom** — regardless of the scheduler, data races are impossible.
 
-### 1.2 — Non-goals (refused, không phải defer)
+### 1.2 — Non-goals (refused, not deferred)
 
-- ❌ `async`/`await` keywords — viral coloring, không kernel-safe
-- ❌ `spawn` keyword — assumes runtime
-- ❌ `parallel { }` block — assumes scheduler
-- ❌ `actor`/`receive` keywords — assumes mailbox runtime
-- ❌ Channels as built-in syntax — channels = stdlib types, không phải language keyword
-- ❌ Implicit heap allocator coupling — kernel có allocator riêng
-- ❌ Built-in green thread scheduler trong core — stdlib reference impl only
+- ❌ `async`/`await` keywords — viral coloring, not kernel-safe
+- ❌ `spawn` keyword — assumes a runtime
+- ❌ `parallel { }` block — assumes a scheduler
+- ❌ `actor`/`receive` keywords — assumes a mailbox runtime
+- ❌ Channels as built-in syntax — channels are stdlib types, not language keywords
+- ❌ Implicit heap allocator coupling — kernels have their own allocators
+- ❌ Built-in green thread scheduler in core — stdlib reference implementation only
 
-Tất cả các từ trên có thể xuất hiện trong stdlib library code, **không phải language keyword**.
+All the above may appear in stdlib library code, but **not as language keywords**.
 
 ### 1.3 — Error code namespace E25XX
 
-Reserved range **E2500–E2599** cho concurrency diagnostics. Phân bổ:
+Reserved range **E2500–E02599** for concurrency diagnostics. Allocation:
 
 | Range | Category |
 |---|---|
@@ -47,45 +47,46 @@ Reserved range **E2500–E2599** cho concurrency diagnostics. Phân bổ:
 | E2510–E2519 | Scope-ref / weak-ref boundary violations |
 | E2520–E2529 | Mutable-share anti-pattern |
 | E2530–E2539 | Atomic memory ordering violations |
-| E2540–E2549 | Reserved: capability mismatch ở thread primitives |
-| E2550–E2599 | Reserved future expansion |
+| E2540–E2549 | Reserved: capability mismatch in thread primitives |
+| E2550–E2599 | Reserved for future expansion |
 
-Module path: `triet::concurrency::E25XX`. CLAUDE.md cập nhật khi ADR land.
+Module path: `triet::concurrency::E25XX`. CLAUDE.md to be updated when the ADR lands.
 
 ---
 
 ## §2 — Send Derivation Rules (compile-time, universal)
 
-**Lock:** Mỗi type T có property compile-time `Send(T)` — boolean, derived theo structure. User không gõ trait bound; compiler suy. Áp dụng tại **mọi function boundary** mà param có annotation `: Send` (hoặc tương đương trait bound).
+**Lock:** Every type `T` has a compile-time property `Send(T)` — a boolean, derived based on its structure. Users do not write trait bounds; the compiler infers them. This applies at **every function boundary** where a parameter has the `: Send` annotation (or equivalent trait bound).
 
-### 2.1 — Rules quy nạp
+### 2.1 — Inductive Rules
 
 | Type | Send(T) |
 |---|---|
 | Primitive value types (`Trit`, `Tryte`, `Integer`, `Long`, `Trilean`, `Unit`) | ✅ Always Send |
-| Tuples `(A, B, ...)` | ✅ Send iff all components Send |
-| `T?` nullable | ✅ Send iff T Send |
-| `T~E`, `T?~E` outcome | ✅ Send iff T Send and E Send |
-| `Vector<T>`, `Map<K, V>`, `Set<T>` | ✅ Send iff elements Send |
-| User struct `S { f1: T1, f2: T2, ... }` | ✅ Send iff all fields Send |
-| User enum / variant | ✅ Send iff all variants' payload Send |
-| `&+ T` (frozen owner) | ✅ Send iff T Send. Refcount ngầm at boundary (per §7) |
-| `&+ mutable T` | ✅ Send iff T Send. Linear move (single owner thread) |
+| Tuples `(A, B, ...)` | ✅ Send iff all components are Send |
+| `T?` (nullable) | ✅ Send iff T is Send |
+| `T~E`, `T?~E` (outcome) | ✅ Send iff T is Send and E is Send |
+| `Vector<T>`, `Map<K, V>`, `Set<T>` | ✅ Send iff elements are Send |
+| User-defined struct `S { f1: T1, f2: T2, ... }` | ✅ Send iff all fields are Send |
+| User-defined enum / variant | ✅ Send iff all variant payloads are Send |
+| `&+ T` (frozen owner) | ✅ Send iff T is Send. Implicit refcount at boundary (per §7) |
+| `&+ mutable T` | ✅ Send iff T is Send. Linear move (single owner thread) |
+/
 | `&0 T`, `&0 mutable T` (scope borrow) | ❌ Never Send |
 | `&- T` (weak observer) | ❌ Never Send |
-| `Atomic<T>` (where T is value type) | ✅ Always Send (atomic by definition) |
-| Function types `fn(...) -> ...` | ✅ Send iff all captures Send (defer closure ADR) |
+| `Atomic<T>` (where T is a value type) | ✅ Always Send (atomic by definition) |
+| Function types `fn(...) -> ...` | ✅ Send iff all captures are Send (see closure ADR) |
 | Raw thread handles (`sys::raw_thread.Handle`) | ✅ Send (kernel concern) |
 
-### 2.2 — Tại sao `&0` và `&-` NEVER Send
+### 2.2 — Why `&0` and `&-` are NEVER Send
 
-`&0` là scope-bound (ADR-0022 §2). Scope thuộc về 1 execution context cụ thể — không khái niệm "scope" cross-thread. Cho phép `&0` cross thread sẽ phá compile-time invariant của ADR-0025 §2 (NLL exclusivity per-place trong cùng CFG).
+`&0` is scope-bound (ADR-0022 §2). A scope belongs to a specific execution context — there is no concept of "scope" cross-thread. Allowing `&0` cross-thread would break the compile-time invariant of ADR-0025 §2 (NLL exclusivity per-place within the same CFG).
 
-`&- T` weak observer là compile-time tracked (ADR-0022 §9). Trace từ weak về `&+` chỉ valid trong 1 execution context. Cross thread → owner trail không liên tục.
+`&- T` (weak observer) is compile-time tracked (ADR-0022 §9). Tracing from a weak reference back to `&+` is only valid within a single execution context. Cross-thread $\rightarrow$ the owner trail becomes discontinuous.
 
 ### 2.3 — Application site: trait bound `: Send`
 
-Send rules áp dụng tại function boundary với explicit annotation. Ví dụ stdlib `std.concurrency.green.spawn`:
+Send rules apply at function boundaries with explicit annotations. Example stdlib `std.concurrency.green.spawn`:
 
 ```triet
 // std/concurrency/green.tri
@@ -102,7 +103,7 @@ let buffer: &+ mutable Buffer = make_buffer()
 spawn(|| write_data(buffer))    // ✅ &+ mutable Buffer is Send
 ```
 
-Captures inside closure `||` typecheck against `Send` bound. Sai → E2500.
+Captures inside the closure `||` typecheck against the `Send` bound. Failure $\rightarrow$ E2500.
 
 ### 2.4 — E2500 NotSendCannotCrossBoundary
 
@@ -136,72 +137,72 @@ E2500 NotSendCannotCrossBoundary
 
 ### 2.5 — Generic enforcement at monomorphization
 
-Khi function generic, Send check tại call site monomorphization. Compile-time, không runtime.
+For generic functions, the Send check occurs at call-site monomorphization. This is compile-time, not runtime.
 
 ```triet
 let r: &0 Vector<UserId> = &0 ids
-spawn(|| process(r))              // E2500 — &0 Vector not Send (monomorphization-time)
+spawn(|| process(r))              // E2500 — &0 Vector not Send (at monomorphization-time)
 ```
 
 ---
 
 ## §3 — Linear Ownership Across Boundary
 
-**Lock:** Linear ownership từ ADR-0022 D1 + move semantics từ ADR-0025 §5 áp dụng nguyên trạng tại thread boundary. Không có shared mutable cross-thread — period.
+**Lock:** Linear ownership from ADR-0022 D1 + move semantics from ADR-0025 §5 apply unaltered at thread boundaries. No shared mutable cross-thread state — period.
 
-### 3.1 — `&+ mutable T` qua boundary = move
+### 3.1 — `&+ mutable T` across boundary = move
 
 ```triet
 let mutable job: &+ mutable Job = build_job()
-spawn(|| process(job))            // job MOVED into closure
+spawn(|| process(job))            // job is MOVED into the closure
 print(job.priority)                // E2420 UseAfterMove
 ```
 
-Mirror Rust `Send + !Sync` types. Zero runtime cost — same allocation, different owner thread.
+Mirrors Rust `Send + !Sync` types. Zero runtime cost — same allocation, different owner thread.
 
-### 3.2 — `&+ T` (frozen) qua boundary = refcount-mediated share
+### 3.2 — `&+ T` (frozen) across boundary = refcount-mediated share
 
-Khi `&+ T` (frozen owner) được capture vào Send closure:
+When `&+ T` (frozen owner) is captured into a `Send` closure:
 
 ```triet
 let config: &+ Config = load_config()
-spawn(|| use_config(config))      // refcount tăng atomic, sender giữ handle
-print(config.version)             // OK — sender still has handle
+spawn(|| use_config(config))      // refcount increases atomically; sender retains handle
+print(config.version)             // OK — sender still has the handle
 ```
 
 Behind the scenes:
-- ObjectHeader refcount (per §7) tăng atomic khi closure được Send (= cross boundary).
-- Sender thread + spawned thread đều có `&+ Config` handle.
-- Refcount giảm khi mỗi handle drop. Memory freed khi refcount = 0.
+- The `ObjectHeader` refcount (per §7) increases atomically when the closure is `Send` (= cross boundary).
+- Both the sender thread and the spawned thread hold a `&+ Config` handle.
+- The refcount decreases when each handle is dropped. Memory is freed when refcount reaches 0.
 
-**User-visible:** không thấy refcount. Chỉ thấy share-able vì frozen.
+**User-visible:** The refcount is invisible. The object is simply shareable because it is frozen.
 
-### 3.3 — Refuse shared mutable cross-thread
+### 3.3 — Prohibition of shared mutable cross-thread state
 
 ```triet
 let mutable counter: &+ mutable Counter = Counter.new()
-spawn(|| increment(counter))      // OK — counter moved
+spawn(|| increment(counter))      // OK — counter is moved
 spawn(|| increment(counter))      // E2420 UseAfterMove
 ```
 
-Để share mutable state, dùng:
-1. **Atomic primitive** (xem §4) — lock-free, hardware-supported
-2. **Wrap trong dedicated "owner thread"** — gom mutable state vào 1 execution context, communicate qua message passing (stdlib `std.concurrency.channel`)
-3. **Stdlib `Mutex<T>`** — built on Atomic, không phải language built-in
+To share mutable state, use:
+1. **Atomic primitives** (see §4) — lock-free, hardware-supported.
+2. **Wrap in a dedicated "owner thread"** — encapsulate mutable state within one execution context and communicate via message passing (stdlib `std.concurrency.channel`).
+3. **Stdlib `Mutex<T>`** — built on Atomics, not a language built-in.
 
-### 3.4 — Refuse list (no language-level escape hatch)
+### 3.4 — Refused List (no language-level escape hatch)
 
-Triết core **không có** capability để bypass §3.3. Không có `dev::cross_thread_mut`. Lý do: Java synchronized hell + Rust Arc<Mutex> panic — refuse-over-guess (VISION §6).
+The Triet core **does not provide** a capability to bypass §3.3. There is no `dev::cross_thread_mut`. Reason: Avoiding "Java synchronized hell" and "Rust Arc<Mutex> panic" — we prefer refusal over guessing (VISION §6).
 
-Nếu user **thực sự** cần shared mutable (kernel-level shared state, lock-free queue), dùng:
-- Atomic primitives (§4) — compile-time safe
-- Capability `dev::raw_memory` + `sys::atomic` — kernel responsibility
+If a user **truly** needs shared mutable state (e.g., kernel-level shared state, lock-free queues), use:
+- Atomic primitives (§4) — compile-time safe.
+- Capability `dev::raw_memory` + `sys::atomic` — a kernel responsibility.
 
 ---
 
 ## §4 — Atomic Primitive Types
 
-**Lock (placeholder design — chi tiết ADR-0028 hoặc Addendum):** Triết core có `Atomic<T>` family cho lock-free programming. T phải là value type với hardware atomic support. Memory ordering enum.
+**Lock (placeholder design — see ADR-0028 or Addendum):** The Triet core provides an `Atomic<T>` family for lock-free programming. `T` must be a value type with hardware atomic support. Includes a memory ordering enum.
 
 ### 4.1 — Type family
 
@@ -213,21 +214,21 @@ Atomic<Trilean>     // logic atomic (3-state)
 Atomic<Pointer>     // for raw_memory capability — kernel only
 ```
 
-Composite types (struct, Vector, Outcome) **không** atomic-able trực tiếp. User wrap trong Mutex hoặc design lock-free DS.
+Composite types (struct, Vector, Outcome) **cannot** be directly made atomic. Users must wrap them in a `Mutex` or design a lock-free data structure.
 
 ### 4.2 — Memory ordering
 
-3 levels (mapping hardware concepts):
+3 levels (mapping to hardware concepts):
 
-| Triết | C++ equivalent | Hardware semantics |
+| Triet | C++ equivalent | Hardware semantics |
 |---|---|---|
 | `Ordering.Relaxed` | `memory_order_relaxed` | No synchronization, atomic only |
 | `Ordering.Synchronized` | `memory_order_acq_rel` | Acquire on load, Release on store |
-| `Ordering.Strict` | `memory_order_seq_cst` | Total order across all threads |
+| `Ordering.Strict` | `int memory_order_seq_cst` | Total order across all threads |
 
-5-level C++ model (Relaxed/Consume/Acquire/Release/AcqRel/SeqCst) giảm xuống 3 — đủ cho 95% use case. Kernel writer cần Consume riêng → capability `dev::raw_memory` mở quyền dùng raw hardware intrinsics.
+The 5-level C++ model (Relaxed/Consume/Acquire/Release/AcqRel/SeqCst) is reduced to 3 — sufficient for 95% of use cases. Kernel writers requiring `Consume` can use the `dev::raw_memory` capability to access raw hardware intrinsics.
 
-**Tại sao 3 thay vì 5?** Brand-fit ternary identity. Trade-off: Consume + Acquire merged (Consume rarely useful in practice — most compilers compile it as Acquire anyway).
+**Why 3 instead of 5?** Aligns with ternary brand identity. Trade-off: `Consume` + `Acquire` are merged (as `Consume` is rarely useful in practice — most compilers treat it as `Acquire` anyway).
 
 ### 4.3 — API surface
 
@@ -248,7 +249,7 @@ public function Atomic<T>.compare_exchange(
 ) -> T~CompareExchangeFailed
 ```
 
-Note: `Atomic<T>` itself **always Send** (per §2.1 table). Cho phép share atomic handle giữa threads — đó là toàn bộ điểm của atomic.
+Note: `Atomic<T>` itself is **always Send** (per §2.1 table). This allows sharing atomic handles between threads — which is the entire purpose of atomics.
 
 ### 4.4 — E2530 InvalidAtomicOrdering
 
@@ -256,7 +257,7 @@ Note: `Atomic<T>` itself **always Send** (per §2.1 table). Cho phép share atom
 E2530 InvalidAtomicOrdering
     Atomic operation `store` with `Ordering.Relaxed` is unsafe when the
     store publishes data accessed by other threads. Use `Ordering.Synchronized`
-    (Release) or `Ordering.Strict` (SeqCst).
+    (Release) or `int Ordering.Strict` (SeqCst).
     
     --> src/lockfree.tri:42:5
        |
@@ -273,27 +274,27 @@ E2530 InvalidAtomicOrdering
     Change `Ordering.Relaxed` to `Ordering.Strict`
 ```
 
-(Note: chi tiết khi nào E2530 fires sẽ design ở ADR-0028 — quá phức tạp cho ADR-0026 v2.)
+(Note: The specific conditions for when E2530 fires will be designed in ADR-0028 — too complex for ADR-0026 v2.)
 
 ---
 
 ## §5 — Capability Gates
 
-**Lock:** Mọi access tới thread primitives qua capability declared trong `dao.package`. Audit-friendly per [ADR-0018](0018-capability-loader-semantics.md).
+**Lock:** All access to thread primitives must be via a capability declared in `dao.package`. Audit-friendly per [ADR-0018](0018-capability-loader-semantics.md).
 
-### 5.1 — Capability inventory cho concurrency
+### 5.1 — Capability inventory for concurrency
 
-| Capability | Cho phép | Audience |
+| Capability | Allows | Audience |
 |---|---|---|
-| `sys::raw_thread` | OS thread creation, syscall wrapper (clone, pthread_create) | Kernel/embedded |
-| `sys::atomic` | Atomic primitive operations với non-default ordering | Lock-free authors |
-| `dev::ffi` | Call C concurrency APIs (pthread, semaphore, condvar) | FFI bindings |
-| `dev::raw_memory` | Raw pointer arithmetic, bypass `&+` tracking | Kernel-level shared state |
-| `dev::reinterpret` | Bit-cast giữa atomic and non-atomic | Niche kernel work |
+| `sys::raw_thread` | OS thread creation, syscall wrappers (clone, pthread_create) | Kernel/embedded |
+| `sys::atomic` | Atomic primitive operations with non-default ordering | Lock-free authors |
+| `dev::ffi` | Calling C concurrency APIs (pthread, semaphore, condvar) | FFI bindings |
+| `dev::raw_memory` | Raw pointer arithmetic, bypassing `&+` tracking | Kernel-level shared state |
+| `dev::reinterpret` | Bit-casting between atomic and non-atomic types | Niche kernel work |
 
-Stdlib `std.concurrency.green` declare `sys::raw_thread` capability internally. User app code dùng stdlib **không cần** declare capability — capability boundary là tại stdlib level.
+The stdlib `std.concurrency.green` declares the `sys::raw_thread` capability internally. User application code using the stdlib **does not need** to declare the capability — the capability boundary exists at the stdlib level.
 
-### 5.2 — Application code (usr::) doesn't see raw thread
+### 5.2 — Application code (usr::) does not see raw thread
 
 ```triet
 // dao.package — NO capabilities needed
@@ -321,7 +322,7 @@ function load_users(ids: &0 Vector<UserId>) -> Vector<User> = {
 capabilities {
     sys::raw_thread: grant
     dev::ffi: grant
-    sys::atomic: grant
+ast   sys::atomic: grant
 }
 
 module sys.kernel.driver.net
@@ -336,42 +337,42 @@ public function spawn_kthread<F: Send>(
 }
 ```
 
-Capability `sys::raw_thread` chỉ cấp khi `dao.package` declare. Auditor đọc 1 file = biết module nào touch thread primitives.
+The `sys::raw_thread` capability is only granted when `dao.package` declares it. An auditor reading a single file can identify which modules touch thread primitives.
 
 ---
 
-## §6 — Refuse List (NO scheduler keywords in core)
+## §6 — Rejected Alternatives (NO scheduler keywords in core)
 
-**Lock:** Các keyword sau **không có** trong Triết core language. Bất kỳ ai muốn semantics tương đương phải implement trong stdlib hoặc external library.
+**Lock:** The following keywords **do not exist** in the Triet core language. Anyone requiring equivalent semantics must implement them in the stdlib or an external library.
 
-| Keyword | Lý do refuse | Alternative |
+| Keyword | Reason for Refusal | Alternative |
 |---|---|---|
-| `async` | Viral coloring problem | Functions stay functions (uniform color) |
-| `await` | Same as `async` | Block naturally (runtime handles) |
-| `spawn` | Assumes runtime | stdlib function: `std.concurrency.green.spawn(...)` |
-| `parallel { }` | Assumes scheduler | stdlib function: `std.concurrency.scope.run(\|s\| { ... })` |
-| `actor` | Assumes mailbox runtime | stdlib struct: `std.concurrency.actor.Actor<T>` |
-| `receive` | Same as `actor` | Method on Actor type |
-| `select` | Assumes specific channel impl | stdlib function: `std.concurrency.channel.select(...)` |
-| `yield` (for coroutine) | Assumes coroutine runtime | Generators built on stdlib |
-| `go` (Go-style) | Assumes goroutine runtime | Same as `spawn` |
+| `async` | Viral coloring problem | Functions remain functions (uniform color) |
+| `await` | Same as `async` | Block naturally (runtime handles it) |
+| `spawn` | Assumes a runtime | stdlib function: `std.concurrency.green.spawn(...)` |
+| `parallel { }` | Assumes a scheduler | stdlib function: `std.concurrency.scope.run(\|s\| { ... })` |
+| `actor` | Assumes a mailbox runtime | stdlib struct: `std.concurrency.actor.Actor<T>` |
+| `receive` | Same as `actor` | Method on the `Actor` type |
+| `select` | Assumes a specific channel implementation | stdlib function: `std.concurrency.channel.select(...)` |
+| `yield` (for coroutine) | Assumes a coroutine runtime | Generators built on stdlib |
+| `go` (Go-style) | Assumes a goroutine runtime | Same as `spawn` |
 
-`actor`/`spawn`/`send`/`receive` xuất hiện trong code Triết = identifier hoặc function/method name từ stdlib, **không phải language keyword**.
+`actor`/`spawn`/`send`/`receive` appearing in Triet code are identifiers or function/method names from the stdlib, **not language keywords**.
 
-### 6.1 — Tại sao refuse cứng thay vì optional keyword
+### 6.1 — Rationale for hard refusal vs. optional keywords
 
-Optional keyword (chỉ enable khi có `#![feature(async)]`) bị refuse vì:
+Optional keywords (enabled only via `#![feature(async)]`) were refused because:
 
-1. **Brand consistency:** Triết là 1 ngôn ngữ, không phải feature soup
-2. **AI-friendly:** ít concept hơn = AI dễ generate đúng
-3. **Kernel writability:** keyword nào cũng có hidden runtime assumption
-4. **Long-term simplicity:** mỗi feature compiler không có là 1 feature không cần document/maintain
+1. **Brand consistency:** Triet is a language, not a "feature soup."
+2. **AI-friendly:** Fewer concepts mean AI can generate correct code more easily.
+3. **Kernel writability:** Every keyword carries a hidden runtime assumption.
+4. **Long-term simplicity:** Every feature the compiler does *not* have is a feature that does not need to be documented or maintained.
 
 ---
 
-## §7 — Memory Layout (ObjectHeader Reuse)
+ $\text{§7 — Memory Layout (ObjectHeader Reuse)}$
 
-**Lock:** Mọi heap allocation trên binary target có 8-byte ObjectHeader [refcount: u32 | reserved: u32] per [ADR-0022 §4.4 + crate `triet-core::memory`]. Refcount tự động atomic increment/decrement tại Send boundary cho `&+ T` frozen.
+**Lock:** Every heap allocation on a binary target contains an 8-byte `ObjectHeader` [`refcount: u32 | reserved: u32`] per [ADR-0022 §4.4 + crate `triet-core::memory`]. The refcount is automatically atomically incremented/decremented at the `Send` boundary for `&+ T` (frozen).
 
 ### 7.1 — Binary target
 
@@ -380,7 +381,7 @@ HEADER (8 bytes)        BODY (sizeof(T))
 [ refcount | reserved ] [ user fields ... ]
 ```
 
-Atomic ops (LL/SC ARM, LOCK XADD x86) cost ~5-15 ns. Skip cho static / frozen-forever via sentinels (u32::MAX / u32::MAX-1) — xem `triet-core::memory`.
+Atomic ops (LL/SC ARM, LOCK XADD x86) cost ~5-15 ns. We skip this for static / frozen-forever objects via sentinels (`u32::MAX` / `u32::MAX-1`) — see `triet-core::memory`.
 
 ### 7.2 — Ternary native target (v∞)
 
@@ -391,78 +392,78 @@ HEADER (54 trit)                BODY
 [ refcount: Integer | reserved: Integer ] [ user fields ... ]
 ```
 
-Negative sentinels: -1 = static, -2 = frozen forever. Atomic op kiểm tra `current < 0` skip refcount entirely.
+Negative sentinels: `-1` = static, `-2` = frozen forever. Atomic ops check `current < 0` to skip the refcount entirely.
 
-880× capacity vs binary tại same word-alignment (3²⁶ ≈ 3.8 × 10¹² vs 2³² ≈ 4.3 × 10⁹).
+This provides 880× capacity vs. binary at the same word-alignment ($3^{26} \approx 3.8 \times 10^{12}$ vs. $2^{32} \approx 4.3 \times 10^9$).
 
 ### 7.3 — Layout invariant across all schedulers
 
-Layout này **không phụ thuộc** scheduler. Green-thread scheduler, OS-thread scheduler, kernel scheduler đều thấy cùng ObjectHeader. Cross-scheduler interop (vd: app thread send frozen owner to kernel thread) hoạt động đúng vì layout invariant.
+This layout **does not depend** on the scheduler. Green-thread schedulers, OS-thread schedulers, and kernel schedulers all see the same `ObjectHeader`. Cross-scheduler interoperability (e.g., an app thread sending a frozen owner to a kernel thread) works correctly because the layout is invariant.
 
 ---
 
 ## §8 — BYOS Philosophy
 
-**Lock:** Triết core language **không mandate** scheduler. Cung cấp primitives, không cung cấp policy.
+**Lock:** The Triet core language **does not mandate** a scheduler. It provides primitives, not policy.
 
 ### 8.1 — 3-tier architecture
 
 | Tier | Audience | Provides |
 |---|---|---|
 | **Core language** | Compiler + runtime authors | Send rules + Atomic + capability + linear ownership |
-| **stdlib `std.concurrency.*`** | usr:: app developers | Reference scheduler (green-thread) + channels + scope |
-| **Kernel/embedded** | sys::/dev:: developers | Custom scheduler (Linux kthread, RTOS, interrupt handler) |
+| **stdlib `std.concurrency.*`** | `usr::` app developers | Reference scheduler (green-thread) + channels + scope |
+| **Kernel/embedded** | `sys::`/`dev::` developers | Custom scheduler (Linux kthread, RTOS, interrupt handler) |
 
-stdlib tier viết bằng Triết itself + dùng capability `sys::raw_thread`. Kernel tier bypass stdlib hoàn toàn, dùng raw capability + FFI.
+The stdlib tier is written in Triet itself and uses the `sys::raw_thread` capability. The kernel tier bypasses the stdlib entirely, using raw capabilities and FFI.
 
 ### 8.2 — Compile-time guarantees (universal)
 
-Bất kể scheduler nào, compiler enforce:
+Regardless of the scheduler, the compiler enforces:
 
-1. **No data race** — linear ownership (`&+` unique) + Send rules (cấm `&0`/`&-` cross-thread)
-2. **No use-after-free** — Send rules + lifetime tracking
-3. **Atomic ordering** — wrong ordering = E2530 (planned)
-4. **Capability audit** — mọi thread primitive declared explicitly
+1. **No data race** — linear ownership (`&+` is unique) + Send rules (prohibiting `&0`/`&-` cross-thread).
+2. **No use-after-free** — Send rules + lifetime tracking.
+3. **Atomic ordering** — incorrect ordering triggers E2530 (planned).
+4. **Capability audit** — every thread primitive is explicitly declared.
 
 ### 8.3 — Scheduler determines (runtime)
 
-- Thread creation cost (1KB green vs 8KB OS thread)
-- Scheduling policy (FIFO, priority, work-stealing, cooperative, preemptive)
-- Cancellation semantics
-- Channel buffer behavior
-- Memory allocator interaction
+- Thread creation cost (1KB green vs. 8KB OS thread).
+- Scheduling policy (FIFO, priority, work-stealing, cooperative, preemptive).
+- Cancellation semantics.
+- Channel buffer behavior.
+- Memory allocator interaction.
 
-### 8.4 — So sánh với Rust kernel work
+### 8.4 — Comparison with Rust kernel work
 
-| Aspect | Rust kernel | Triết v0.8 BYOS |
+| Aspect | Rust kernel | Triet v0.8 BYOS |
 |---|---|---|
-| async runtime | Refuse (chỉ embassy cho embedded) | Refuse (BYOS) |
+| async runtime | Refused (only Embassy for embedded) | Refused (BYAS) |
 | Thread primitives | Linux kernel C wrappers (kthread, workqueue) | Capability `sys::raw_thread` + `dev::ffi` |
-| Atomic primitives | `core::sync::atomic` | Triết core `Atomic<T>` family |
-| Race safety | Borrow check + `Send + Sync` traits | Linear ownership + Send rules (ADR-0026 §2) |
-| Custom scheduler | Bare metal scheduler implementations rare | Encouraged — share via stdlib alternatives |
+| Atomic primitives | `core::sync::atomic` | Triet core `Atomic<T>` family |
+| Race safety | Borrow checker + `Send + Sync` traits | Linear ownership + Send rules (ADR-0026 §2) |
+| Custom scheduler | Bare metal scheduler implementations are rare | Encouraged — share via stdlib alternatives |
 
-Triết đi xa hơn Rust: ngay cả `async`/`await` cũng không phải keyword. **App developer + kernel writer cùng dùng cú pháp Triết, khác nhau ở stdlib vs raw capability.**
+Triet goes further than Rust: even `async`/`await` are not keywords. **App developers and kernel writers both use Triet syntax; they differ only in the use of stdlib vs. raw capabilities.**
 
-### 8.5 — Trust + verify
+### 8.5 — Trust and Verification
 
-Triết **tin** kernel writer biết tốt hơn ngôn ngữ.
+Triet **trusts** that the kernel writer knows better than the language.
 
-- **Trust:** scheduler correctness (fairness, deadlock-freedom, priority logic)
-- **Verify:** memory safety + race-freedom (compile-time, từ ADR-0022/0025 + §2 này)
+- **Trust:** Scheduler correctness (fairness, deadlock-freedom, priority logic).
+- **Verify:** Memory safety + race-freedom (compile-time, via ADR-0022/0025 + §2 of this ADR).
 
-User có thể viết broken scheduler (vd: priority inversion bug), nhưng:
-- Send rules vẫn enforce → no data race regardless
-- Linear ownership vẫn enforce → no use-after-free
-- Capability `sys::raw_thread` là audit point
+A user can write a broken scheduler (e.g., a priority inversion bug), but:
+- Send rules are still enforced $\rightarrow$ no data race regardless.
+- Linear ownership is still enforced $\rightarrow$ no use-after-free.
+- The `sys::raw_thread` capability serves as the audit point.
 
-Đây là **đúng level of trust**: trust expert kernel writer, nhưng compiler vẫn enforce memory safety boundary.
+This is the **correct level of trust**: trust the expert kernel writer, but let the compiler enforce the memory safety boundary.
 
 ---
 
-## §9 — stdlib Reference (pointer, không spec ngữ nghĩa)
+## §9 — stdlib Reference (pointer, not semantic spec)
 
-**Lock:** stdlib `std.concurrency.*` là **reference implementation**, không phải language spec. Người dùng có thể replace bằng custom scheduler.
+**Lock:** The stdlib `std.concurrency.*` is a **reference implementation**, not a language specification. Users may replace it with a custom scheduler.
 
 ### 9.1 — Planned stdlib modules (v0.9+)
 
@@ -470,22 +471,22 @@ User có thể viết broken scheduler (vd: priority inversion bug), nhưng:
 |---|---|
 | `std.concurrency.green` | M:N green thread scheduler (Go-style) |
 | `std.concurrency.channel` | Typed channels (bounded/unbounded MPMC) |
-| `std.concurrency.scope` | Structured concurrency wrapper (no goroutine leak) |
+| `std.concurrency.scope` | Structured concurrency wrapper (no goroutine leaks) |
 | `std.concurrency.actor` | Actor pattern (struct + message-passing API) |
-| `std.concurrency.mutex` | `Mutex<T>` + `RwLock<T>` built on Atomic |
+| `std.concurrency.mutex` | `Mutex<T>` + `RwLock<T>` built on Atomics |
 | `std.concurrency.future` | Future abstraction (NOT tied to async/await) |
 
-Implementation defer post-v0.8. v0.8 chỉ ship core primitives (§2 Send rules + §4 Atomic placeholder + §5 capabilities).
+Implementation is deferred until post-v0.8. v0.8 only ships core primitives (§2 Send rules + §4 Atomic placeholder + §5 capabilities).
 
 ### 9.2 — Alternative scheduler examples
 
-Cộng đồng có thể publish:
-- `triet-rtos` — RTOS-style scheduler (priority-based preemptive)
-- `triet-embassy` — embedded async-style (no heap, no thread)
-- `triet-linux` — Linux kernel module wrapper (kthread + workqueue)
-- `triet-uring` — io_uring-based async I/O
+The community may publish:
+- `triet-rtos` — RTOS-style scheduler (priority-based preemptive).
+- `triet-embassy` — embedded async-style (no heap, no thread).
+- `triet-linux` — Linux kernel module wrapper (kthread + workqueue).
+- `triet-uring` — io_uring-based async I/O.
 
-Mỗi alternative là crate-pack độc lập, dùng cùng Send rules + Atomic + capability. Cross-crate-pack interop nhờ layout invariant (§7).
+Each alternative is an independent crate-pack, using the same Send rules, Atomics, and capabilities. Cross-crate-pack interoperability is enabled by the layout invariant (§7).
 
 ---
 
@@ -493,30 +494,30 @@ Mỗi alternative là crate-pack độc lập, dùng cùng Send rules + Atomic +
 
 | Version | Scope |
 |---|---|
-| **v0.8** | §2 Send rules + §4 Atomic placeholder (type signatures only) + §5 capabilities declared (no enforcement). E2500 NotSendCannotCrossBoundary fires for obvious `&0`/`&-` violations. |
+| **v0.8** | §2 Send rules + §4 Atomic placeholder (type signatures only) + §5 capabilities declared (no enforcement). E2500 `NotSendCannotCrossBoundary` fires for obvious `&0`/`&-` violations. |
 | **v0.9** | Full Send derivation including generics (monomorphization-time check). E2510 scope-ref leakage. E2520 mutable-share anti-pattern. Atomic primitive types implemented (ADR-0028). |
 | **v0.10** | stdlib `std.concurrency.*` reference implementation (green-thread scheduler + channels + scope). E2530 atomic ordering. |
 | **v1.0** | Stable concurrency primitives API. Multiple scheduler alternatives encouraged. |
-| **post-v1.0** | Kernel-specific examples (Triết-on-Linux as kernel module proof of concept). |
+| **post-v1.0** | Kernel-specific examples (Triet-on-Linux as a kernel module proof of concept). |
 
-v0.8 ưu tiên **lock semantic** vào sớm, defer **enforcement implementation** sang v0.9+. Send rules là gate quan trọng nhất — verify ngay v0.8.
+v0.8 prioritizes bringing **semantic locks** in early, deferring **enforcement implementation** to v0.9+. Send rules are the most critical gate — they must be verified in v0.8.
 
 ---
 
-## §11 — Out of Scope (defer riêng ADRs)
+## §11 — Out of Scope (deferred to separate ADRs)
 
-- **Atomic primitive design chi tiết** — ADR-0028 (TBD)
+- **Detailed Atomic primitive design** — ADR-0028 (TBD)
 - **`std.concurrency.green` scheduler implementation** — stdlib doc (post-v0.9)
 - **`std.concurrency.channel` semantics** — stdlib doc (post-v0.9)
 - **Actor pattern as stdlib** — stdlib doc (post-v0.9)
-- **Cancellation propagation mechanism** — depends on scheduler (per-scheduler choice)
+- **Cancellation propagation mechanism** — depends on the scheduler (per-scheduler choice)
 - **Distributed actors / cross-node** — post-v1.0
-- **io_uring / epoll integration** — alternative scheduler authors
+- **io_uring / epoll integration** — left to alternative scheduler authors
 - **Structured concurrency formal model** — stdlib doc
 
 ---
 
-## §12 — Tham chiếu
+## §12 — References
 
 - [ADR-0022 — Trit-Balanced Ownership](0022-trit-balanced-ownership.md) (parent — 5 reference forms, linear ownership)
 - [ADR-0025 — Borrow Checker Rules](0025-borrow-checker-rules.md) (sibling — intra-context enforcement, E2420 use-after-move)
@@ -524,8 +525,8 @@ v0.8 ưu tiên **lock semantic** vào sớm, defer **enforcement implementation*
 - [ADR-0018 — Capability loader semantics](0018-capability-loader-semantics.md) (dao.package declaration model)
 - [ADR-0020 — Outcome error handling](0020-outcome-error-handling.md) (`T?` for thread handle results)
 - [VISION §3.5 — Capability + namespace](../../VISION.md)
-- [VISION §6 — Refuse over guess](../../VISION.md) (philosophical alignment with §6 refuse list)
-- [ROADMAP §v0.8 — Concurrency Foundation](../../ROADMAP.md) (this ADR foundational for v0.8 phase)
-- [CLAUDE.md — Error code namespace](../../CLAUDE.md) (cập nhật `triet::concurrency::E25XX` khi ADR land)
+- [VISION §6 — Refuse over guess](../../VISION.md) (philosophical alignment with §6 refused list)
+- [ROADMAP §v0.8 — Concurrency Foundation](../../ROADMAP.md) (this ADR is foundational for v0.8 phase)
+- [CLAUDE.md — Error code namespace](../../CLAUDE.md) (update `triet::concurrency::E25XX` when ADR lands)
 - Future ADR-0028 — Atomic Primitives (TBD)
 - `triet-core::memory::ObjectHeader` (crate, layout per §7)
