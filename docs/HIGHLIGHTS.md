@@ -4,6 +4,7 @@
 > trình viên được lợi gì?** — không phải lý thuyết compiler, mà là trải nghiệm
 > thực tế.
 >
+> **Tác giả:** Giang Hoàng ([@gianglaodai](https://github.com/gianglaodai))  
 > Trung thực về trạng thái: mỗi điểm được gắn nhãn
 > **✅ Đã chạy** (kiểm chứng được hôm nay bằng `triet-driver`) hoặc
 > **🎯 Định hướng** (đã thiết kế / từng chứng minh ở compiler v0.2–v0.10, đang

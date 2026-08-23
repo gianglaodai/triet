@@ -166,6 +166,11 @@ cargo clippy --workspace --all-targets   # lint (strict)
 cargo fmt --all                          # format
 ```
 
+## Author
+
+Created and architected by **Giang Hoàng** ([@gianglaodai](https://github.com/gianglaodai)).
+
 ## License
 
 Dual-licensed under [MIT](LICENSE-MIT) or [Apache-2.0](LICENSE-APACHE).
+Copyright (c) 2026 Giang Hoàng.

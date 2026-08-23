@@ -21,8 +21,8 @@ version = "0.1.0-dev"
 edition = "2024"
 rust-version = "1.93"
 license = "MIT OR Apache-2.0"
-authors = ["Giang Hoàng"]
-repository = "https://github.com/gianghoang/triet"
+authors = ["Giang Hoàng <gianglaodai@github>"]
+repository = "https://github.com/gianglaodai/triet"
 description = "Triết — a balanced-ternary-first programming language (rewrite)"
 
 [workspace.dependencies]

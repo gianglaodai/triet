@@ -6,6 +6,7 @@
 > trạng thái compiler. (Semantics được chốt qua các phase v0.2–v0.10 của
 > compiler cũ và KHÔNG đổi trong cuộc rewrite 2026-06-04; mức độ compiler
 > hiện hành đã implement tới đâu: xem `CLAUDE.md` §Maturity + `TODO.md`.)
+> Tác giả & Kiến trúc sư: **Giang Hoàng** ([@gianglaodai](https://github.com/gianglaodai))  
 > Tầm nhìn dài hạn ở [VISION.md](VISION.md), lộ trình ở [ROADMAP.md](ROADMAP.md), quyết định kiến trúc ở [docs/decisions/](docs/decisions/).
 
 ---
