@@ -1,186 +1,170 @@
-# Triết (哲)
+# Triết
 
-> A **balanced-ternary-first** programming language with first-class three-valued logic, deterministic memory management, and a native Cranelift compiler backend.
+> A **balanced-ternary-first** programming language, inspired by the Soviet
+> Setun computer (1958), implemented in Rust.
 
-Triết (Sino-Vietnamese 哲, *"philosophy"*) uses the balanced ternary arithmetic system `{-1, 0, +1}` and three-valued Łukasiewicz Ł3 logic as its foundation. Its design anchors on **internal coherence**—a single unified Ł3 algebra across logic and data absence—combined with a strict, panic-free compiler architecture.
+Triết (Sino-Vietnamese 哲, "philosophy") uses the balanced ternary system
+`{-1, 0, +1}` as its arithmetic foundation, combined with three-valued
+Łukasiewicz Ł3 logic for reasoning under uncertainty. Its value is anchored in
+**coherence** — a single Ł3 algebra across null / logic / capability — not in any
+AI hypothesis (the "AI-first" label was removed 2026-06-22; see [VISION.md](VISION.md) §5).
+The long-term aim keeps the door open to an OS-capable language.
 
----
+## Status — ground-up rewrite in progress (v0.1.0-dev)
 
-## Status — Ground-up Rewrite in Progress (v0.1.0-dev)
+> **Read this honestly.** A full compiler shipped v0.2–v0.10 (bytecode VM +
+> tree-walking interpreter + a delegate-to-VM Cranelift JIT + a self-hosting
+> compiler, ~1637 tests). On **2026-06-04 that backend was deleted** and the
+> project restarted from the backend up with a clean architecture. The current
+> compiler is **young**: do not mistake it for the shipped v0.10.
 
-> **Engineering Reality:** A full compiler shipped v0.2–v0.10. On **2026-06-04, the old backend was deleted** to rebuild a clean, robust architecture from the ground up (`source → AST → MIR → NLL Borrowck → Cranelift JIT`). The compiler is young and strictly disciplined; we document only what is proven by working tests.
+**What works today** (end-to-end, `source → MIR → Cranelift → native code`):
+- **Scalars** — balanced-ternary arithmetic (range-enforced, trap-on-overflow per
+  ADR-0044), comparisons, Łukasiewicz Ł3 / Kleene K3 logic.
+- **Control flow & loops** — `if`/`else`, `if?` fallback, `while`, `loop`/`break`/`continue`,
+  `for` in range (`0..N`), recursion, cross-function calls, shim calls (`pow`).
+- **Aggregates & ABI** — `struct` (StackSlot + sret ABI + Copy-In parameter passing per ADR-0066),
+  `enum` (discriminant switch), and **heap types** `String` / `Vector<T>` / `HashMap<K,V>`
+  (move-only, inline drop-glue, content comparison `==` / `!=`).
+- **Collections & Iteration** — `Vector` / `HashMap` operations, `for item in v.drain()`
+  (PA-2 move-out), `!!` ForceUnwrap, `&0 mutable` borrows.
+- **Nullable `T?`** — 1-trit sentinel, Elvis `?:`, `match ~+ / ~0`, including
+  **nullable aggregates** `Struct?` / `Enum?` (ADR-0065) and `E1055` nested-nullable fence (ADR-0088).
+- **`match` on literals** — Integer / Trilean / Trit / Tryte / Long,
+  exhaustiveness-checked (ADR-0064); trait static dispatch (Tier 1, ADR-0061);
+  `Outcome` `T~E` / `T?~E` error handling.
+- **Heap-in-struct (FLAT, ADR-0066 Lát 1)** — a struct holding a
+  `String`/`Vector`/`HashMap` field: construct, move (function boundary +
+  assignment), recursive-walk drop-glue, tombstone-on-move.
+- **NLL borrow checker** — E2420 (use-after-move) / E2440 (aliasing) / E2450
+  (drop-while-borrowed) / E1058 (reference operand fence).
+- **Standard I/O** — `print` / `println` native output via JIT shims (ADR-0087).
 
-### ✅ What Works Today (End-to-End Native Execution)
+**Not yet rebuilt:** nested/recursive heap-in-aggregate (`Struct { inner: HasHeap }`)
+and enum-payload heap (ADR-0066 Lát 2), partial field-move (`let s = p.name`), the
+capability runtime (ADR-0016/0017/0018 — strategic priority after the heap-in-struct
+campaign), the self-hosting compiler, the AOT cache, `triet-pack` wiring. The
+**language semantics are unchanged** — the rewrite swaps compiler internals, not the
+language (see the ADRs).
 
-- **Balanced-Ternary Arithmetic:** `Trit`, `Tryte`, `Integer` (27-trit), and `Long` (81-trit) with symmetric ranges and range-enforced trap-on-overflow (ADR-0044).
-- **Three-Valued Logic (3VL):** `Trilean` with native Łukasiewicz Ł3 and Kleene K3 operators (`&&`, `||`, `!`, `^`, `=>`, `<=>`).
-- **Compile-Time Refinement (`Trilean!`):** `if cond` strictly requires `Trilean!` (statically proven $\neq Unknown$), catching unhandled ambiguity at compile time with **`E1033`** (ADR-0021). `if?` provides explicit fallback.
-- **Native Nullable `T?`:** 1-trit sentinel representation (`i64::MIN`), Elvis operator `?:`, and exhaustive `match ~+ / ~0` (including `Struct?` and `Enum?` per ADR-0041/0065).
-- **Control Flow:** `if`/`else`, `while`, recursion, cross-function calls, and external math shims (`pow`).
-- **Aggregates & ABI:** `struct` (flat StackSlot + SRet convention per ADR-0066), `enum` (discriminant switch).
-- **Heap Types:** `String`, `Vector<T>`, and `HashMap<K, V>` with move-only semantics and inline drop glue.
-- **Flat Heap-in-Struct:** Structs containing heap fields (`String`/`Vector`/`HashMap`) with recursive drop-glue and move tombstones (ADR-0066).
-- **NLL Borrow Checker:** Flow-sensitive dataflow borrow checking enforcing use-after-move (E2420), aliasing exclusivity (E2440), and drop-while-borrowed (E2450).
-- **Native Output:** Cranelift JIT printing via ABI shims (ADR-0087).
-
-### ⏳ Not Yet Rebuilt / In Progress
-
-- Nested/recursive heap-in-aggregate (`Struct { inner: HasHeap }`, ADR-0066 Lát 2).
-- Partial field moves (`let s = p.name`).
-- Capability loader runtime (ADR-0016/0017/0018).
-- Freestanding / no-std AOT binary compiler.
-- Package bundling and linker (`triet-pack` wiring).
-
----
-
-## Language Highlights & Verified Examples
-
-All code examples below reflect verified behavior currently running in the test harness.
-
-### 1. Reasoning Under Uncertainty with Ł3 Logic
-```triet
-// Logic under uncertainty — Łukasiewicz Ł3 algebra
-function risk_assessment(fever: Trilean, rash: Trilean, vaccinated: Trilean) -> Trilean {
-    let symptoms = fever && rash;
-    // If symptoms are True but vaccination status is Unknown -> Result is Unknown
-    return symptoms && !vaccinated;
-}
-
-function main() -> Integer {
-    let sensor_a: Trilean = true;
-    let sensor_b: Trilean = unknown;
-    
-    let risk: Trilean = risk_assessment(sensor_a, sensor_b, false);
-    
-    // `if?` provides safe fallback for unrefined Trilean values
-    if? risk {
-        return 1; // High risk
-    } else {
-        return 0; // Low risk or Indeterminate
-    }
-}
-```
-
-### 2. Native Nullable `T?` & Elvis Operator
-```triet
-function get_discount(age: Integer?) -> Integer {
-    // Widening from Integer to Integer? is implicit and zero-cost
-    let safe_age: Integer = age ?: 0; // Elvis operator: unwrap or fallback to 0
-    
-    if safe_age >= 65 {
-        return 20;
-    }
-    return 0;
-}
-
-function match_discount(age: Integer?) -> Integer {
-    // Exhaustive pattern matching on Nullable
-    return match age {
-        ~+ val => if val >= 65 { 20 } else { 0 },
-        ~0     => 5, // Missing age default
-    };
-}
-```
-
-### 3. Balanced-Ternary Arithmetic & Symmetric Overflow Trap
-```triet
-function main() -> Integer {
-    let a: Integer = 1000000;
-    let b: Integer = 2;
-    // Arithmetic operations trap immediately on overflow instead of silent wrapping
-    return a * b;
-}
-```
-
----
-
-## Pipeline Architecture
-
-```text
-.tri Source
-    │
-    ├──► triet-lexer       Tokens (logos-based lexer)
-    ├──► triet-parser      AST (recursive descent + Pratt expressions)
-    ├──► triet-modules     Module loader & explicit name resolution
-    ├──► triet-typecheck   Type checking, Ł3 lattice & refinement inference
-    │
-    ├──► triet-lower       AST → Flat MIR Lowering (panic-free Result)
-    ├──► triet-mir         Flat non-nested Control Flow Graph (CFG) + Verifier
-    ├──► triet-borrowck    NLL dataflow borrow checker (Affine moves & lifetimes)
-    │
-    ├──► triet-jit         Cranelift native machine code generator
-    └──► triet-driver      Unified CLI pipeline runner (check / run)
-```
-
----
-
-## Workspace Layout
-
-```text
-triet/
-├── crates/
-│   ├── triet-core/        # Trit, Tryte, Integer, Long & balanced-ternary arithmetic
-│   ├── triet-logic/       # Trilean, Łukasiewicz Ł3 & Kleene K3 algebra
-│   ├── triet-syntax/      # AST definitions & schema-generated AST arena
-│   ├── triet-lexer/       # Tokenizer & lexing pipeline
-│   ├── triet-parser/      # Recursive descent parser
-│   ├── triet-modules/     # Hierarchical module resolution
-│   ├── triet-typecheck/   # Type checker & refinement inference
-│   ├── triet-mir/         # Flat MIR representation & verifier
-│   ├── triet-lower/       # AST-to-MIR lowering engine
-│   ├── triet-borrowck/    # Non-Lexical Lifetime (NLL) borrow checker
-│   ├── triet-jit/         # Cranelift native code generator
-│   ├── triet-driver/      # Pipeline CLI driver (`triet-driver`)
-│   └── triet-pack/        # Package bundling & linker
-├── spec/                  # Formal language schema & phase plans
-├── docs/
-│   ├── decisions/         # Architecture Decision Records (ADRs)
-│   ├── proposals/         # Pre-ADR design explorations & RFCs
-│   ├── HIGHLIGHTS.md      # Verified language highlights & fixtures
-│   └── ARCHIVE.md         # History of the deleted v0.2–v0.10 compiler
-├── SPEC.md                # Language specification & semantics
-└── VISION.md              # Long-term design north star & invariants
-```
-
----
-
-## Quick Start
-
-### Prerequisites
-- Stable Rust toolchain via `rustup`.
-
-### Build & Run
 ```bash
-# Build the workspace
 cargo build --release
 
-# Run the test suite
-cargo test --workspace
-
-# Execute a program via the Cranelift JIT driver
-./target/release/triet-driver run examples/hello_jit.tri
+# The driver binary is `triet-driver` (the old `dao` CLI was deleted).
+# Scalars, structs, enums, String/Vector/HashMap, nullable T?, and match all run;
+# nested/recursive heap-in-aggregate is the next frontier (ADR-0066 Lát 2).
+./target/release/triet-driver run examples/hello_jit.tri        # → 42
+./target/release/triet-driver run examples/test_pow.tri         # → 1024
+./target/release/triet-driver run examples/test_pow_complex.tri # → 1267
+./target/release/triet-driver examples/test_borrow.tri          # → E2440 borrow error
 ```
 
----
+## Pipeline
 
-## Design Principles
+```
+.tri source
+  ├─ triet-lexer        tokens (logos-based)            [reused]
+  ├─ triet-parser       AST (recursive descent + Pratt) [reused]
+  ├─ triet-modules      name resolution                 [reused]
+  ├─ triet-typecheck    type errors (blocking)          [reused]
+  ├─ triet-lower        AST → MIR (Result, no panics)   [new]
+  ├─ triet-mir          flat non-nested IR + CFG + verifier [new]
+  ├─ triet-borrowck     NLL dataflow borrow checker     [new]
+  ├─ triet-jit          Cranelift native code (Bậc A: single-i64 ABI) [new]
+  └─ triet-driver       pipeline binary (check / run)   [new]
+```
 
-1. **Explicit > Implicit:** Glob imports, default-public exports, and ambient capabilities are rejected.
-2. **Refuse over Guess:** If the compiler is not 100% certain, it emits a clear diagnostic rather than guessing silently.
-3. **Coherence over Novelty:** A single Ł3 algebra runs consistently across logic, data absence, and error handling.
-4. **Stability over Speed:** Every architectural decision is recorded in an ADR with explicit verification gates.
+## Design philosophy
 
----
+1. **Regular & low-ambiguity** — syntax and semantics tuned for correctness and
+   minimal ambiguity (explicit > implicit, regular > exception, keyword over
+   symbol when ambiguous). Any benefit to LLM codegen is an unmeasured
+   side-effect, never a claim (see [VISION.md](VISION.md) §5).
+2. **Ternary is first-class** — `Trit`, balanced-ternary arithmetic, and
+   Łukasiewicz logic are primitive types and operators, not library add-ons.
+3. **Stability over speed** — every architectural decision has an ADR; phases
+   close on explicit gates (5–10 year horizon).
+4. **IR ≠ runtime** — the Triết IR is a spec; the backend (JIT/AOT) is an
+   implementation detail.
+
+## Language examples
+
+The language itself is unchanged from the shipped spec. (Some of these use
+aggregate types the current driver does not yet lower — they illustrate
+*syntax*, not what runs today.)
+
+```triet
+// Reasoning with missing data — the power of Łukasiewicz Ł3
+function risk_measles(fever: Trilean, rash: Trilean, vaccinated: Trilean) -> Trilean {
+    let symptoms = fever && rash
+    symptoms && !vaccinated
+    // If vaccinated is unknown → the result is unknown ("not enough information")
+}
+
+// Module system — Python-style imports, verbose keywords
+from std.io import println
+from crate.gates import nand_gate, xor_gate
+
+public function half_adder(a: Trit, b: Trit) -> (Trit, Trit) =
+    (xor_gate(a, b), nand_gate(a, b))
+```
+
+## Workspace
+
+13 crates:
+
+```
+triet/
+├── crates/
+│   ├── triet-core/        # Trit/Tryte/Integer/Long + arithmetic   [foundation]
+│   ├── triet-logic/       # Trilean + Łukasiewicz Ł3 + Kleene K3    [foundation]
+│   ├── triet-syntax/      # AST types + arena + schema-generated    [foundation]
+│   ├── triet-lexer/       # Tokenizer (logos-based)                 [reused frontend]
+│   ├── triet-parser/      # Parser → AST                            [reused frontend]
+│   ├── triet-modules/     # Module loader + name resolver           [reused frontend]
+│   ├── triet-typecheck/   # Type checker + inference                [reused frontend]
+│   ├── triet-mir/         # Flat MIR + CFG + verifier               [new backend]
+│   ├── triet-lower/       # AST → MIR lowering                      [new backend]
+│   ├── triet-borrowck/    # NLL dataflow borrow checker             [new backend]
+│   ├── triet-jit/         # Cranelift native codegen                [new backend]
+│   ├── triet-driver/      # Pipeline binary                         [new backend]
+│   └── triet-pack/        # .khi packaging + linker                 [survives, unwired]
+├── examples/              # .tri programs (mix of new + stale VM-era fixtures)
+├── spec/                  # design authority: schema + phase plans
+│   ├── schema/triet-schema.yaml   # single source of truth for types/AST/ownership
+│   └── plans/                     # phase designs (rewrite Bậc A/B/C)
+├── docs/
+│   ├── decisions/         # 36 ADRs (language-semantics ones remain authoritative)
+│   ├── proposals/         # Pre-ADR design explorations & RFCs
+│   ├── HIGHLIGHTS.md      # Verified language highlights & fixtures
+│   └── ARCHIVE.md         # digest of the deleted v0.2–v0.10 compiler + ADR catalog
+├── SPEC.md                # language semantics (authoritative for the language)
+├── VISION.md              # 5 architectural pillars + OS-capable trajectory
+└── ROADMAP.md             # phase roadmap (being reconciled to the rewrite)
+```
+
+> `triet-ir`, `triet-interpreter`, `triet-bootstrap`, `triet-cli`, and the
+> `compiler/` self-host sources were **deleted** in the rewrite. Don't expect them.
 
 ## Documentation
 
-- [`SPEC.md`](SPEC.md) — Authoritative language specification and semantics.
-- [`VISION.md`](VISION.md) — Long-term design philosophy, constraints, and invariants.
-- [`docs/HIGHLIGHTS.md`](docs/HIGHLIGHTS.md) — Detailed language highlights backed by working fixtures.
-- [`docs/decisions/`](docs/decisions/) — Architectural Decision Records (ADRs).
-- [`docs/proposals/`](docs/proposals/) — Pre-ADR design explorations and RFCs.
+- [`SPEC.md`](SPEC.md) — language semantics (authoritative for the language).
+- [`VISION.md`](VISION.md) — long-term vision: 5 architectural pillars, OS-capable goal.
+- [`spec/`](spec/) — the rewrite's design authority (schema + phase plans).
+- [`docs/decisions/`](docs/decisions/) — ADRs; the language-semantics ones are still binding.
+- [`docs/proposals/`](docs/proposals/) — pre-ADR design explorations and RFCs.
+- [`docs/HIGHLIGHTS.md`](docs/HIGHLIGHTS.md) — verified language highlights & fixtures.
+- [`docs/ARCHIVE.md`](docs/ARCHIVE.md) — history of the deleted v0.2–v0.10 compiler.
 
----
+## Build
+
+```bash
+cargo build                              # debug
+cargo build --release                    # release
+cargo test --workspace                   # all tests
+cargo clippy --workspace --all-targets   # lint (strict)
+cargo fmt --all                          # format
+```
 
 ## License
 
