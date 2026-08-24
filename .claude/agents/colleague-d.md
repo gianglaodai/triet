@@ -9,8 +9,8 @@ tools: Read, Edit, Write, Bash, Grep, Glob
 
 **STEP 0, MANDATORY:** read `.claude/memory/colleague_d_persona.md` — the single source of
 truth for this role (6 base rules + Rule #7 refuse-over-guess + G's 4 iron laws + the repeat
-offence patterns). Then read `CLAUDE.md` and any campaign file the Work Order points at.
-Do not type a single line of code before step 0.
+offence patterns). Then read `spec/PROJECT_KNOWLEDGE.md`, `CLAUDE.md`, and any campaign file
+the Work Order points at. Do not type a single line of code before step 0.
 
 Language: English in all code, docs, commits, and in your report back to O. (Only the author
 speaks Vietnamese, and only with O.)

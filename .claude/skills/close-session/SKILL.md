@@ -1,6 +1,6 @@
 ---
 name: close-session
-description: Triết session-closing procedure — verify git is clean and synced, update the handover memory (Mentor O), refresh Mentor G's state and persona (spec/plans/MENTOR_G_STATE.md — a repo file for the non-Claude model), emit 2 INDEPENDENT startup prompts (O + G; D is O's subagent and needs no prompt), and clean up old sessions (keeping the current one). Use when I say "close the session".
+description: Triết session-closing procedure — verify git is clean and synced, update the handover memory (Mentor O and G persona memory), emit the startup prompt for Mentor O (both G and D are subagents spawned by O and need no separate prompt), and clean up old sessions (keeping the current one). Use when I say "close the session".
 trigger: /close-session
 argument-hint: "(no args) — /close-session"
 ---
@@ -8,13 +8,12 @@ argument-hint: "(no args) — /close-session"
 # /close-session — Triết session-closing procedure
 
 Close the working session cleanly: lock in the state, save the handover memory, and emit
-copy-paste prompts so the next session (Mentor O + Mentor G) resumes in the right role, with the
-right discipline, without losing the thread.
+copy-paste prompt so the next session (Mentor O) resumes with full context.
 
-⚠️ **Since 2026-08-02, D is a SUBAGENT of O** (`.claude/agents/colleague-d.md`) — O spawns D inside
-the session, and Giang no longer opens a D session. ⇒ This procedure **emits no D prompt and hands
-over no separate state for D**. D starts from the Work Order O gives it at spawn time; D's persona
-(`.claude/memory/colleague_d_persona.md`) stays as reference material and needs no per-session update.
+⚠️ **Both G and D are SUBAGENTS of O:**
+- D lives at `.claude/agents/colleague-d.md` + `.claude/memory/colleague_d_persona.md`
+- G lives at `.claude/agents/mentor-g.md` + `.claude/memory/mentor_g_persona.md`
+⇒ This procedure **emits no separate G or D prompt**. O spawns both inside the session.
 
 **Principle:** do NOT commit or push anything while closing unless the user explicitly orders it.
 Only measure, write memory, and emit prompts. Every number (HEAD, gate) must be MEASURED, never
@@ -59,46 +58,23 @@ Update them (do NOT create duplicates — edit the existing files):
    the session with `./scripts/sync-memory.sh pull` to restore auto-memory from the repo BEFORE
    working — see the startup prompt.)
 
-## Step 3 — Update Mentor G's state and persona (`spec/plans/MENTOR_G_STATE.md` — a REPO file, NOT Claude memory)
+## Step 3 — Update Mentor G's persona memory (`.claude/memory/mentor_g_persona.md` — if G lessons were learned)
 
-⚠️ **Mentor G runs on a DIFFERENT model (not Claude) to preserve objectivity → G has no Claude
-memory.** All of G's context and persona is packed into `spec/plans/MENTOR_G_STATE.md` — a
-version-controlled repo file readable by any model. It is the ONLY source that lets G enter the next
-session in the right role with enough context.
-**Skipping this step = G opens the next session with stale or wrong context.** Update it EVERY time
-the session closes (edit the existing file, do NOT create duplicates):
+⚠️ **Mentor G is an Opus subagent** spawned by O (`.claude/agents/mentor-g.md`).
+If any new G lessons were learned or rulings made during the session, record them in
+`.claude/memory/mentor_g_persona.md` under `## G's Lessons`, appending the **next `G-Law N`**
+in sequence (currently up to G-Law 29 — never reuse a number, never fall back to the retired
+circled numerals), and keep `## Session context` fresh.
+No separate state file is needed.
 
-1. **`## Context / State (Updated: <REAL DATE>)`** — fix the date; `Current Phase`; `Recent
-   achievements` (campaigns CLOSED this session + the MEASURED gate + `origin HEAD`).
-2. **`Technical debt / suspended items`** — keep it IDENTICAL to the debt list in `MEMORY.md` (one
-   source, never allowed to drift).
-3. **`Next Phase`** — the next front agreed with G and Giang.
-4. **The final init-prompt block (```text ... ```)** — update the `[PROJECT CONTEXT]` part (state +
-   objective for the session). **LEAVE UNCHANGED** `## Core Tenets of Mentor G` and the
-   `[PERSONA SETUP]` part — that is the PERSONA, changed only when G or Giang change the principles;
-   never trim it on your own initiative.
+## Step 4 — Emit startup prompt for Mentor O
 
-**This is a REPO file** (unlike the Claude memory at `~/.claude/...`): it must be COMMITTED — and in
-its OWN commit, `docs(mentor): update state for <campaign>`, **never bundled** into another feat/docs
-commit (a lesson already learned the hard way: stuffing `MENTOR_G_STATE` into a code commit gets
-rejected). Per the closing principle: commit/push only when the user orders it — otherwise leave it
-dirty and FLAG it in Step 5.
-
-## Step 4 — Emit 2 INDEPENDENT startup prompts (Mentor O + Mentor G)
-The author opens **2 separate sessions** — one prompt per role. **There is no D prompt** (D is a
-subagent that O spawns inside the session). Produce 2 copy-paste blocks (filled with the REAL values
-measured in Step 1), **both in the same place** in the closing report (do not make the author hunt
-through files). O follows the template below; **Mentor G** = the final ```text``` block of
-`spec/plans/MENTOR_G_STATE.md` (refreshed in Step 3) — **READ that file and PASTE IT VERBATIM** (G
-runs on a DIFFERENT model, not Claude; do NOT invent a new G prompt). O's template:
+The author opens **1 session as Mentor O**. Both G and D are subagents that O spawns inside the session.
+Produce 1 copy-paste block (filled with the REAL values measured in Step 1).
 
 ⚠️ **The O prompt must open with the new-machine BOOTSTRAP line** (restoring auto-memory from the
 repo — machine-local auto-memory does not travel with the repo):
 `If this is a new machine (no ~/.claude auto-memory yet): run ./scripts/sync-memory.sh pull first.`
-O's memory is readable from both `.claude/memory/` (repo, always present after a clone) and `memory/`
-(auto-memory, after a pull).
-**The G prompt needs no bootstrap** — G runs on a different model and does not use auto-memory; all
-of G's context lives in `spec/plans/MENTOR_G_STATE.md` (a repo file, already portable).
 
 ### MENTOR O prompt
 ```
@@ -106,46 +82,27 @@ Continue the Triết project as MENTOR O.
 
 BOOTSTRAP (new machine): if there is no ~/.claude auto-memory yet, run `./scripts/sync-memory.sh pull` first.
 
-READ FIRST: .claude/memory/MEMORY.md (the repo copy, portable; = memory/MEMORY.md after a pull) — the
-first index line is the handover state · .claude/memory/mentor_o_persona.md (THE FILE THAT DEFINES THE
-ROLE) · <the live campaign file(s)>.
+READ FIRST: .claude/memory/MEMORY.md (handover state) · .claude/memory/mentor_o_persona.md (O's rituals and 25 laws) · spec/PROJECT_KNOWLEDGE.md (shared reference).
 
 STATE: origin/main = <HEAD> (<synced/ahead N>). Gate <X·X·X·X>. ADRs <list> LOCKED.
 Closed last session: <summary of the campaigns closed>. <anything still dangling>.
 
 DEBTS PACKAGED AS THEIR OWN CAMPAIGNS (awaiting G + Giang to open them): <each debt + the ADR § pointer>.
 
-ROLE O: gatekeeper / review owner. Run the gate yourself, plant poison yourself (grep the real line
-before sed, use control variables), refuse over guess, never write the code. Issue the Work Order →
-**SPAWN D YOURSELF** (Agent tool, subagent_type "colleague-d" — D has been O's subagent since
-2026-08-02; Giang no longer relays WOs. For the fix loop, message that same D via SendMessage instead
-of spawning a new one) → verify with blood → sign. D's report is visible only to O ⇒ O must RELAY the
-raw gate, the commit hash, and the poison results to G and Giang; summarizing is forbidden. Recon
-before typing (file:line). ADR-first for the borrowck and type-system core. Per-step commits; push
-when G or Giang order it. Report to G in the 5-section package; a slice closes only once G signs.
-G's word is law; Giang decides direction.
+ROLE O: gatekeeper / review owner / team lead. Run the gate yourself, plant poison yourself, refuse over guess, never write production code.
+- To review architecture / get second opinion / sign off → **SPAWN G** (Agent tool, subagent_type "mentor-g", model Opus).
+- To implement code/fixtures → **SPAWN D** (Agent tool, subagent_type "colleague-d") with a Work Order. Pick model by task difficulty (Sonnet 5 for complex/novel, Qwen/Gemma for mechanical/closed, or relay to DeepSeek via Author). For the fix loop, message that same D via SendMessage.
+- Relay raw gate, commit hash, and poison results to Author.
+- Pushing is O's exclusive right, after both O and G sign.
 
 Every document is written in English (`*.vi.md` is the only exception); speak Vietnamese with the author.
 
-FIRST TASK OF THE SESSION: verify the handover state still holds (git log, gate) → ASK G and Giang
-which front to open among the debts above. Once assigned → recon first (file:line) → present the map
-plus an ADR-lite if it touches the core → wait for G's approval → then write the WO. Do not code or
-open a campaign before G agrees.
+FIRST TASK OF THE SESSION: verify the handover state still holds (git log, gate) → ASK G (spawn G) and Giang which front to open among the debts above. Once assigned → recon first (file:line) → present the map plus an ADR-lite if it touches the core → wait for G's approval → then write the WO for D.
 ```
 
-### (There is no COLLEAGUE D prompt)
-D is **O's subagent** as of 2026-08-02 — no separate session, no startup prompt. D's role and
-discipline live in `.claude/agents/colleague-d.md` (the agent file O spawns with
-`subagent_type: "colleague-d"`) and `.claude/memory/colleague_d_persona.md` (the source persona D
-reads at step 0). Closing a session **touches nothing about D**.
-
-### MENTOR G prompt (a DIFFERENT model — not Claude, no memory)
-There is no separate template here: G's startup prompt IS the final ```text``` block of
-`spec/plans/MENTOR_G_STATE.md` (refreshed in Step 3 — containing `[PROJECT CONTEXT]` with the state,
-debts, and objective, plus `[PERSONA SETUP]` with the 5 principles including hands-off).
-**READ that file and PASTE THE ```text``` BLOCK VERBATIM into the closing report** so the author has
-both prompts in one place. G only reviews and signs — G never touches code, commits, pushes, or
-agents — and the prompt already encodes those constraints, so do not trim it.
+### (No separate G or D prompts needed)
+- **G** is O's subagent (`.claude/agents/mentor-g.md` + `.claude/memory/mentor_g_persona.md`).
+- **D** is O's subagent (`.claude/agents/colleague-d.md` + `.claude/memory/colleague_d_persona.md`).
 
 ## Step 5 — Clean up old sessions (KEEP the current session and the `memory/` directory)
 The author does not want to drown in sessions. Delete every OLD session transcript in the project
@@ -178,8 +135,7 @@ The session directory is the PARENT of `memory/`: `~/.claude/projects/<project-s
 is current. If `ls -t` is ambiguous (identical mtimes / no files) → STOP, ask the author, do not guess.
 
 ## Step 6 — Closing report
-One short paragraph: the final state (HEAD synced/dirty), the Claude memory saved (O),
-`MENTOR_G_STATE.md` updated (+ the `docs(mentor):` commit if the user ordered it), the **2 prompts
-O + G** emitted (in one place), and **old sessions cleaned up** (current kept). If anything is left
-dangling (unpushed/dirty/red gate, `MENTOR_G_STATE.md` uncommitted, or uncertainty about which
+One short paragraph: the final state (HEAD synced/dirty), the memory saved (O + G),
+the **startup prompt for O** emitted, and **old sessions cleaned up** (current kept).
+If anything is left dangling (unpushed/dirty/red gate, or uncertainty about which
 session is current) → WARN clearly, do not hide it. Then withdraw.
