@@ -116,7 +116,7 @@ In an architectural deliberation between the Author (Giang Hoàng) and Mentor G 
 3. **The Chosen Design — `+any Trait` / `&any Trait`:**
    - Adopts Apple Swift's intuitive semantic grammar combined with Triết's placement polarities:
      - **`+any Trait`**: Owning, heap-allocated dynamic trait object (replaces Rust's `Box<dyn Trait>`).
-     - **`&any Trait`** (or `&0 any Trait`): Borrowed dynamic trait view (replaces Rust's `&dyn Trait`).
+     - **`&any Trait` — SPELLING NOT YET SETTLED:** borrowed dynamic trait view (replaces Rust's `&dyn Trait`). SPEC §10.1 locks **five** reference forms and admits **no bare `&T`**, so a bare `&any Trait` contradicts the spec as written; `&0 any Trait` (and the `&+`/`&-` polarities) is the only spelling consistent with it today. Resolving this is part of the post-1.0 evaluation below, NOT a settled choice — do not read the two spellings as equivalent when this vault is reopened.
    - Under the hood, this compiles to a standard 16-byte Fat Pointer (`[data_ptr@0, vtable_ptr@8]`) in Cranelift with `call_indirect`.
 
 ### 6.2 Author's Strategic Decision (Giang Hoàng, 2026-08-25)
