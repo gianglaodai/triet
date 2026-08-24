@@ -104,3 +104,23 @@ Execution flow:
 - [ADR-0027](0027-diagnostic-format-standard.md) — format E1043 (coherence conflict).
 - [phase13-trait-system.md](../../spec/plans/phase13-trait-system.md) — step-by-step implementation plan.
 - Surveyed files:lines: `types.rs:13-117`, `check/methods.rs:12-79`, `syntax/lib.rs:36-51`, `mir/lib.rs:777-800`, `mir_lower.rs:1583-1624`.
+
+---
+
+## 6. Addendum (2026-08-25) — Syntactic Blueprint & Strategic Deferral of Tier 3 Dynamic Dispatch (`+any Trait`)
+
+### 6.1 Architectural Review of Tier 3 (`dyn` vs `any` vs `? extends`)
+In an architectural deliberation between the Author (Giang Hoàng) and Mentor G regarding dynamic runtime polymorphism:
+1. **Rejection of Rust's `dyn`:** The keyword `dyn` violates the project's strict **"No Abbreviations"** tenet ([`ADR-0005`](0005-keyword-standardization-verbose.md) / `feedback_no_abbreviations`). Cryptic compiler-centric abbreviations (`dyn`, `impl`, `mut`, `fn`) are barred from the language.
+2. **Rejection of Java's Wildcard `? extends Trait`:** The symbol `?` is sacred in Triết, reserved exclusively for **Nullable types (`T?`)** and **Ł3 Ternary operations (`if?`, `?:`)**. Reusing `?` for type variance/subtyping creates severe syntactic collisions and imports OOP wildcard complexity.
+3. **The Chosen Design — `+any Trait` / `&any Trait`:**
+   - Adopts Apple Swift's intuitive semantic grammar combined with Triết's placement polarities:
+     - **`+any Trait`**: Owning, heap-allocated dynamic trait object (replaces Rust's `Box<dyn Trait>`).
+     - **`&any Trait`** (or `&0 any Trait`): Borrowed dynamic trait view (replaces Rust's `&dyn Trait`).
+   - Under the hood, this compiles to a standard 16-byte Fat Pointer (`[data_ptr@0, vtable_ptr@8]`) in Cranelift with `call_indirect`.
+
+### 6.2 Author's Strategic Decision (Giang Hoàng, 2026-08-25)
+- **Indefinite Freeze Prior to Self-Hosting:** Dynamic dispatch covers only ~10% of real-world use cases (open, third-party plugin boundaries). The remaining 90% of polymorphism is closed and strictly represented via **`enum` Tagged Unions with payload `+T`** (which is 10x faster, cache-friendly, and exhaustively verifiable via `match`).
+- **Self-Hosting Compiler Independence:** The Triết self-hosting compiler (`trietc.tri`) has ZERO dependency on dynamic dispatch (AST nodes are `enum`, symbol tables are `struct` + `HashMap`, passes are static functions).
+- **Ruling:** Tier 3 (`+any Trait`) is **KEPT IN THE ARCHITECTURAL VAULT AND FULLY FROZEN**. It will NOT be implemented during the bootstrap or pre-self-hosting campaigns. A formal evaluation will occur only post-Self-Hosting (Triết 1.0) if and when an open plugin ecosystem creates a genuine, non-speculative need.
+
