@@ -27,14 +27,16 @@ if ! cargo fmt --all --check 2>/dev/null; then
 fi
 
 echo "  [2/3] cargo clippy -D warnings"
-if ! cargo clippy --workspace --all-targets -- -D warnings 2>&1 | tee /tmp/clippy-pre-push.out | tail -5; then
+cargo clippy --workspace --all-targets -- -D warnings 2>&1 | tee /tmp/clippy-pre-push.out | tail -5
+if [ "${PIPESTATUS[0]:-0}" -ne 0 ]; then
     echo ""
     echo "╳ cargo clippy failed. See /tmp/clippy-pre-push.out for full output."
     exit 1
 fi
 
 echo "  [3/3] cargo test --workspace"
-if ! cargo test --workspace --quiet 2>&1 | tail -10; then
+cargo test --workspace --quiet 2>&1 | tail -10
+if [ "${PIPESTATUS[0]:-0}" -ne 0 ]; then
     echo ""
     echo "╳ cargo test failed. Fix tests before re-push."
     exit 1
