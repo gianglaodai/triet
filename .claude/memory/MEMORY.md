@@ -37,6 +37,7 @@
 - [★ THE REALITY OF THE REWRITE — READ SECOND](project_rewrite_reality_2026_06_04.md) — the v0.2-v0.10 backend was DELETED, 13 crates, starting over.
 - [docs/HIGHLIGHTS.md + the three-way backlog](doc_highlights_and_ternary_seeds.md) — I✅/II🎯/III🌱. #2 rounding and Outcome-discriminant-as-Trit deserve an ADR.
 - [★ Outcome Monadic Pipeline (`->>`), MapError (`-->`) & Explicit Error Unions `(E1 | E2 | E3)`](idea_outcome_flatmap_and_error_union.md) — Pre-Self-Hosting pipeline algebra (Giang & Mentor G, 2026-08-24).
+- [★ Post-Self-Hosting (Triết 1.0) Vault: Odin Gems (Context Allocator, Swizzling, BitSet) & Comptime Metaprogramming](idea_post_self_host_odin_gems_and_comptime.md) — Strictly post-self-hosting roadmap (Giang & Mentor G, 2026-08-25).
 - [Future — a Comparable trait + the ?-family](future_comparable_trait_and_monad_gap.md) · [sized ternary ints](future_sized_ternary_ints.md) — deferred.
 - [Future — ternary placement syntax +T/T/-T](idea_ternary_placement_syntax.md) — O found 4 holes (non-polar placement dilutes coherence §8). PARKED until ADR-0068 reopens.
 - [★ Post-Rust Architectural Foundations: Trilean, Placement (+T/T/-T), Directional Borrows (&0/&+/&-), 90/10 Pit of Success, Precompiled Libs, Two-Tier Unsafe](idea_post_rust_architecture_and_ternary_foundations.md) — Comprehensive pre-ADR foundations (Giang & Mentor G, 2026-08-23). Details: `docs/proposals/post_rust_architecture_foundations.md`.
