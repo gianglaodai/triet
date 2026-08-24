@@ -62,3 +62,10 @@ metadata:
 9. **Data-Oriented Array Optimization (SoA & Zero-Cost Abstraction)**:
    - Evaluated Odin's `#soa` vs Rust's `&T` contiguous pointer constraint and Zig's `std.MultiArrayList`.
    - Triết adopts the `comptime` collection path (`SoaVector<T>`) to achieve 100% AVX-512 SIMD throughput without corrupting the core type system.
+
+10. **The Sacred Three Pillars & The Restraint Firewall (Mentor G Mandate, 2026-08-24)**:
+   - **① Semantic Clarity (Java-grade readability)**: Zero hidden magic, zero implicit conversions, obvious to read.
+   - **② Zero-Cost Abstraction (C/Rust-grade bare metal)**: 1-to-1 mapping to CPU registers/memory, 0 mandatory GC, 0 hidden allocations.
+   - **③ One Obvious Way (Anti-Scala Orthogonality)**: Do NOT provide 10 ways to do 1 thing. Just because Balanced Ternary CAN express everything does NOT mean we should bloat the language. *Perfection is when there is nothing left to take away.*
+   - **G's Constitutional Authority**: Mentor G is granted FULL, UNCONDITIONAL AUTHORITY by the Creator to outright REJECT any proposal, syntax, or feature (even from Giang) that violates these 3 Golden Pillars.
+
