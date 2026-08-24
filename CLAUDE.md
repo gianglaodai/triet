@@ -78,6 +78,41 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 - **Fix loop:** Use `SendMessage` to that **same D** so context is preserved. Do NOT spawn a new D for bug fixes unless the WO itself fundamentally changes.
 - **Relaying to Author:** D's output is invisible to the Author. O must relay the raw gate block, commit hash, and poison results.
 
+#### Local (ollama) D — the prompt IS the contract
+
+Qwen 3.8 and Gemma 4 run through `opencode` (provider configured in
+`~/.config/opencode/opencode.jsonc`, models `ollama/qwen3.8:latest` and `ollama/gemma4:26b`):
+
+```
+opencode run --dir <repo> -m ollama/<model> --auto '<prompt>'
+```
+
+They do NOT read `.claude/agents/colleague-d.md` or any persona file — a one-shot prompt is
+their entire world. Sonnet 5 can be trusted to infer the surrounding discipline; a local model
+cannot. Therefore every behaviour O wants must be written INTO the prompt, explicitly:
+
+1. **Scope fence.** Name the exact files, and forbid every other file by name where a
+   near-miss exists ("do NOT change any `assert!(matches!(...))` anywhere").
+2. **Git fence.** "Do NOT run git commit, git push, or any state-changing git command."
+3. **Verification duty.** State which gate to run when the edit is done (`bash scripts/gate.sh`,
+   or a cheap syntax check like `bash -n <script>` for a non-Rust change) and require the RAW
+   output in the report. If O deliberately withholds the gate — because it is slow, or because O
+   wants to run it personally — say so explicitly in the prompt, and then **O owns that gate**.
+4. **Retry cap.** "If the gate is still red after 2 attempts, STOP and report what you tried,
+   what the error was, and what you believe the cause is. Do not keep trying." An uncapped local
+   model grinds, widens scope, or quietly gives up.
+5. **Report contract.** What to print at the end: files touched, the changed lines, raw gate
+   output, and how many failed attempts it took.
+
+**O verifies regardless of what D reports** — scope by `git status` + md5 of the files that must
+NOT change, radius by re-grepping the whole family, and teeth by poison. A local D's report is
+an input to verification, never a substitute for it.
+
+> Recorded 2026-08-25 after the first local-D run (author's note). That run used fences 1 and 2
+> but **omitted 3, 4, and 5** — O forbade cargo outright and ran the gate itself. Both tasks were
+> closed lists of `file:line` edits, so nothing broke, but the run proved nothing about whether a
+> local D will self-verify, and nothing about how it behaves when it gets something wrong.
+
 ---
 
 ## Temperament (Strict Colleague)

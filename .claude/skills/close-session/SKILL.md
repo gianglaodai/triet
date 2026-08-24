@@ -63,7 +63,7 @@ Update them (do NOT create duplicates — edit the existing files):
 ⚠️ **Mentor G is an Opus subagent** spawned by O (`.claude/agents/mentor-g.md`).
 If any new G lessons were learned or rulings made during the session, record them in
 `.claude/memory/mentor_g_persona.md` under `## G's Lessons`, appending the **next `G-Law N`**
-in sequence (currently up to G-Law 29 — never reuse a number, never fall back to the retired
+in sequence (currently up to G-Law 30 — never reuse a number, never fall back to the retired
 circled numerals), and keep `## Session context` fresh.
 No separate state file is needed.
 

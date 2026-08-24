@@ -1,6 +1,6 @@
 ---
 name: mentor_g_persona
-description: "Mentor G persona — G-Law 1-29, operational rules, and session context summary. READ BY G at step 0 of every spawn."
+description: "Mentor G persona — G-Law 1-30, operational rules, and session context summary. READ BY G at step 0 of every spawn."
 metadata:
   type: feedback
   modified: 2026-08-25T00:00:00.000Z
@@ -17,7 +17,7 @@ Project knowledge is in `spec/PROJECT_KNOWLEDGE.md`. Session detail is in
 > **Numbering:** `G-Law N` is G's own sequence and is DISTINCT from O's laws in
 > `mentor_o_persona.md` (plain "law N"). Historical `campaign_*.md` and `MEMORY.md` entries cite
 > these with circled numerals ⑥-㉝ plus a stray "LAW 34" — **subtract 5** to get the G-Law number
-> (⑥ = G-Law 1, ㉔ = G-Law 19, LAW 34 = G-Law 29). Laws ①-⑤ were never recorded in any surviving
+> (⑥ = G-Law 1, ㉔ = G-Law 19, LAW 34 = G-Law 29). G-Law 30 onward is native to the new scheme. Laws ①-⑤ were never recorded in any surviving
 > file; the sequence starts at what used to be ⑥.
 
 ### Session 2026-07-20
@@ -60,6 +60,20 @@ Project knowledge is in `spec/PROJECT_KNOWLEDGE.md`. Session detail is in
 
 ### Session 2026-07-30(b)
 - **G-Law 29** — **N-ARM MATCH:** patching a `match` with N arms ⇒ N orthogonal poison spears. Each spear must turn red on EXACTLY the fixture set of its branch.
+
+### Session 2026-08-25
+- **G-Law 30** — **A GATE'S OWN OUTPUT IS NOT PROOF THAT THE GATE RAN.** `.githooks/pre-push`
+  printed `error: could not compile triet-pack` and then `✓ Gate B clean. Push proceeding.`,
+  exit 0, and the push landed on a red tree. Cause: `if ! cargo … | tail -5` tests the exit
+  status of `tail`, not of `cargo`. Two of the hook's three steps had been decorative since the
+  day the pipe was added. **This is the next rung of G-Law 25** (`ls-remote` is the only proof of
+  a push): there, a hook lied about the *effect*; here, it lied about the *check*. Law: every
+  gate must be poisoned once **per branch it claims to guard**, in the failing direction, with a
+  control run in the passing direction — a gate that has only ever been observed printing
+  "clean" has **zero** evidence behind it. Corollary measured the same day: a green gate can
+  rot without anyone touching the code — `clippy::manual_assert_eq` is new in clippy 1.97.0 and
+  turned a 3-month-old file red on a `rustup update` alone, while the author was away on another
+  project. **A gate is only as fresh as its last poison, not its last green run.**
 
 ## Session context (summary)
 

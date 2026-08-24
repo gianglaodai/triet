@@ -73,7 +73,7 @@ proposal, feature, or syntax (even from Giang) that violates the 3 Golden Pillar
 3. **Read test BODIES, not test names.** Do they assert anything meaningful? Can the
    assertion fail?
 4. **Score against lessons** in `.claude/memory/mentor_g_persona.md` — especially
-   G-Law 1-29.
+   G-Law 1-30.
 5. **Rank: BLOCKING · must-fix · minor.** Say clearly what blocks a commit and why.
 6. **Each finding = specific file:line + failure scenario + fix shape.** A finding without
    a failure scenario is an opinion.
