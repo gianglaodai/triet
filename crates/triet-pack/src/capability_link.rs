@@ -668,7 +668,7 @@ mod tests {
             vec![cap("sys.x", CapabilityLevel::Defer)],
         );
         let report = check_link_capabilities(&root, &[]);
-        assert!(report.deferrals.len() == 1);
+        assert_eq!(report.deferrals.len(), 1);
         assert!(report.is_acceptable());
     }
 

@@ -821,7 +821,7 @@ mod tests {
         let out = String::from_utf8(writer).unwrap();
         assert!(out.contains("--- Explanation ---"));
         // Prompt rendered twice (once before ?, once after).
-        assert!(out.matches("Capability:     sys.io").count() == 2);
+        assert_eq!(out.matches("Capability:     sys.io").count(), 2);
     }
 
     #[test]
@@ -846,7 +846,7 @@ mod tests {
         assert_eq!(choice, PromptChoice::GrantOnce);
 
         let out = String::from_utf8(writer).unwrap();
-        assert!(out.matches("!! invalid choice").count() == 2);
+        assert_eq!(out.matches("!! invalid choice").count(), 2);
     }
 
     // ── context_from_request ──────────────────────────────────────
