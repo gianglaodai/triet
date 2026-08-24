@@ -84,7 +84,7 @@ do you have any objections given that it lies within the B7-lift move semantics 
 G's response (verbatim): "Double-free is not a trap-on-0 gap; M1-M3 have not reached
 CallDispatch." — G confirms the trap-on-0 mechanism is unrelated to the current
 double-free vulnerability; double-free stems from missing caller zeroing, not
-faulty trap-on-0. Recorded in `MENTOR_G_STATE.md`.
+faulty trap-on-0. Recorded in `MENTOR_G_STATE.md` (deleted 2026-08-25 — see git history).
 
 ---
 
@@ -156,4 +156,4 @@ Deinit + user Assign → Owned revived (fixtures 64, 65).
 | ADR-0040 | M1–M4 zeroing-on-move, builtin shim ABI, arg_consumes |
 | ADR-0041 | PA-3c uniform sentinel, nullable repr, `is_copy` delegation |
 | SPEC §10 | S6 ownership, 5 reference forms, move semantics |
-| `spec/plans/MENTOR_G_STATE.md` | Records Q6 trap-on-0 response from G |
+| `spec/plans/MENTOR_G_STATE.md` (deleted 2026-08-25 → `.claude/memory/mentor_g_persona.md`; content in git history) | Records Q6 trap-on-0 response from G |
