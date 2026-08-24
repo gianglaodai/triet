@@ -78,5 +78,6 @@ metadata:
 
 ---
 
-## 4. Lexer Pattern Reservation Shield
-- Strict regex rules in Lexer (`^T[0-9]+$`, `^I[0-9]+$`, `^F[0-9]+$`) to reserve future hardware numeric types (`T3, T9, T27, I1..I128, F16..F128`) without creating dummy AST types.
+## 4. Pattern Reservation Shield
+- Strict regex rules (`^T[0-9]+$`, `^I[0-9]+$`, `^F[0-9]+$`) reserve future hardware numeric types (`T3, T9, T27, I1..I128, F16..F128`) without creating dummy AST types.
+- **Enforced in the PARSER at the 4 type-namespace declaration sites** (`struct` / `enum` / `trait` / `type` alias), NOT in the lexer: a lexer has no syntactic context and would reserve `T1` everywhere, killing `struct Pair<T1, T2>`. Error code `triet::parse::E0010 ReservedPrimitivePattern`. Generic type parameters stay legal. Full rationale and the caller map: [[future_sized_ternary_ints]] §5.
