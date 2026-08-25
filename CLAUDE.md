@@ -192,6 +192,74 @@ The author is the product owner (vision, philosophy, trade-offs). He is not a co
    **single-threaded aliasing grounds, explicitly NOT deferred to concurrency**; it is what keeps
    ADR-0022 §6's acyclicity theorem holding.
 
+---
+
+## 📜 The governing doctrine (Author, 2026-08-25) — outranks every older ADR
+
+**The settled centre: six sigils on TWO ORTHOGONAL AXES.** `&` present = borrow, `&` absent = own;
+the placement sigil says only *where the bytes live*.
+
+| Ownership | | Placement — *reach of life beyond creation* | |
+|---|---|---|---|
+| `&+` | strong / owning (leaving the surface, L5) | `T` | used **here** — the frame |
+| `&0` | borrow, local | `+T` | used **later** — heap, someone must free it |
+| `&-` | outward flow (signature positions only, L6) | `-T` | used **always** — immortal, nobody frees it |
+
+The axis is **deallocation obligation / agency**, and it is real rather than decorative because it
+**predicts**: `+T → -T` legal (agency surrendered), `-T → +T` illegal (agency cannot be reclaimed),
+`T → -T` illegal (a frame-bound value has no agency to surrender) — and the type system derives the
+same three independently. *Past / present / future* is an excellent **teaching** phrasing; the formal
+axis is reach-of-life. Authority: `.claude/memory/campaign_placement_polarity_adr.md` (L1–L30).
+
+**Balanced ternary is the tie-breaker.** When a decision is genuinely contested, the option that keeps
+a trit **predictive** wins over the option that merely labels three things `+`/`0`/`-`. A decorative
+trit is worse than no trit — it dilutes the identity it pretends to serve.
+
+### What we refuse to let be born — with the HONEST ledger (G made this a sign-off condition, L26)
+
+Never write the goal as a slogan. The goal is that the programmer never types these; **most of them
+survive as mechanisms**, and pretending otherwise is how the zoo grows back.
+
+| | Goal | Honest status |
+|---|---|---|
+| `Box<T>` | gone | ✅ **genuinely replaced** by `+T` — the one clean elimination |
+| `move` | gone from syntax | ⚠️ the **semantics stay and are deep** — ADR-0042 Deinit tombstones + E2420 |
+| `Pin` | gone from syntax | ⚠️ the **concept stays** as a static immovability property |
+| `Rc` / `Weak` | gone | ⚠️ **NOT eliminated** — pushed out of the 90%, reshaped in the 10% into `arena.get(id) -> T?`, which the programmer still sees. `Weak` itself is deleted (no `Rc` cycles to break) |
+| `'a` | gone | ⚠️ **REFUSED, not eliminated** — `check_lifetime_elision` (`crates/triet-typecheck/src/check.rs:530-570`) admits **0 or 1** input borrow params; `longest(a: &0 String, b: &0 String)` → **E2400**. Write it as *"Triết does not eliminate region variables; it refuses the programs that need more than one."* |
+| `Send` / `Sync` | gone | 🧊 **frozen (rule #9)** — and they vanish only while no shared-mutable primitive exists. `Atomic<T>` (ADR-0028, Locked) already is one |
+
+**The doctrine paragraph that keeps this from becoming a zoo** — mandatory in the ADR, the docs, and
+the diagnostics: *Default to `T`. Reach for `+T` only when (a) the type is recursive, (b) the value
+must outlive the frame that created it, or (c) it is large and moved often. Reach for `-T` only for
+immortal data. If none of (a)/(b)/(c) applies, `+T` is wrong.* Stated honestly, the axis count goes
+from **1 tangled to 2 orthogonal**, the synonym count from **1 to 0**, and the concept count **up by
+one**. That is a net win; selling it as a reduction is the lie that lets the zoo expand later.
+
+### Precedence over older ADRs
+
+This decision **outranks every ADR written before it**. Old ADRs are not deleted — they are history —
+but where one contradicts the doctrine, **the doctrine wins** and the ADR's `## Implementation Status`
+footer records it as `⚠️ CONTESTED` or `⚰️ SUPERSEDED by ADR-NNNN`. The audit is **incremental, never a
+sweep**: whenever work touches an ADR's area, that footer is reconciled (see
+`docs/decisions/README.md`). Do not fabricate a status you have not measured — `❓ NOT AUDITED` is the
+honest default.
+
+⚠️ **What goes in the bin is PAPER, not the compiler.** Measured: `&+` appears in 9 `.tri` files (5 of
+them refuse fixtures), `&-` in **0 fixtures**, bare parameters were already owned. `+T`/`-T` are purely
+additive. This design needs **no teardown** — the 2026-06-04 rebuild cost a working backend and a
+1637-test net and the project is still climbing back. Supersede documents freely; touch the compiler
+only through gated campaigns.
+
+### Where we learn from
+
+1. **Rust — highest.** Ownership, borrowing, move semantics, refuse-over-guess. We depart only where
+   we can show the departure is better, not merely different.
+2. **Zig, Odin** — for specific mechanisms (`comptime`, explicit allocators, data-oriented layout),
+   adopted one at a time, never as a style.
+3. **Java — for syntax temperament only:** strict, explicit, no hidden magic, obvious to read. Not its
+   type system, not its runtime.
+
 ## Shared project reference
 
 **READ [`spec/PROJECT_KNOWLEDGE.md`](spec/PROJECT_KNOWLEDGE.md)** for:

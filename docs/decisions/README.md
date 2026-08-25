@@ -42,7 +42,13 @@ _Last audited: YYYY-MM-DD (by whom, at which commit / gate line)_
    caused, with a nicer table.
 2. **Every non-`❓` row carries evidence** — a `file:line`, a fixture number, or a commit. No evidence,
    no claim. This is the raw-gate rule applied to documentation.
-3. **Closing a campaign updates the footer of every ADR whose area it touched** — same standing as
+3. **Conflicts with the governing doctrine resolve in favour of the doctrine.** The placement/
+   ownership decision of 2026-08-25 (`CLAUDE.md` §The governing doctrine; L1-L30 in
+   `.claude/memory/campaign_placement_polarity_adr.md`) **outranks every ADR written before it**. An
+   older ADR that contradicts it is not deleted -- it is history -- but its footer must say
+   `CONTESTED` or `SUPERSEDED by ADR-NNNN`. The audit is **incremental, never a sweep**: reconcile a
+   footer when work touches that ADR's area, and leave the rest `NOT AUDITED` rather than guessing.
+4. **Closing a campaign updates the footer of every ADR whose area it touched** — same standing as
    hard rules #4 and #8 in `CLAUDE.md`. The corpus fills in as work happens instead of in one
    fabricated sweep.
 
