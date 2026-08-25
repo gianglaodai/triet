@@ -530,3 +530,22 @@ v0.8 prioritizes bringing **semantic locks** in early, deferring **enforcement i
 - [CLAUDE.md — Error code namespace](../../CLAUDE.md) (update `triet::concurrency::E25XX` when ADR lands)
 - Future ADR-0028 — Atomic Primitives (TBD)
 - `triet-core::memory::ObjectHeader` (crate, layout per §7)
+
+---
+
+## Implementation Status
+
+_Last audited: 2026-08-25 by Mentor O, at `40609ec`, gate `0 · clean · 0 · 581 · 0` (exit 0)._
+
+> 🧊 **This whole ADR sits behind the multithreading freeze** (`CLAUDE.md` hard rule #9, author's
+> standing order 2026-08-25): threads come after `+T`, after Box, **after self-hosting**. Nothing here
+> may shape or block a design decision taken before then. The footer exists so nobody re-derives it.
+
+| § | State | Evidence |
+|---|---|---|
+| §7 — the 8-byte `ObjectHeader` on every heap allocation | ✅ **LANDED** | `crates/triet-core/src/memory.rs:51` (`refcount: AtomicU32`, `reserved: AtomicU32`); written at `crates/triet-jit/src/mir_lower.rs:5694` and `:6092`. ⚠️ **The `reserved` half is NOT spare — ADR-0077 stores the Vector `stride` in it** (`:6092`). Reclaiming the header is therefore at most 4 bytes, and with 8-byte alignment realistically **0** without a layout redesign. |
+| §7 — negative sentinels (`-1` static, `-2` frozen-forever) | 🚧 **PARTIAL — constructors exist, the free path ignores them** | `ObjectHeader::new_static()` (`memory.rs:80`) and `new_frozen_forever()` (`:91`, `FROZEN_FOREVER_SENTINEL = u32::MAX - 1`) exist, and `increment`/`decrement` (`:99`/`:109`) already skip the atomic for them — but **both have 0 callers outside their own unit tests** (`:200`, `:209`), and 🔴 **the free path never reads the header at all**: `__triet_string_free` (`mir_lower.rs:5731`) and `__triet_vector_free` (`:6125`) guard only `ptr == 0 \|\| ptr == NULL_SENTINEL`, then `body.sub(HEADER_SIZE)` → `dealloc`. ⇒ the frozen-forever sentinel is **dead code the deallocator cannot honour**. This is a live prerequisite for the `-T` `immortal` promotion (campaign **L11 C2**), which therefore does **not** "need nothing". |
+| §3.2 — `&+ T` frozen crossing a boundary = refcount-mediated share | ❌ **NOT REACHABLE** | Requires a thread boundary; `spawn`/`async`/`actor` are on this ADR's own §6 refuse-list, so no code path increments the refcount today. The 8 bytes are rent on a room not yet built. |
+| §6 — refuse-list: `actor`/`spawn`/`receive`/`send`/`async`/`await` are NOT keywords | ✅ **ACTIVE** | BYOS/BYKS holds; channels and `Actor<T>` are stdlib types (`:304-309`, `:354`), not syntax. |
+| §3 — `Send` derivation over 13 type categories | ❓ **NOT AUDITED** | Frozen; do not measure until threads are in scope. |
+| Everything not listed above | ❓ **NOT AUDITED** | — |

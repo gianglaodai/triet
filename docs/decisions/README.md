@@ -5,6 +5,47 @@
 
 ADRs are immutable once "Locked" status is reached. To change a prior decision, write a new ADR that supersedes it.
 
+---
+
+## 📌 The `## Implementation Status` footer (contract, added 2026-08-25)
+
+**The problem this solves.** The project was torn down and rebuilt once (2026-06-04). An ADR records
+*what was decided on a date* — it never says whether that decision is alive in the compiler today.
+Reading old ADRs as if they described the present is the single largest source of confusion in this
+repo, and it has already produced measured mistakes: `ADR-0068` was cited for months as the ban on
+recursive types **against a file that was never written**, and `SPEC §10.3`/`ADR-0022 §5.1` document a
+bare-parameter rule the compiler never had.
+
+**The rule.** Every ADR gains an `## Implementation Status` section **at the very end**. It is the ONE
+part of an ADR that may be edited freely — appending to the end is not rewriting history, and the
+Status/Superseded column in this index answers *decision* status, not *implementation* status.
+
+```markdown
+## Implementation Status
+
+_Last audited: YYYY-MM-DD (by whom, at which commit / gate line)_
+
+| § | State | Evidence |
+|---|---|---|
+| §N | ✅ **LANDED** YYYY-MM-DD `commit` | `path/file.rs:LINE` · fixture NNN |
+| §N | 🚧 **PARTIAL** — what is missing | `path/file.rs:LINE` |
+| §N | ❌ **NOT IMPLEMENTED** | — |
+| §N | ⚰️ **SUPERSEDED by ADR-NNNN** YYYY-MM-DD | — |
+| §N | ⚠️ **CONTESTED** — a landed decision disagrees | where the disagreement is |
+| §N | ❓ **NOT AUDITED** | — |
+```
+
+**Three rules that keep it honest:**
+
+1. **`❓ NOT AUDITED` is the default and is never a defect.** An unmeasured line must say so. A
+   confidently wrong footer is worse than no footer — it is the same failure the phantom `ADR-0068`
+   caused, with a nicer table.
+2. **Every non-`❓` row carries evidence** — a `file:line`, a fixture number, or a commit. No evidence,
+   no claim. This is the raw-gate rule applied to documentation.
+3. **Closing a campaign updates the footer of every ADR whose area it touched** — same standing as
+   hard rules #4 and #8 in `CLAUDE.md`. The corpus fills in as work happens instead of in one
+   fabricated sweep.
+
 > **Looking for a rule on X?** Use [`by-topic.md`](by-topic.md) — all ADRs grouped by topic cluster (Language Surface, Type System, Ownership & Borrowing, Module/Package, IR/Wire Format, Capability & Sandboxing, Backend & JIT, Collections & Iteration).
 
 ---

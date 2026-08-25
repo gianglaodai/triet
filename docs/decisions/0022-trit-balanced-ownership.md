@@ -588,3 +588,23 @@ Note: §12.4 demonstrates ADR-0018 capability integration rather than ownership 
 - [ADR-0021 — Trilean refinement](0021-trilean-refinement.md) (refuse-with-fix-suggestions pattern for E2400 series)
 - [ADR-0025 — Borrow Checker Rules](0025-borrow-checker-rules.md) (enforcement algorithm)
 - [ADR-0026 — Actor Boundary Send Rules](0026-actor-boundary-send-rules.md) (concurrency interplay)
+
+---
+
+## Implementation Status
+
+_Last audited: 2026-08-25 by Mentor O, at `40609ec`, gate `0 · clean · 0 · 581 · 0` (exit 0)._
+
+| § | State | Evidence |
+|---|---|---|
+| §2 — five reference forms (syntax locked) | ⚠️ **CONTESTED — a rewrite is in design** | The placement-polarity campaign (`.claude/memory/campaign_placement_polarity_adr.md`, G BLOCKED B1–B6) rules **L1** *"`&` present = borrow, `&` absent = own"* and **L5** *delete `&+`/`&+ mutable` from the surface syntax*, keeping the IR variant. The 5-form table conflates the **ownership** axis with the **placement** axis. No ADR written yet — do not treat §2 as settled. |
+| §2 — `&+ T` ≈ `Box<T>` (the "Rust equivalent" column) | ⚠️ **MISLEADING** | What `&+` means in the compiler **today** is *ownership transfer at a parameter (move-in)*, **not heap placement** — `crates/triet-lower/src/lib.rs:1342`. Heap placement (`+T`) is genuinely new machinery, not a rename of `&+`. Schema spells the two variants `StrongFrozen`/`StrongMutable`: `crates/triet-syntax/src/generated/types.rs:82-86`. |
+| §2 — `&- T` = "Weak observer ≈ `Weak<T>`" | ⚰️ **BEING SUPERSEDED — design ruled, ADR pending** | `&-` is **outward flow** (returnable, points to a parent), not a weak pointer: a compile-time-verified-alive weak pointer *is* an ordinary borrow. Measured: `&-` appears in **0 fixtures**, and `.upgrade()` has **0 implementations** in the compiler. Agreed independently by Giang, G and O on 2026-08-25. |
+| §4.2 — call-site auto-borrow `&+` → `&0` | ❌ **NOT IMPLEMENTED** | Locked here (`:169`) but never built; fixture 582:29 still writes `&0` by hand. |
+| §5.1 — bare parameter semantics | ⚠️ **CONTESTED — the doc never matched the compiler** | A bare parameter `f(s: String)` has been **owned for the entire life of the rewrite** (probe: `Drop(_0)` inside the callee, `E2420 use after move` at the caller). §5.1 and `SPEC §10.3` are documentation that was never true. Zero migration cost to correct. |
+| §6.3 — the structural law for `&-` back-edges | ⚰️ **TO BE SUPERSEDED** | Campaign rule **L6**: `&-` is legal in **signature positions only** and **may not be a struct field**; back-edges in hierarchical/cyclic structures are **arena indices**. `&-`-as-field would need a runtime validity flag (= `Rc`/`Weak` through the back door). |
+| §6 — the acyclicity theorem (why this language needs no GC) | ✅ **LOAD-BEARING — do not weaken** | It rests on `-T` being non-mutably-borrowable (campaign **L13**, ruled on **single-threaded** aliasing grounds). If that is ever overruled, `-T` cycles become constructible and this theorem silently stops holding. Needs a tooth. |
+| §6.1 / §6.4 / §12 — constructibility table + the four worked examples | 🚧 **UNREACHABLE TODAY** | Recursive type names do not resolve: `struct Node { next: (&+ Node)? }` → **E1001 unknown type `Node`** (`crates/triet-typecheck/src/check.rs:1283-1314`; needs two-pass type declaration). Consequence: **not one of §12's four examples compiles**, and §6.4's `E2422` machinery cannot be reached. |
+| §9.3 — "a dangling `&-` is impossible" | ⚠️ **DISPROVEN by the author's own example** | `examples/doubly_linked_list.tri`, written from §12.2's template, produces exactly such a dangling `&-`. Deliberately **not committed to `examples/`**; it belongs in the successor ADR as evidence. |
+| §4.4 — `ObjectHeader` layout | ✅ **LANDED** | `crates/triet-core/src/memory.rs:51`, written on every heap allocation at `crates/triet-jit/src/mir_lower.rs:5694` and `:6092`. See ADR-0026's own footer for the caveat about the `reserved` half. |
+| Everything not listed above | ❓ **NOT AUDITED** | — |
