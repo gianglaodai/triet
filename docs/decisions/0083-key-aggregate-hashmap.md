@@ -1,5 +1,7 @@
 # ADR 0083 — Key-Aggregate HashMap (`HashMap<Struct, V>`, Structural Content Hash/Eq via fnptr-in-header)
 
+- **Status:** 🔒 Locked (matching the entry in [`README.md`](README.md) and [`by-topic.md`](by-topic.md)). Status line added 2026-08-25 — this was the only ADR of 85 with no Status field.
+
 > # 🩸 CORE PRINCIPLE (Proposed by O, carved in stone by G)
 > # A `Struct` used as a HashMap **key** must be hashable and comparable for equality. HOWEVER, key hash/eq
 > # **HAS ZERO CONNECTION to the `==` operator or Ł3 Trilean algebra** — it is

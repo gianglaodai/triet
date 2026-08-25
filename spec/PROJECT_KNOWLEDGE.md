@@ -74,7 +74,23 @@ A single pipeline. Reused frontend + a new backend built from scratch:
     ▼  triet-driver                     pipeline binary        [NEW]
 ```
 
-**Maturity (updated 2026-06-08 — Tier A + Tier B complete, Tier C in progress):**
+> **This §Maturity section is the ONE place that answers "does X work TODAY?"** — `SPEC.md`
+> deliberately does not (it specifies semantics, independent of compiler state), and an ADR
+> describes a decision on a date, not the present. Keeping this section current is part of closing
+> a campaign; see the rule in `CLAUDE.md` §Hard rules.
+>
+> **Measured 2026-08-25** at `7521e69` (docs-only since the last code landing `fdbd66d`):
+> `bash scripts/gate.sh` → **`0 · clean · 0 · 581 · 0`, exit 0, CLEAN** — 0 build warnings ·
+> fmt clean · 0 test failures · **581 fixtures PASS** · 0 clippy locations. The fixture corpus
+> is **581 files** (`crates/triet-driver/tests/fixtures/*.tri`, counted). ⚠️ Beware: fixture
+> *numbers* run past 590 with gaps — **the highest number is NOT the count.**
+>
+> ⚠️ The prose below (feature list and "NOT yet rebuilt") was last audited **2026-06-08** and has
+> **not been re-verified since**; several entries are known stale — e.g. `&+ T` borrow params
+> were later triaged as a PHANTOM (`&+` is a unique-OWNER move, not a borrow form). Trust the
+> measured gate line above; treat the list below as a 2026-06-08 snapshot pending re-audit.
+
+**Maturity (feature list last audited 2026-06-08 — Tier A + Tier B complete, Tier C in progress):**
 the backend compiles end-to-end: scalars, arithmetic (**range-enforced
 trap-on-overflow per ADR-0044** — Add/Sub/Mul + pow shim, E1036 literal check),
 logic ops, control flow, recursion, flat structs (StackSlot + sret), enums
@@ -84,9 +100,9 @@ Elvis, `match ~+/~0`), heap values across user-fn boundaries (B7-lift), NLL
 borrowck (E2420/E2440/E2450 + M3/M3+ move tracking), MIR verifier (INV-1/2 +
 enum invariants). **NOT yet rebuilt:** borrow params for heap types (`&+ T` —
 Tier C slice 2, next), Outcome 2-reg ABI, multi-value return, native layout,
-self-host, AOT cache. Workspace tests: **~1086** (gate: `scripts/gate.sh`);
-integration corpus **72 fixtures** (driver, numbered 01-76 with 16-19 missing) — the
-1637-test VM safety net remains deleted; this is the new net.
+self-host, AOT cache. (Gate: `scripts/gate.sh`; integration corpus **581 fixtures** as measured
+above — it was 72 when this paragraph was written.) The 1637-test VM safety net remains deleted;
+this is the new net.
 
 Design principles of the rewrite:
 - **Schema-driven types:** `spec/schema/triet-schema.yaml` is the SINGLE SOURCE

@@ -11,6 +11,14 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 1. `.claude/memory/mentor_o_persona.md` — O's full persona, verify-don't-trust rituals, and 25 laws.
 2. `.claude/memory/MEMORY.md` — first index line = current handover state.
 3. `spec/PROJECT_KNOWLEDGE.md` — the single source of truth for architecture, pipeline, dev principles, Track B rules, language conventions, and error codes.
+4. `TODO.md` — **§🎯 HÀNG ĐỢI NỢ TRƯỚC BOX at the top.** A closed, ordered list (A→E code debts,
+   F→M design debts) that must be cleared before the `+T`/Box campaign opens.
+
+**Opening report (every session, before anything else):** O states the current gate line and then
+**recites the open items of the debt queue in order** — which are paid, which is next, and what it
+blocks. The author's standing instruction (2026-08-25): *run straight at that queue and do not stop
+until it is empty, and only then start Box.* Do not propose new work while items remain unless the
+author redirects.
 
 ### O's role contract
 - **Technical quality owner:** Responsible for correctness and soundness. O reviews, designs, questions, verifies, and spawns.
@@ -157,6 +165,17 @@ The author is the product owner (vision, philosophy, trade-offs). He is not a co
 6. **Every `#[allow(...)]` must justify itself** with a comment (hand-written) or a tracked
    codegen bug (generated).
 7. **Do not commit, push, or run `gh` without an explicit ask.**
+8. **Closing a campaign means the living docs moved too.** An ADR is immutable history; it never
+   describes the language as it is today. Two documents do, and both drift silently unless the
+   campaign close touches them:
+   - **`SPEC.md`** — the active language specification (semantics, compiler-state-independent).
+   - **`spec/PROJECT_KNOWLEDGE.md` §Maturity** — the ONLY answer to "does X work today", including
+     the raw gate line.
+
+   No campaign is signed until each is **updated, or explicitly declared unaffected, in the report**
+   — same standing as the raw-gate rule (#4). Where SPEC.md and the compiler disagree and nobody
+   has ruled yet, mark the spot inline with **`⚠️ SPEC GAP`** plus the debt reference rather than
+   leaving the document quietly wrong.
 
 ## Shared project reference
 

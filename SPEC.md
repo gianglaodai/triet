@@ -4,10 +4,38 @@
 >
 > Tài liệu này đặc tả **semantics ngôn ngữ** — authoritative và độc lập với
 > trạng thái compiler. (Semantics được chốt qua các phase v0.2–v0.10 của
-> compiler cũ và KHÔNG đổi trong cuộc rewrite 2026-06-04; mức độ compiler
-> hiện hành đã implement tới đâu: xem `CLAUDE.md` §Maturity + `TODO.md`.)
+> compiler cũ và KHÔNG đổi trong cuộc rewrite 2026-06-04.)
+>
 > Tác giả & Kiến trúc sư: **Giang Hoàng** ([@gianglaodai](https://github.com/gianglaodai))  
 > Tầm nhìn dài hạn ở [VISION.md](VISION.md), lộ trình ở [ROADMAP.md](ROADMAP.md), quyết định kiến trúc ở [docs/decisions/](docs/decisions/).
+
+---
+
+## 📖 Đọc tài liệu nào? — ba tầng, ba vai
+
+| Tầng | Ở đâu | Sửa được? | Trả lời câu hỏi |
+|---|---|---|---|
+| **Lịch sử** | [`docs/decisions/`](docs/decisions/) | **KHÔNG** — bất biến khi đã Locked. Đổi ý ⇒ viết ADR mới supersede, hoặc thêm `§AMEND` xuống dưới | *vì sao* ngày đó chọn thiết kế này |
+| **Sự thật hiện hành** | **`SPEC.md`** (tài liệu này) | **CÓ, tự do** — cập nhật liên tục, không giữ lịch sử | ngôn ngữ **LÀ** cái gì |
+| **Đang bàn, chưa chốt** | [`docs/proposals/`](docs/proposals/) | **CÓ, tự do** | ý tưởng chưa thành quyết định |
+
+Một ADR cũ **không** phải mô tả ngôn ngữ hôm nay. Nếu ADR và SPEC.md lệch nhau thì
+**SPEC.md thắng** về semantics — và đó là một lỗi cần sửa ở SPEC.md hoặc một ADR
+supersede cần viết. Muốn biết ADR nào còn hiệu lực: cột **Status** ở
+[`docs/decisions/README.md`](docs/decisions/README.md) (`Locked` / `Superseded` /
+`Informational`) hoặc tra theo chủ đề ở [`by-topic.md`](docs/decisions/by-topic.md).
+
+**Compiler hôm nay đã làm được tới đâu** — SPEC.md cố tình KHÔNG trả lời (nó độc lập
+với trạng thái compiler). Xem [`spec/PROJECT_KNOWLEDGE.md` §Maturity](spec/PROJECT_KNOWLEDGE.md) —
+đó là **nơi duy nhất** trả lời câu đó, kèm dòng gate thô. Còn **việc chưa làm** thì ở
+[`TODO.md`](TODO.md) (backlog sống, không mô tả ngôn ngữ).
+
+**Nhãn `(v0.2)`, `(v0.7.4.3)`…** rải trong tài liệu là **mốc phase của compiler CŨ**
+(trước rewrite 2026-06-04), giữ lại để truy vết. Chúng nói *semantics này được chốt ở
+phase nào*, KHÔNG nói *hôm nay chạy được hay chưa*.
+
+**`⚠️ SPEC GAP`** đánh dấu chỗ tài liệu này và compiler đang nói khác nhau, chưa ai
+quyết ai đúng. Gặp dấu đó thì đừng tin cả hai — đọc nợ được ghi kèm.
 
 ---
 
@@ -322,6 +350,13 @@ Bất kỳ kiểu nào cũng có thể "có thể null" qua hậu tố `?`:
 let name: String? = get_name()       // có thể là null
 let count: Integer? = parse_number(s) // null nếu parse fail
 ```
+
+> ⚠️ **SPEC GAP (ghi nhận 2026-08-25, nợ P5): so sánh bằng có null CHƯA có đặc tả.**
+> §4 chỉ đặc tả `==`/`!=` cho primitive **non-nullable**. Với `T?` thì hệ kiểu nói kết
+> quả "có thể `Unknown`" — đó là lý do `E1033` tồn tại và chặn `if` trên `Trilean` chưa
+> narrow. Nhưng runtime **không bao giờ** trả `Unknown`: `Integer? == ~0` cho ra `0`
+> (false). Ba nơi — SPEC, hệ kiểu, runtime — đang nói ba kiểu. **G đã xếp: việc này cần
+> một ADR, không phải một WO vá tạm**, gộp cùng SPEC GAP `String <` ở §4.
 
 `T?` là **kiểu khác** với `T`. Compiler ép xử lý null trước khi dùng giá trị:
 
@@ -869,6 +904,10 @@ if cond.assume_known("validated upstream") { ... }
 - `Trilean!` — refinement subtype, statically proven ≠ Unknown. Generated bởi:
   - Literal `true` / `false`.
   - Comparisons giữa non-nullable primitives (`Integer == Integer`, `String < String`, …).
+    > ⚠️ **SPEC GAP (ghi nhận 2026-08-25, nợ P4):** `String < String` ở dòng này là
+    > **đặc tả, KHÔNG phải hiện thực** — compiler đang **từ chối** với `E1004`. Chưa
+    > quyết bên nào đúng: hoặc hiện thực `String <` theo SPEC, hoặc sửa SPEC để
+    > `String` chỉ có `==`/`!=`. G đã xếp: gộp chung một ADR với SPEC GAP ở §2.5.
   - Łukasiewicz/Kleene operators trên hai `Trilean!` operand.
   - `assume_known("msg")` method (panic-possible nhưng visible).
   - Pattern match arms cho `true` / `false` (variable bound bên trong arm là `Trilean!`).
