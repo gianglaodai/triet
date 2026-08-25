@@ -11,6 +11,37 @@ Ledger các phần ĐÃ đóng (per-step + commit-hash) → [`docs/TODO-ARCHIVE.
 
 # 🎯 HÀNG ĐỢI NỢ TRƯỚC BOX (`+T`) — luật thép Giang 2026-08-25
 
+> ⚠️⚠️ **ĐỐI CHIẾU SAU KHI MERGE `c537b89` (phiên song song, máy khác, cùng ngày).**
+> Phiên đó **sâu hơn và có đo đạc**: 3 vòng O↔G, **26 quyết định L1–L26**, G **BLOCKED B1–B6**.
+> **`.claude/memory/campaign_placement_polarity_adr.md` là bản CÓ THẨM QUYỀN cho thiết kế placement.**
+> Khối dưới đây (mục A→R) giữ lại vì phần **nợ code A→E** không trùng và vẫn đúng. Nhưng
+> **5 mục thiết kế của tôi đã bị phiên kia bác hoặc trả lời rồi:**
+>
+> | Mục ở đây | Phán quyết bên kia |
+> |---|---|
+> | **I** (struct có `&-` thì cấm move ra khỏi chủ) | ❌ **BỊ BÁC — L6.** G gọi đúng cách làm này là *"whole-program aliasing property, unimplementable"*. **`&-` chỉ được ở vị trí chữ ký (tham số/trả về), KHÔNG được làm trường struct.** Back-edge dùng **arena index**. Supersede `ADR-0022 §6.3` |
+> | **G** (đóng đinh `&+` = strong owner) | 🔄 **Giải khác — L5:** `&+`/`&+ mutable` **xoá khỏi cú pháp bề mặt** (giữ variant IR). Theo **L1**: *có `&` = mượn, không `&` = sở hữu* ⇒ `T` trần đã nói "sở hữu" rồi (**L3**, đo bằng probe: bare param đã owned suốt đời rewrite; SPEC §10.3 là tài liệu sai, không phải compiler sai) |
+> | Trần một-bit + luật "bó theo `&-` ngắn nhất" của tôi | ✅ **Đã có sẵn — L26①.** `check_lifetime_elision` (`typecheck/check.rs:530-570`) **đã refuse** >1 tham số mượn bằng **E2400**. Luật tôi đề xuất là thừa. Câu đúng: *"Triết không xoá region variable — nó TỪ CHỐI chương trình cần nhiều hơn một"* |
+> | Phân tích nhập nhằng parser `-T{}` vs unary minus | ✅ **Moot — L7.** **Không có constructor ở vị trí biểu thức.** Placement **chỉ ở vị trí KIỂU**; `let n: +Node = Node{…}` là chỗ duy nhất cấp phát (ADR-0072 expected-type propagation, đã landed) |
+> | **N · O · P** (`thread_bound` · `Sync` · biên spawn) | ⏸️ **Chỉ thị #4 của Giang bên kia: ĐA LUỒNG HOÀN TOÀN NGOÀI PHẠM VI**, xét lại sau khi placement landed. Giữ lại làm **nợ đã ghi** đúng tinh thần **L26③** (*"`Send`/`Sync` biến mất CHỈ KHI chưa có nguyên thuỷ shared-mutable — ghi là NỢ, không phải chiến thắng"*) — khớp độc lập với đo đạc của tôi về `Atomic<T>` |
+>
+> ✅ **Hai bên khớp độc lập:** ADR-0068/0073/0074/0075 **là bóng ma** (mục L) · gate `0·clean·0·581·0` ·
+> bệnh **mù lớp bọc** (mục C) — bên kia đo sắc hơn: **`MirType::Reference` 50 site, 47 FORM-BLIND**
+> (và `MirType::` 864 là **oracle SAI**, G đã bác).
+>
+> 🔴 **XUNG ĐỘT DUY NHẤT CẦN GIANG QUYẾT — `-T` là gì:**
+> Cuối phiên NÀY anh đảo sang **"global + tính được lúc compile"** vì lo rò rỉ. Phiên kia ra
+> **L10: `-T` = BẤT TỬ, KHÔNG phải `.rodata`** (welding ngữ nghĩa vào cách hiện thực là sai) và
+> **L11: hai constructor — C2 (`immortal <expr>`, promotion một chiều `+T → -T`) SHIP v1; C1 (comptime
+> `.rodata`) HOÃN VÔ THỜI HẠN**, vì C1 còn cần const-placement **truyền tới đáy** cho mọi cấp phát bên trong.
+> **Nỗi lo rò rỉ của anh đã được giải bằng cách khác, rẻ hơn — L15:** `immortal` **chỉ được xuất hiện
+> như câu lệnh top-level của `main` ở module gốc**, `main` không được gọi ⇒ **mọi điểm rò đếm được
+> tĩnh bằng cách đọc `main`, mỗi điểm chạy đúng một lần**. Giữ được dữ liệu runtime (config, interner,
+> bảng ký hiệu) mà **vẫn không rò không chặn**. **L17②:** quyết định leak luôn thuộc **ứng dụng**, không
+> bao giờ thuộc thư viện — Rust không có tính chất này.
+> ⇒ **Anh đảo quyết định khi CHƯA biết L15 tồn tại.** Nếu nhận L15 thì phần "compile-time only" tôi vừa
+> ghi trong phiên này **phải rút**. Đây là quyết định của anh, tôi không tự sửa.
+
 > **"Muốn làm phần này thì phải xử lý hết nợ trước. Không bao giờ được để lại nợ trước khi làm Box."**
 >
 > 🔄 **CẬP NHẬT cuối phiên 2026-08-25 — Giang ĐẢO quyết định về `-T`:**
