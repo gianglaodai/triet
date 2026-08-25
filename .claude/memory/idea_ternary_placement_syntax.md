@@ -21,7 +21,26 @@ before the Box/placement work starts. No debt may be left behind.**
 | `T{}` | stack | frame slot, today's implicit default. The leading `0` is never written. |
 | `-T{}` | **`.rodata`, immortal** | **comptime-evaluated, GLOBAL declaration only.** |
 
-### ⚠️ REVERSED by Giang, later on 2026-08-25 — read this, not the earlier draft
+### ⛔ RETRACTED 2026-08-25 (after merging `c537b89`) — DO NOT FOLLOW THIS SECTION
+
+**Giang ruled: take the parallel session's position.** The authoritative design is
+[[campaign_placement_polarity_adr]] (L1–L26, G BLOCKED B1–B6). Under **L10** `-T` is **IMMORTAL, not
+`.rodata`** — welding the semantics to one implementation was the error. Under **L11** the shipping
+constructor is **C2: `immortal <expr>`, a one-way `+T → -T` promotion** (needs nothing, ships v1);
+**C1 (comptime `.rodata`) is DEFERRED INDEFINITELY** because it additionally requires transitive
+const-placement of every interior allocation.
+
+The leak fear that drove the reversal below is answered more cheaply by **L15**: `immortal` may appear
+**only as a top-level statement of the root module's `main`**, and `main` may not be called ⇒ every
+immortal allocation site is statically enumerable by reading `main`, each running exactly once. That
+keeps runtime data (startup config, interners, symbol tables) — the three cases the reversal below
+would have thrown away — **and** bounds the leak. Plus **L17②**: the decision to leak always belongs to
+the application, never to a library.
+
+Kept below only as the record of a reversal made without knowledge of L15. Everything after this
+paragraph is superseded.
+
+### ~~REVERSED by Giang, later on 2026-08-25~~ (superseded — see above)
 
 An earlier ruling in the same session had `-T` as a **runtime expression** (`Box::leak`, explicitly
 "NOT `.rodata`, NOT comptime"). Giang **overturned it** after spotting the leak: an expression's

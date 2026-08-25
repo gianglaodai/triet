@@ -177,6 +177,21 @@ The author is the product owner (vision, philosophy, trade-offs). He is not a co
    has ruled yet, mark the spot inline with **`⚠️ SPEC GAP`** plus the debt reference rather than
    leaving the document quietly wrong.
 
+9. **🧊 MULTITHREADING IS FROZEN (Author's standing order, 2026-08-25).** Threads come after `+T`,
+   after Box, **after self-hosting**. Until then no design question may be shaped, constrained, or
+   blocked by a concurrency concern. Frozen and out of scope: `Send` · `Sync` · `thread_bound` ·
+   `Arc`/atomic refcounting · safe publication / memory ordering · spawn-boundary rules · `context`
+   (ADR-0026 v2 §6's refuse-list stands: `actor`/`spawn`/`receive`/`send`/`async`/`await` are not
+   keywords). **Do not raise them, do not price them in, do not defend a decision with them.** The
+   Author's reason: designing against a subsystem that is several campaigns away ties our own hands
+   and distorts the language. If a concurrency fact is genuinely load-bearing for a decision here,
+   say so in one line and ask — do not assume it.
+
+   ⚠️ **Not covered by this freeze** — these are single-threaded rulings that merely *sound*
+   concurrent: `-T` is Copy (L12) and `-T` may not be mutably borrowed (L13). G ruled L13 on
+   **single-threaded aliasing grounds, explicitly NOT deferred to concurrency**; it is what keeps
+   ADR-0022 §6's acyclicity theorem holding.
+
 ## Shared project reference
 
 **READ [`spec/PROJECT_KNOWLEDGE.md`](spec/PROJECT_KNOWLEDGE.md)** for:

@@ -39,8 +39,38 @@ Ledger các phần ĐÃ đóng (per-step + commit-hash) → [`docs/TODO-ARCHIVE.
 > tĩnh bằng cách đọc `main`, mỗi điểm chạy đúng một lần**. Giữ được dữ liệu runtime (config, interner,
 > bảng ký hiệu) mà **vẫn không rò không chặn**. **L17②:** quyết định leak luôn thuộc **ứng dụng**, không
 > bao giờ thuộc thư viện — Rust không có tính chất này.
-> ⇒ **Anh đảo quyết định khi CHƯA biết L15 tồn tại.** Nếu nhận L15 thì phần "compile-time only" tôi vừa
-> ghi trong phiên này **phải rút**. Đây là quyết định của anh, tôi không tự sửa.
+> ✅ **GIANG ĐÃ QUYẾT: lấy phiên kia.** `-T` = **BẤT TỬ** (L10), ship **C2 `immortal <expr>`** (L11),
+> chặn rò bằng **L15** (`immortal` chỉ ở top-level của `main`). Phần "compile-time only" của phiên này
+> **ĐÃ RÚT** — mục **R** (const-eval + `.rodata`) theo đó **cũng rút**, vì C1 hoãn vô thời hạn.
+> Từ đây **`campaign_placement_polarity_adr.md` là bản chuẩn**; khối A→E dưới đây vẫn sống (nợ code
+> không trùng), F→R chỉ giữ phần chưa bị L1–L26 trả lời.
+>
+> ➕ **ĐÓNG GÓP MỚI của phiên này cho C2 — phiên kia CHƯA đo `ObjectHeader`:**
+> `crates/triet-core/src/memory.rs:51` — **mọi cấp phát heap đã mang 8-byte header**
+> `{refcount: AtomicU32, reserved: AtomicU32}`, ghi tại `crates/triet-jit/src/mir_lower.rs:5694`
+> và `:6092` (⚠️ `reserved` **không rỗi** — ADR-0077 cất `stride` của Vector ở đó).
+> 🎁 **`memory.rs:91` `new_frozen_forever()` + `FROZEN_FOREVER_SENTINEL` (`u32::MAX-1`) ĐÃ TỒN TẠI**,
+> `increment`/`decrement` (`:99`/`:109`) **đã bỏ qua lệnh nguyên tử** cho sentinel đó, và **0 lời gọi
+> ngoài unit test** (`:200`/`:209`). `new_static()` cũng vậy. ⇒ **C2 có sẵn một đường hiện thực:
+> promotion đóng dấu sentinel lên header, đường free kiểm sentinel rồi no-op.**
+> 🔴 **ĐÃ ĐO — KẾT QUẢ LẬT MỘT CHỮ TRONG L11: "C2 needs nothing" là SAI.**
+> `crates/triet-jit/src/mir_lower.rs:5731` `__triet_string_free` và `:6125` `__triet_vector_free`:
+> cả hai chỉ chặn `ptr == 0 || ptr == NULL_SENTINEL`, rồi `body.sub(HEADER_SIZE)` → `dealloc` **ngay**.
+> **KHÔNG đọc `refcount`, KHÔNG kiểm sentinel.** Tức `increment`/`decrement`/`new_frozen_forever`
+> trong `memory.rs` là **mã chết mà đường free không bao giờ gọi tới** — nửa còn thiếu chính là đường free.
+>
+> 🔑 **Vì sao điều này bắt buộc, không phải tuỳ chọn:** **L15 cho phép toán hạng rẽ nhánh**
+> (`let raw = if c { a() } else { b() }` rồi promote) ⇒ **vật nào được phong bất tử là SỰ THẬT LÚC CHẠY.**
+> Local thì compiler tắt drop tĩnh được (kiểu đã đổi sang `-T`), nhưng **cấp phát BÊN TRONG thì không**
+> — đúng răng số 5 của B3 (`-App { cache: +Cache }`, đang khẳng định "suppression is recursive" mà
+> **chưa chứng minh**). ⇒ **C2 buộc phải có một trong hai:**
+> - **(a) đường free kiểm sentinel** — `if header.refcount >= FROZEN_FOREVER_SENTINEL { return; }` ở
+>   đầu mỗi shim free. Rẻ (một dòng mỗi shim), và **làm răng số 5 đo được ngay bằng FREE-count**. ✅ nên chọn
+> - **(b) promotion đi bộ toàn đồ thị object** đóng dấu từng tầng — đắt hơn, và vẫn cần (a) để đường
+>   free tôn trọng dấu.
+>
+> ⇒ **L11 phải sửa lại: C2 không "needs nothing" — nó cần sửa đường free.** Nhỏ, nhưng phải ghi giá
+> trước khi ADR hứa. Và nó **chặn trước** một lời hứa đang chưa có bằng chứng trong B3.
 
 > **"Muốn làm phần này thì phải xử lý hết nợ trước. Không bao giờ được để lại nợ trước khi làm Box."**
 >
@@ -97,9 +127,21 @@ Ledger các phần ĐÃ đóng (per-step + commit-hash) → [`docs/TODO-ARCHIVE.
 | **K** | **Chọn đường chính: `-T` hay Arena+NodeID cho ca đồ thị** | Trụ cột ③ cấm giữ cả hai làm mặc định |
 | **L** | **`ADR-0068` là BÓNG MA** — không có file, mà `0070:271`/`0077:17`/`0078:20`/`0086:60` đều viện dẫn làm lệnh cấm recursive/Box | Viết ra hoặc gỡ. Không để một nhánh kiến trúc treo trên số hiệu rỗng |
 | **M** | **Rà `ADR-0026` §3.2 + §7 dưới ánh sáng `-T`** — *đo lại 2026-08-25, KHÔNG phải "trả 8 byte"* | Header **có thật, đang chạy**: `crates/triet-core/src/memory.rs:51` `ObjectHeader { refcount: AtomicU32, reserved: AtomicU32 }`, ghi tại `crates/triet-jit/src/mir_lower.rs:5694` và `:6092`. ⚠️ **Nửa `reserved` KHÔNG rỗi — ADR-0077 đang cất `stride` của Vector ở đó** (`:6092`) ⇒ nhiều nhất lấy lại **4 byte** refcount, mà align 8 thì thực tế **lấy lại 0** nếu không thiết kế lại cả layout. 🎁 **`-T` đã được xây sẵn**: `memory.rs:91` `new_frozen_forever()` + `FROZEN_FOREVER_SENTINEL` (`u32::MAX-1`), `increment`/`decrement` (`:99`/`:109`) **đã bỏ qua lệnh nguyên tử** cho sentinel đó — và **0 lời gọi ngoài unit test** (`:200`/`:209`). Runtime của `-T` nằm chết chờ một cú pháp. ⚖ **Cái giá bị giấu:** §3.2 mua tính năng *chia sẻ MỘT vật đóng băng giữa 2 thread, free khi bên cuối cùng xong*. `-T` thay được **bằng cách không bao giờ free** ⇒ chia sẻ 0-refcount **trả bằng bộ nhớ vĩnh viễn**. Mẻ thì lời, server sống lâu thì đó là bài toán LSP. **Việc của mục M = ĐO, không phải hứa** |
-| **N** | **Mặt tiếp xúc của `Send` → `thread_bound`** (Giang chốt 2026-08-25) | Với dữ liệu Triết thuần, `Send` **vô nghĩa vì luôn đúng** (move ⇒ độc quyền · `-T` ⇒ bất biến · không `Rc` · không interior mutability) ⇒ bỏ được ràng buộc `T: Send` khỏi 99% chữ ký. Thứ còn lại **chỉ là handle OS/FFI dính thread** — vật lý, không xoá được bằng thiết kế. ⛔ **KHÔNG dùng `!Send`**: phủ định của một khái niệm dev chưa bao giờ gặp. ✅ **`thread_bound`** — annotation trên khai báo kiểu ngoại lai (`extern type GpuContext: thread_bound`), **KHÔNG phải từ khoá lõi**; người viết binding OS gõ 1 lần, dev ứng dụng gõ 0 lần. **Mặt tiếp xúc thật của dev là THÔNG BÁO LỖI** (theo `ADR-0027`), câu chữ không chứa `Send`. ⚠️ **Điều kiện sống của lời hứa "dev không bao giờ thấy"** — phát biểu ĐÚNG (bản đầu của O sai, xem mục O): **KHÔNG phải** "không interior mutability" (Triết đã có rồi), mà là **"không interior mutability ẨN — dạng được phép phải hiện ra trong TÊN KIỂU"**. `Atomic<Integer>`, `Channel<User>`, `Actor<T>` tự khai báo; ai gõ tới chúng là đã tự nhận đang làm đồng thời, **tên kiểu chính là dấu hiệu**, không cần ràng buộc nào để vác theo. Lời hứa chết vào ngày có một kiểu shared-and-mutable **mà không nói ra trong tên** (cache khởi tạo lười dùng chung là thủ phạm kinh điển), hoặc ngày sở hữu chia sẻ có đếm quay lại |
-| **O** | **`Sync` KHÔNG co về rỗng — và `-T` thiếu hàng rào bộ nhớ** *(O tự đính chính 2026-08-25: bản đầu xếp `Sync` là "gần như bỏ được", tiền đề đã sai sẵn trong hồ sơ khoá)* | ① **`Atomic<T>` đã khoá** — `docs/decisions/0028-atomic-primitive.md` Status Locked: `fetch_bitwise_or(self: &+ Atomic<Integer>, mask, ordering)` ghi qua handle chia sẻ được, có `Ordering` ⇒ **là interior mutability**. ② **`!Sync` đã nằm trong `ADR-0026:161`** ("Mirrors Rust `Send + !Sync` types"). ③ **Chính Channel/Actor/lock là shared+mutable** (`:304-309`, `:354`); BYKS đẩy sang stdlib nhưng luật an toàn ở lõi (`:13`) — stdlib không tự cấp chứng chỉ. ④ 🔴 **SAFE PUBLICATION**: `Arc` không chỉ đếm, lệnh nguyên tử của nó **tạo cạnh happens-before**. `-T` bỏ đếm ⇒ **bỏ luôn cạnh đó** ⇒ trên ARM, thread B thấy con trỏ **trước** khi thấy các trường đã ghi ⇒ **đọc rác từ một vật quảng cáo là bất biến**. Java giải bằng ngữ nghĩa freeze của trường `final` (JMM) — tiền lệ ỦNG HỘ `-T`, với điều kiện: **`-T` cần MỘT lệnh release ở cuối lúc dựng, một lần mỗi object, không phải mỗi lần đọc**. "0 lệnh nguyên tử" đúng với mọi lần đọc, **sai ở khoảnh khắc công bố**. ✅ Giang giữ yêu cầu: **dev không bao giờ được nhìn thấy `Sync`** — đạt được, vì tên kiểu mang thông tin. Nếu sau này cần viết ra thì theo luật đặt tên của `thread_bound`: **`self_synchronized`**, tuyệt đối không `Sync`/`!Sync`. Chưa cần chốt tới khi có thread |
-| **P** | **Luật biên spawn: `&0 T` của vật HỮU TỬ không được vượt biên thread** | Aliasing-XOR-mutability do NLL borrowck bảo đảm **trong MỘT CFG = trong một thread**. Nó **không tự động** vượt biên: A cho B mượn `&0 x` thì borrowck của A không biết B chạy tới bao giờ ⇒ không biết khi nào được lấy lại `&0 mutable x`. Rust chặn bằng `'static` trên closure spawn. **Không có luật tương đương thì "move chủ độc quyền" và "`&0 -T`" không còn là HAI đường duy nhất — và cả lập luận "Send luôn đúng" sụp theo.** Lối mở: cấu trúc scoped-thread có điểm join nhìn thấy được bởi borrowck |
+## 🧊 KHO ĐÔNG LẠNH — ĐA LUỒNG (lệnh thường trực Giang 2026-08-25)
+
+> **Mục N · O · P dưới đây RA KHỎI hàng đợi.** Đa luồng đến **sau `+T`, sau Box, sau self-hosting**.
+> Từ giờ tới đó **không câu hỏi thiết kế nào được để đa luồng nắn, trói, hay chặn** — xem `CLAUDE.md`
+> Hard rule #9. Giữ lại nguyên văn **chỉ để khỏi phải đào lại**, không phải để làm.
+>
+> ✅ **Kiểm rồi: đóng băng KHÔNG mất gì cho thiết kế hiện tại.** `+T`/`-T` dựng được trên
+> `ObjectHeader` y như nó đang là; không quyết định nào của L1–L26 chờ một câu trả lời về thread.
+> ⚠️ Riêng phát hiện *"đường free không kiểm sentinel"* **KHÔNG thuộc kho này** — đó là lỗi đúng/sai
+> của `-T` đơn luồng, vẫn còn hiệu lực. Tương tự **L12** (`-T` là Copy) và **L13** (`-T` cấm mượn
+> mutable): G đã ra phán quyết trên **cơ sở aliasing ĐƠN LUỒNG, nói rõ KHÔNG hoãn sang concurrency**.
+
+| **N** 🧊 | **Mặt tiếp xúc của `Send` → `thread_bound`** (Giang chốt 2026-08-25) | Với dữ liệu Triết thuần, `Send` **vô nghĩa vì luôn đúng** (move ⇒ độc quyền · `-T` ⇒ bất biến · không `Rc` · không interior mutability) ⇒ bỏ được ràng buộc `T: Send` khỏi 99% chữ ký. Thứ còn lại **chỉ là handle OS/FFI dính thread** — vật lý, không xoá được bằng thiết kế. ⛔ **KHÔNG dùng `!Send`**: phủ định của một khái niệm dev chưa bao giờ gặp. ✅ **`thread_bound`** — annotation trên khai báo kiểu ngoại lai (`extern type GpuContext: thread_bound`), **KHÔNG phải từ khoá lõi**; người viết binding OS gõ 1 lần, dev ứng dụng gõ 0 lần. **Mặt tiếp xúc thật của dev là THÔNG BÁO LỖI** (theo `ADR-0027`), câu chữ không chứa `Send`. ⚠️ **Điều kiện sống của lời hứa "dev không bao giờ thấy"** — phát biểu ĐÚNG (bản đầu của O sai, xem mục O): **KHÔNG phải** "không interior mutability" (Triết đã có rồi), mà là **"không interior mutability ẨN — dạng được phép phải hiện ra trong TÊN KIỂU"**. `Atomic<Integer>`, `Channel<User>`, `Actor<T>` tự khai báo; ai gõ tới chúng là đã tự nhận đang làm đồng thời, **tên kiểu chính là dấu hiệu**, không cần ràng buộc nào để vác theo. Lời hứa chết vào ngày có một kiểu shared-and-mutable **mà không nói ra trong tên** (cache khởi tạo lười dùng chung là thủ phạm kinh điển), hoặc ngày sở hữu chia sẻ có đếm quay lại |
+| **O** 🧊 | **`Sync` KHÔNG co về rỗng — và `-T` thiếu hàng rào bộ nhớ** *(O tự đính chính 2026-08-25: bản đầu xếp `Sync` là "gần như bỏ được", tiền đề đã sai sẵn trong hồ sơ khoá)* | ① **`Atomic<T>` đã khoá** — `docs/decisions/0028-atomic-primitive.md` Status Locked: `fetch_bitwise_or(self: &+ Atomic<Integer>, mask, ordering)` ghi qua handle chia sẻ được, có `Ordering` ⇒ **là interior mutability**. ② **`!Sync` đã nằm trong `ADR-0026:161`** ("Mirrors Rust `Send + !Sync` types"). ③ **Chính Channel/Actor/lock là shared+mutable** (`:304-309`, `:354`); BYKS đẩy sang stdlib nhưng luật an toàn ở lõi (`:13`) — stdlib không tự cấp chứng chỉ. ④ 🔴 **SAFE PUBLICATION**: `Arc` không chỉ đếm, lệnh nguyên tử của nó **tạo cạnh happens-before**. `-T` bỏ đếm ⇒ **bỏ luôn cạnh đó** ⇒ trên ARM, thread B thấy con trỏ **trước** khi thấy các trường đã ghi ⇒ **đọc rác từ một vật quảng cáo là bất biến**. Java giải bằng ngữ nghĩa freeze của trường `final` (JMM) — tiền lệ ỦNG HỘ `-T`, với điều kiện: **`-T` cần MỘT lệnh release ở cuối lúc dựng, một lần mỗi object, không phải mỗi lần đọc**. "0 lệnh nguyên tử" đúng với mọi lần đọc, **sai ở khoảnh khắc công bố**. ✅ Giang giữ yêu cầu: **dev không bao giờ được nhìn thấy `Sync`** — đạt được, vì tên kiểu mang thông tin. Nếu sau này cần viết ra thì theo luật đặt tên của `thread_bound`: **`self_synchronized`**, tuyệt đối không `Sync`/`!Sync`. Chưa cần chốt tới khi có thread |
+| **P** 🧊 | **Luật biên spawn: `&0 T` của vật HỮU TỬ không được vượt biên thread** | Aliasing-XOR-mutability do NLL borrowck bảo đảm **trong MỘT CFG = trong một thread**. Nó **không tự động** vượt biên: A cho B mượn `&0 x` thì borrowck của A không biết B chạy tới bao giờ ⇒ không biết khi nào được lấy lại `&0 mutable x`. Rust chặn bằng `'static` trên closure spawn. **Không có luật tương đương thì "move chủ độc quyền" và "`&0 -T`" không còn là HAI đường duy nhất — và cả lập luận "Send luôn đúng" sụp theo.** Lối mở: cấu trúc scoped-thread có điểm join nhìn thấy được bởi borrowck |
 
 ---
 
